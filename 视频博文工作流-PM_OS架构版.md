@@ -4,7 +4,7 @@
 
 | 项目 | 说明 |
 |---|---|
-| **版本** | `1.0.0` |
+| **版本** | `1.1.0` |
 | **更新日期** | 2026-05-14 |
 | **对齐框架** | [PM OS 的系统运作框架](./PM OS%20的系统运作框架.md) |
 | **关联文档** | [视频自动化工作流方案](./视频自动化工作流方案.md)（技术选型与 Phase 1 脚本细节） |
@@ -13,6 +13,7 @@
 
 | 版本 | 日期 | 变更摘要 |
 |---|---|---|
+| `1.1.0` | 2026-05-14 | 增补「已有文字稿」入口：跳过 Step 1–2（ffmpeg / ASR），自 Step 3 起与同一路由与质检 |
 | `1.0.0` | 2026-05-14 | 首版：按 PM OS 九层模型重组；本地转录 + Cursor/Codex/Claude Code 承担 LLM 链；不写死 API Key 守卫 |
 
 ---
@@ -21,9 +22,9 @@
 
 > **用约束代替脚本逻辑**，用 prompt 编排代替硬编码流程。
 
-- **不可替代工具层**：`ffmpeg`、`mlx-whisper` 必须由本地代码调度（无法用纯 prompt 取代）。
-- **可编排认知层**：转录之后的清洗、提炼、叙事、改写、质检，在 Cursor / Codex / Claude Code 中按 SKILL 与工作流执行，**不额外依赖 `ANTHROPIC_API_KEY`**（订阅内模型能力即用即走）。
-- PM OS 的「宪法、守卫、路由、技能链、知识层、上下文、自检」仍然成立；只是把「Skill = 可被 Agent 打开的 SKILL.md」与「薄脚本 = 只管音频与 ASR」划清边界。
+- **不可替代工具层（条件出现）**：若输入是视频且需从声画生成文字，则 `ffmpeg`、`mlx-whisper` 由本地代码调度；**若你已有成品文字稿**（逐字稿、纪要、导出字幕、口述整理等），则**不需要**这一层。
+- **可编排认知层**：从「可用文本」开始的清洗、提炼、叙事、改写、质检，在 Cursor / Codex / Claude Code 中按 SKILL 与工作流执行，**不额外依赖 `ANTHROPIC_API_KEY`**（订阅内模型能力即用即走）。
+- PM OS 的「宪法、守卫、路由、技能链、知识层、上下文、自检」仍然成立；只是把「Skill = 可被 Agent 打开的 SKILL.md」与「薄脚本 = 可选音频与 ASR」划清边界。
 
 ---
 
@@ -34,7 +35,7 @@
 | # | 规则 | 意图 |
 |---|---|---|
 | 1 | 处理前读取 `Context/` | 防止风格与偏好漂移 |
-| 2 | 视频后处理必须走工作流路由 | 禁止「拿到 .txt 直接一次性瞎改」 |
+| 2 | 从视频或从文字稿进入写博客，均须声明路由并按技能链执行 | 禁止跳过 Step 4–7 直接「一段话糊成博文」——除非你在指令里明确承担后果并标 `DRAFT` |
 | 3 | 转录稿须先清洗与标注不确定段，再进入改写 | 降低 ASR 幻觉与口癖对成稿的污染 |
 | 4 | 给出结构/风格类建议前须引用 `Knowledge/` | 避免凭空发明叙事与文风 |
 | 5 | 未通过质量检查不写入最终 `.md`（或须标为 `DRAFT`） | 低质输出不进主库 |
@@ -43,8 +44,10 @@
 
 ## 二、守卫层：Pre-Processing Guard（无 API Key）
 
+按**入口形态**分叉（声明 `ENTRY → video | transcript`）：
+
 ```
-视频进入 inbox/
+ENTRY → video（有视频文件，需要从声画产出文字）
   │
   ├─ 格式是否为 .mp4 / .mov / .mkv（按你实际支持列表）？
   │   └─ 否 → STOP，提示不支持的格式
@@ -52,18 +55,32 @@
   ├─ 本机是否具备 ffmpeg、mlx-whisper 运行环境？
   │   └─ 否 → STOP，提示安装/依赖（见原方案「部署与使用」）
   │
-  └─ 通过 → 进入路由与编排
+  └─ 通过 → 执行 Step 1–2 → 再进入路由与 Step 3+
+
+ENTRY → transcript（已有文字稿，跳过提取）
+  │
+  ├─ 文稿是否存在且非空（.md / .txt / .docx 导出为 .txt 等）？
+  │   └─ 否 → STOP
+  │
+  ├─ 编码可读（建议 UTF-8）？体量是否在 Agent 可操作范围（超长则先人工或脚本切块）？
+  │   └─ 否 → STOP 或强制走「分段工作流」
+  │
+  └─ 通过 → 不跑 ffmpeg / ASR，**直接进入 Step 3**（见 §4.4）
 ```
 
 **说明**：若运行场景为「本地脚本只负责转录，LLM 全在 Cursor / Codex / Claude Code」，则**不做**「必须配置 `ANTHROPIC_API_KEY`」类检查；若仍保留可选的「脚本内直连 API」路径，可将其列为**可选模块**的独立守卫，而非主路径。
 
 **例外**：`--dry-run`（仅抽音频+转录+落盘）可跳过与 Agent 相关的步骤说明，但文件格式与本地依赖检查仍建议保留。
 
+**与「文字稿」的关系**：`ENTRY → transcript` 时**无**视频格式与 ffmpeg/whisper 守卫；仍须遵守「先可用文本，再进提炼与改写」——即至少从 Step 3 起走同一套链（见规则 3）。
+
 ---
 
 ## 三、路由层：关键词 / 文件名 → 工作流
 
-建议映射（可按你目录命名习惯调整）：
+建议映射（可按你目录命名习惯调整）。
+
+**内容与体裁**（`ROUTING`，与 ENTRY 无关）：
 
 ```
 用户或文件名信号
@@ -75,9 +92,16 @@
   └─ 默认                          → /default
 ```
 
+**入口**（`ENTRY`）：
+
+| 用户意图 | ENTRY | 从哪一步开始 |
+|---|---|---|
+| 有视频，要字幕+博文 | `video` | Step 1 |
+| 已有逐字稿 / 纪要 / 文章底稿，直接改博文 | `transcript` | Step 3 |
+
 路由后须：
 
-1. 声明 **`ROUTING → [工作流名]`**
+1. 声明 **`ENTRY → video | transcript`** 与 **`ROUTING → [工作流名]`**
 2. 读取该工作流的叙事模板偏好（映射到 `Knowledge/Structures/`）
 3. 按技能链顺序执行（见下文），默认步间确认；用户说「端到端」则跳过确认。
 
@@ -87,10 +111,10 @@
 
 ### 4.1 系统分工
 
-| 阶段 | 执行者 | 产物 |
-|---|---|---|
-| Step 1–2 | **本地脚本**（`ffmpeg` + `mlx-whisper`） | `.wav`（可删）、`.srt`、`.txt` |
-| Step 3–8 | **Cursor / Codex / Claude Code Agent**（读 SKILL.md + Context + Knowledge） | 中间 Markdown、最终 `xxx.md` |
+| 阶段 | 执行者 | 产物 | 何时执行 |
+|---|---|---|---|
+| Step 1–2 | **本地脚本**（`ffmpeg` + `mlx-whisper`） | `.wav`（可删）、`.srt`、`.txt` | 仅 `ENTRY → video` |
+| Step 3–8 | **Cursor / Codex / Claude Code Agent**（读 SKILL.md + Context + Knowledge） | 中间 Markdown、最终 `xxx.md` | `ENTRY → video` 与 `transcript` **均须**（起点均为 Step 3） |
 
 ### 4.2 通用八步技能链
 
@@ -111,6 +135,21 @@
 | `/dialogue` | 交锋、问答、立场 | 辩论式正反 → 我方观点 | 对话感 + 反思 |
 | `/screencast` | 步骤、界面、陷阱 | 教程流：目标→步骤→结果 | 指南体 + 心得 |
 | `/meeting` | 决议、行动项、风险 | SCQA | 纪要 / 决策日志体 |
+
+### 4.4 入口变体：已有文字稿（`ENTRY → transcript`）
+
+**跳过**：Step 1 `extract-audio`、Step 2 `transcribe`（无「提取」过程，不跑脚本、不传视频）。
+
+**从 Step 3 起与同一路由一致**：仍以 `clean-transcript` 为第一站，理由是：人工稿可能有口语重复、排版混乱、中英文空格不统一；若你明确声明「已是出版级精修」，可在指令中写 **`SKIP clean 或 light-clean`**，则 Step 3 只做轻量规范化（或直接产出「精修确认块」进入 Step 4），但须在自检中注明 **`Step 3 豁免原因`**，便于事后审计。
+
+**推荐 Agent 第一句声明**：
+
+```
+ENTRY → transcript
+ROUTING → /lecture（或其他）
+SOURCE → path/to/原稿.txt
+OVERLAY → （可选）该稿是否含说话人标签、时间码、章节标题
+```
 
 ---
 
@@ -171,8 +210,8 @@ Context/
 ```
 > Re-check rules:
 > 1. Context/ 已读 ✓
-> 2. 已声明 ROUTING → /xxx ✓
-> 3. 改写前已完成 clean-transcript ✓
+> 2. 已声明 ENTRY → video|transcript 与 ROUTING → /xxx ✓
+> 3. 改写前已完成 clean-transcript（或已记录 Step 3 豁免原因）✓
 > 4. Step 5–6 已引用 Knowledge 路径 ✓
 > 5. quality-check 放行或已标 DRAFT ✓
 ```
@@ -184,14 +223,16 @@ Context/
 ### 10.1 本地薄脚本（示意）
 
 ```bash
-# 单次：只负责转录链
+# 单次：只负责转录链（ENTRY → video）
 python video2blog.py /path/to/video.mp4
 
 # 监听 inbox（仍建议仅生成字幕与纯文本）
 python video2blog.py --watch ~/Movies/inbox
 ```
 
-转录产出后：**在 Cursor / Codex / Claude Code** 中对 `output/xxx.txt` 下达「执行 `/default`（或指定路由）视频博文工作流」类指令，由 Agent 按 SKILL 跑 Step 3–8。
+转录产出后：**在 Cursor / Codex / Claude Code** 中对 `output/xxx.txt` 下达「`ENTRY → video`，`ROUTING → /default`（或指定路由）」类指令，由 Agent 按 SKILL 跑 Step 3–8。
+
+**已有文字稿（ENTRY → transcript）**：无需运行 `video2blog.py`。在编辑器中打开文稿，对 Agent 下达：「`ENTRY → transcript`，`ROUTING → /xxx`，按技能链从 Step 3（或约定的 light-clean）执行到 Step 8。」源文件可与视频流水线产出放在同一 `output/` 或单独的 `drafts/` 目录，只要在指令里写清 **`SOURCE`** 路径。
 
 ### 10.2 自动化衔接（可选 Phase 2）
 
@@ -203,7 +244,7 @@ python video2blog.py --watch ~/Movies/inbox
 
 | 项目 | 说明 |
 |---|---|
-| **转录** | 本地 mlx-whisper，零云转录费用；不上传音视频 |
+| **转录** | `ENTRY → video`：本地 mlx-whisper，零云转录费用，不上传音视频；`ENTRY → transcript`：**无转录步骤** |
 | **LLM** | 走已有 Cursor/Codex/Claude Code 订阅能力时，通常无按次 API Key 计费；若以 API 兜底则另计 |
 | **隐私** | 仅当你把 `.txt`/中间稿发往对应服务商时流经其云端；敏感内容可走本地模型或离线流程（与原方案风险提示一致） |
 
@@ -212,7 +253,7 @@ python video2blog.py --watch ~/Movies/inbox
 ## 十二、与《视频自动化工作流方案.md》的关系
 
 - **保留**：ffmpeg 管线、mlx-whisper 选型理由、目录结构、性能量级、风险提示中的 ASR 与长文分段等工程事实。
-- **本架构版增补**：PM OS 式分层治理、路由与技能链、`Context/` / `Knowledge/` 约定、**主路径不依赖脚本内 Claude API Key**。
+- **本架构版增补**：PM OS 式分层治理、路由与技能链、`Context/` / `Knowledge/` 约定、**主路径不依赖脚本内 Claude API Key**、**`ENTRY → transcript` 从 Step 3 直入写博文链路**。
 - **落地时**：可先实现脚本 Phase 1，再逐步实现各 `SKILL.md` 与 `Knowledge/`；二者文档并行维护，重大变更 bumped 版本同步到本文「版本历史」。
 
 ---
