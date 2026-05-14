@@ -2,6 +2,8 @@
 """本地流水线 Step 1–2：ffmpeg 抽音频 → mlx-whisper 转录为 .srt / .txt。
 
 博文 Markdown 不在此脚本生成；按《视频博文工作流-架构版》由 Agent 执行 Step 3–8。
+
+支持 **视频输入文件根**（`--input-root` 或环境变量 `VIDEO2BLOG_INPUT_ROOT`）：相对路径的单个文件与 `-w` 监听目录均先相对该根目录解析；`-w` 省略目录时直接监听该根。
 """
 
 from __future__ import annotations
@@ -22,6 +24,25 @@ VIDEO_EXT = frozenset({".mp4", ".mov", ".mkv"})
 WHISPER_MODEL = os.environ.get(
     "VIDEO2BLOG_WHISPER_MODEL", "mlx-community/whisper-large-v3-turbo"
 )
+
+
+def resolved_input_root(cli_root: Path | None) -> Path | None:
+    """CLI --input-root 优先；其次环境变量 VIDEO2BLOG_INPUT_ROOT。"""
+    if cli_root is not None:
+        return cli_root.expanduser().resolve()
+    env = os.environ.get("VIDEO2BLOG_INPUT_ROOT", "").strip()
+    if env:
+        return Path(env).expanduser().resolve()
+    return None
+
+
+def resolve_maybe_relative(target: str | Path, root: Path | None) -> Path:
+    """相对路径先相对输入根（未设置则相对当前工作目录）。"""
+    p = Path(target).expanduser()
+    if p.is_absolute():
+        return p.resolve()
+    base = root.resolve() if root is not None else Path.cwd()
+    return (base / p).resolve()
 
 
 def normalize_txt(text: str) -> str:
@@ -264,8 +285,33 @@ def watch_loop(watch_root: Path, *, output_dir: Path | None, model_repo: str, fo
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("video", nargs="?", type=Path, help="单个视频路径")
-    p.add_argument("--watch", type=Path, metavar="DIR", help="监听目录（收件箱），非递归")
+    p.add_argument(
+        "--input-root",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help=(
+            "视频输入文件根目录；单次 VIDEO、-w DIR 若为相对路径，均先相对此目录再解析。"
+            "可改用环境变量 VIDEO2BLOG_INPUT_ROOT。"
+        ),
+    )
+    p.add_argument(
+        "video",
+        nargs="?",
+        default=None,
+        type=str,
+        metavar="VIDEO",
+        help="单个视频文件路径（可与输入根组合成绝对路径）",
+    )
+    p.add_argument(
+        "-w",
+        "--watch",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="DIR",
+        help="监听目录；不传 DIR 时监听 --input-root / VIDEO2BLOG_INPUT_ROOT",
+    )
     p.add_argument(
         "--output-dir",
         type=Path,
@@ -279,19 +325,29 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     ns = p.parse_args(argv)
 
-    if bool(ns.watch) == bool(ns.video):
-        p.error("请二选一：提供 video，或传入 --watch <DIR>")
+    watch_on = ns.watch is not None
+    if watch_on and ns.video:
+        p.error("请二选一：VIDEO 与 -w/--watch 不要同时使用")
+
+    if not watch_on and not ns.video:
+        p.error("请提供 VIDEO，或使用 -w [DIR]（省略 DIR 时需配置输入根）")
+
     return ns
 
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv or sys.argv[1:])
+    root = resolved_input_root(args.input_root)
 
-    if args.watch:
-        watch_loop(args.watch, output_dir=args.output_dir, model_repo=args.model, force=args.force)
+    if args.watch is not None:
+        spec = args.watch
+        if spec == "" and root is None:
+            sys.exit("使用 `-w` 且省略监听目录时，必须设置 `--input-root` 或环境变量 VIDEO2BLOG_INPUT_ROOT")
+        watch_target = root if spec == "" else resolve_maybe_relative(spec, root)
+        watch_loop(watch_target, output_dir=args.output_dir, model_repo=args.model, force=args.force)
         return
 
-    video = Path(args.video).expanduser().resolve()
+    video = resolve_maybe_relative(args.video, root)
     if not video.is_file():
         sys.exit(f"文件不存在：{video}")
     process_video(video, output_dir=args.output_dir, model_repo=args.model, force=args.force)

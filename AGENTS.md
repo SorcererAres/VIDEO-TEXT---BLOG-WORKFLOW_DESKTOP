@@ -5,7 +5,7 @@
 ## 不变量（与架构版一致）
 
 1. **先读**：`Context/PREFERENCES.md`、`Context/CONFIG.md`；若质检需要风格对比再读 `Context/HISTORY.md`。
-2. **声明**：起手写出 `ENTRY → video | transcript`、`ROUTING → /default | /lecture | /dialogue | /screencast | /meeting`；文字稿还须 `SOURCE → path`.
+2. **声明**：起手写出 `ENTRY → video | transcript`、`ROUTING → /default | /lecture | /dialogue | /screencast | /meeting`；文字稿还须 `SOURCE → path`（可为相对仓库的路径，建议落在 **`Context/CONFIG.md`** 约定的「文字稿输入文件根」下，便于检索）。
 3. **技能链**：按 `视频博文工作流-架构版.md` Step 3–8 顺序加载 `.cursor/skills/video2blog/<step>/SKILL.md`，不得默认跳过 Step 4–7。（用户明确免责并标 `DRAFT` 时例外但仍须写出例外原因。）
 
 ## Step 映射（Agent）
@@ -24,14 +24,18 @@
 ```bash
 pip install -r requirements.txt   # ffmpeg 仍须 brew 安装
 
-# 单次
+# 单次（绝对路径）
 python video2blog.py /path/to/video.mp4
 
-# 监听
-python video2blog.py --watch ~/Movies/inbox
+# 视频输入文件根 + 相对「单次输入文件」；监听根本体用 `-w` 无参数
+export VIDEO2BLOG_INPUT_ROOT=~/Movies/inbox
+python video2blog.py foo.mp4
+python video2blog.py -w
 ```
 
-产物：`<视频目录>/output/<stem>.{srt,txt}`。随后在此仓库内用 Agent 跑 Step 3–8。
+详见 `Context/CONFIG.md`、`使用说明.md §1.5 / §3`。
+
+产物默认：`<视频目录>/output/<stem>.{srt,txt}`；随后在此仓库内用 Agent 跑 Step 3–8。
 
 ## 权威文档
 
