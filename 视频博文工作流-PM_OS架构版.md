@@ -1,0 +1,230 @@
+# 视频→博文自动化工作流（PM OS 架构版）
+
+## 文档信息
+
+| 项目 | 说明 |
+|---|---|
+| **版本** | `1.0.0` |
+| **更新日期** | 2026-05-14 |
+| **对齐框架** | [PM OS 的系统运作框架](./PM OS%20的系统运作框架.md) |
+| **关联文档** | [视频自动化工作流方案](./视频自动化工作流方案.md)（技术选型与 Phase 1 脚本细节） |
+
+### 版本历史
+
+| 版本 | 日期 | 变更摘要 |
+|---|---|---|
+| `1.0.0` | 2026-05-14 | 首版：按 PM OS 九层模型重组；本地转录 + Cursor/Codex/Claude Code 承担 LLM 链；不写死 API Key 守卫 |
+
+---
+
+## 设计哲学
+
+> **用约束代替脚本逻辑**，用 prompt 编排代替硬编码流程。
+
+- **不可替代工具层**：`ffmpeg`、`mlx-whisper` 必须由本地代码调度（无法用纯 prompt 取代）。
+- **可编排认知层**：转录之后的清洗、提炼、叙事、改写、质检，在 Cursor / Codex / Claude Code 中按 SKILL 与工作流执行，**不额外依赖 `ANTHROPIC_API_KEY`**（订阅内模型能力即用即走）。
+- PM OS 的「宪法、守卫、路由、技能链、知识层、上下文、自检」仍然成立；只是把「Skill = 可被 Agent 打开的 SKILL.md」与「薄脚本 = 只管音频与 ASR」划清边界。
+
+---
+
+## 一、控制层：五条不可违反规则
+
+每次处理请求或 Agent 执行任务前自检：
+
+| # | 规则 | 意图 |
+|---|---|---|
+| 1 | 处理前读取 `Context/` | 防止风格与偏好漂移 |
+| 2 | 视频后处理必须走工作流路由 | 禁止「拿到 .txt 直接一次性瞎改」 |
+| 3 | 转录稿须先清洗与标注不确定段，再进入改写 | 降低 ASR 幻觉与口癖对成稿的污染 |
+| 4 | 给出结构/风格类建议前须引用 `Knowledge/` | 避免凭空发明叙事与文风 |
+| 5 | 未通过质量检查不写入最终 `.md`（或须标为 `DRAFT`） | 低质输出不进主库 |
+
+---
+
+## 二、守卫层：Pre-Processing Guard（无 API Key）
+
+```
+视频进入 inbox/
+  │
+  ├─ 格式是否为 .mp4 / .mov / .mkv（按你实际支持列表）？
+  │   └─ 否 → STOP，提示不支持的格式
+  │
+  ├─ 本机是否具备 ffmpeg、mlx-whisper 运行环境？
+  │   └─ 否 → STOP，提示安装/依赖（见原方案「部署与使用」）
+  │
+  └─ 通过 → 进入路由与编排
+```
+
+**说明**：若运行场景为「本地脚本只负责转录，LLM 全在 Cursor / Codex / Claude Code」，则**不做**「必须配置 `ANTHROPIC_API_KEY`」类检查；若仍保留可选的「脚本内直连 API」路径，可将其列为**可选模块**的独立守卫，而非主路径。
+
+**例外**：`--dry-run`（仅抽音频+转录+落盘）可跳过与 Agent 相关的步骤说明，但文件格式与本地依赖检查仍建议保留。
+
+---
+
+## 三、路由层：关键词 / 文件名 → 工作流
+
+建议映射（可按你目录命名习惯调整）：
+
+```
+用户或文件名信号
+  │
+  ├─ 讲座 / lecture / talk        → /lecture
+  ├─ 对谈 / dialogue / 对话       → /dialogue
+  ├─ 录屏 / screencast / demo     → /screencast
+  ├─ 会议 / meeting / 复盘       → /meeting
+  └─ 默认                          → /default
+```
+
+路由后须：
+
+1. 声明 **`ROUTING → [工作流名]`**
+2. 读取该工作流的叙事模板偏好（映射到 `Knowledge/Structures/`）
+3. 按技能链顺序执行（见下文），默认步间确认；用户说「端到端」则跳过确认。
+
+---
+
+## 四、编排层：工作流 = 技能链（DAG）
+
+### 4.1 系统分工
+
+| 阶段 | 执行者 | 产物 |
+|---|---|---|
+| Step 1–2 | **本地脚本**（`ffmpeg` + `mlx-whisper`） | `.wav`（可删）、`.srt`、`.txt` |
+| Step 3–8 | **Cursor / Codex / Claude Code Agent**（读 SKILL.md + Context + Knowledge） | 中间 Markdown、最终 `xxx.md` |
+
+### 4.2 通用八步技能链
+
+1. **`extract-audio`** — ffmpeg 抽取 16kHz 单声道音频（参数与原方案一致）
+2. **`transcribe`** — mlx-whisper `large-v3`；中英混合建议不强行锁 `language`；`condition_on_previous_text`、`no_speech_threshold` 等沿用原方案
+3. **`clean-transcript`** — 去口头禅、合并碎片句、标注 `[?不确定性?]`、中英数字与术语格式规范
+4. **`extract-insights`** — 核心观点 / 金句 / 案例 / 数据 / 待确认项（结构化 intermediate）
+5. **`structure-narrative`** — 按工作流类型选叙事骨架（金字塔、SCQA、辩论式、教程式等）
+6. **`rewrite-blog`** — 第一人称成稿 Markdown；引用 `Knowledge/Styles/`；长文按需分段改写再合并（原方案 24000 字上限仍作参考阈值）
+7. **`quality-check`** — 多维评分（忠实度、可读性、观点密度、风格一致、完整性）；低于阈值进入 `REVIEW` 或保留 `DRAFT` 前缀
+8. **`format-output`** — 定稿文件名、可选 frontmatter、与 Obsidian/库规范对齐
+
+### 4.3 工作流差异化（Step 5–6 侧重点）
+
+| 工作流 | Step 4 侧重 | Step 5 叙事 | Step 6 语气 |
+|---|---|---|---|
+| `/lecture` | 论点、案例、数据 | 金字塔 / 结论先行 | 讲学感 + 个人解读 |
+| `/dialogue` | 交锋、问答、立场 | 辩论式正反 → 我方观点 | 对话感 + 反思 |
+| `/screencast` | 步骤、界面、陷阱 | 教程流：目标→步骤→结果 | 指南体 + 心得 |
+| `/meeting` | 决议、行动项、风险 | SCQA | 纪要 / 决策日志体 |
+
+---
+
+## 五、执行层：Skill = 结构化 Prompt
+
+每个步骤对应可读 **SKILL.md**（示意路径：`.cursor/skills/video2blog/<step>/SKILL.md`），至少包含：**角色**、**输入格式**、**输出格式**、**步骤**、**反例**。Agent 运行时「打开 SKILL → 读入上轮输出 → 写本轮输出」。
+
+**与原方案衔接**：原先写在「博文改写」里的小节可作为 Step 6 的硬约束条目迁入 `Knowledge/Prompts/` 与 STYLE 示例，而不是散落在脚本字符串里。
+
+---
+
+## 六、知识层：`Knowledge/`（静态，不参与「运行」但被引用）
+
+建议目录：
+
+```
+Knowledge/
+├── Styles/           # casual-blog / deep-dive / tutorial / decision-log …
+├── Structures/       # pyramid / scqa / debate / tutorial-flow …
+├── Prompts/          # 中英混合、技术分享专用等已校准段落
+└── Examples/         # 少量高质量成品，用作 few-shot 或对照
+```
+
+**规则对齐**：凡是「观点级」的结构/风格取舍，须在 Step 5–7 中能指回具体文件条目（对应 PM OS 规则 5）。
+
+---
+
+## 七、个性化层：`Context/`（用户记忆）
+
+处理前必读（可由你手工维护或由 Agent 更新摘要）：
+
+```
+Context/
+├── PREFERENCES.md     # 语言、人称、字数、禁用套话、平台格式（Obsidian wiki link 等）
+├── HISTORY.md         # 近 N 篇标题+摘要——用于质检「风格一致性」
+└── CONFIG.md          # inbox/output 路径、是否保留中间文件、 Whisper 模型名等
+```
+
+---
+
+## 八、模式不变量
+
+| 变化项 | 不变项 |
+|---|---|
+| Cursor 模式（Ask/Plan/Debug/Agent）带来的工具权限 | 五条规则、守卫逻辑、路由声明、Context 预读、技能链顺序 |
+| 使用 Codex 或 Claude Code 时终端/插件不同 | 同一套 SKILL 与 Knowledge 路径约定 |
+
+若在 **AGENTS.md** 或多客户端规则文件中描述本工作流，应写明：**模式切换不改变上述不变项**。
+
+---
+
+## 九、自检机制（Self-Rebrief）
+
+**触发**：完成 Step 7 后必跑；或是在 Agent 单次长输出后抽样复查。
+
+自检清单示意：
+
+```
+> Re-check rules:
+> 1. Context/ 已读 ✓
+> 2. 已声明 ROUTING → /xxx ✓
+> 3. 改写前已完成 clean-transcript ✓
+> 4. Step 5–6 已引用 Knowledge 路径 ✓
+> 5. quality-check 放行或已标 DRAFT ✓
+```
+
+---
+
+## 十、运维与接入方式
+
+### 10.1 本地薄脚本（示意）
+
+```bash
+# 单次：只负责转录链
+python video2blog.py /path/to/video.mp4
+
+# 监听 inbox（仍建议仅生成字幕与纯文本）
+python video2blog.py --watch ~/Movies/inbox
+```
+
+转录产出后：**在 Cursor / Codex / Claude Code** 中对 `output/xxx.txt` 下达「执行 `/default`（或指定路由）视频博文工作流」类指令，由 Agent 按 SKILL 跑 Step 3–8。
+
+### 10.2 自动化衔接（可选 Phase 2）
+
+新 `.txt` 落盘 → 通知 / 生成待办标记文件 / Cursor Hook → Agent 认领执行。不影响本架构版对「运行时模型」的定义。
+
+---
+
+## 十一、成本与隐私（在 Agent 模式下）
+
+| 项目 | 说明 |
+|---|---|
+| **转录** | 本地 mlx-whisper，零云转录费用；不上传音视频 |
+| **LLM** | 走已有 Cursor/Codex/Claude Code 订阅能力时，通常无按次 API Key 计费；若以 API 兜底则另计 |
+| **隐私** | 仅当你把 `.txt`/中间稿发往对应服务商时流经其云端；敏感内容可走本地模型或离线流程（与原方案风险提示一致） |
+
+---
+
+## 十二、与《视频自动化工作流方案.md》的关系
+
+- **保留**：ffmpeg 管线、mlx-whisper 选型理由、目录结构、性能量级、风险提示中的 ASR 与长文分段等工程事实。
+- **本架构版增补**：PM OS 式分层治理、路由与技能链、`Context/` / `Knowledge/` 约定、**主路径不依赖脚本内 Claude API Key**。
+- **落地时**：可先实现脚本 Phase 1，再逐步实现各 `SKILL.md` 与 `Knowledge/`；二者文档并行维护，重大变更 bumped 版本同步到本文「版本历史」。
+
+---
+
+## 十三、路线图（简述）
+
+| 阶段 | 内容 |
+|---|---|
+| Phase A | 薄脚本 + 手工触发 Agent 跑通 Step 3–8 |
+| Phase B | 补全 `Knowledge/` 与范例；固化质检阈值与 DRAFT 策略 |
+| Phase C | Hook / n8n 将「新转录→Agent 任务」自动化（与原方案 Phase 2 合并评估） |
+
+---
+
+*本文为 PM OS 思想在「视频→博文」场景下的约束与编排说明；具体 SKILL 文件名与 Hook 配置以实现仓库为准。*
