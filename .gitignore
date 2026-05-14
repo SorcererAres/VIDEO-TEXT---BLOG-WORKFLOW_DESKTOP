@@ -6,3 +6,9 @@
 # 常见产物目录（若放在仓库内需删除下列规则）
 # output/
 # inbox/
+
+__pycache__/
+.venv/
+venv/
+*.pyc
+

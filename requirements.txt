@@ -1,0 +1,4 @@
+# 仅用于 video2blog.py（Step 1–2）。Agent 链不依赖本文件。
+
+mlx-whisper>=0.4.0
+watchdog>=4.0.0
