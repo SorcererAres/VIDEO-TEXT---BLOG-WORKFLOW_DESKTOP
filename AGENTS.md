@@ -35,5 +35,6 @@ python video2blog.py --watch ~/Movies/inbox
 
 ## 权威文档
 
+- `使用说明.md` — **人类**快速上手：安装、`video2blog.py`、对 Agent 起手式
 - `视频博文工作流-架构版.md` — 九层模型、守卫、路由、自检
 - `视频自动化工作流方案.md` — 工程性能、风险、可选 API 方案
