@@ -1,0 +1,12 @@
+[2026-05-19T11:54:38] process start: video=/Users/liangpeng/Downloads/问题意识/问题意识-引入.mp4, engine=mlx, fallback_policy=stop, mlx_timeout_seconds=1800, segment_minutes=15.0
+[2026-05-19T11:54:38] ffmpeg extract start: /opt/homebrew/bin/ffmpeg -nostdin -y -i '/Users/liangpeng/Downloads/问题意识/问题意识-引入.mp4' -ac 1 -ar 16000 -vn /var/folders/3f/nkz9rcld3fq_ky64xpf8wc740000gn/T/video2blog_ibk8f5v_/audio.wav
+[2026-05-19T11:54:38] ffmpeg extract complete: /var/folders/3f/nkz9rcld3fq_ky64xpf8wc740000gn/T/video2blog_ibk8f5v_/audio.wav
+[2026-05-19T11:54:38] audio duration does not need chunking: duration=465.722625
+[2026-05-19T11:54:38] mlx parent start: wav=/var/folders/3f/nkz9rcld3fq_ky64xpf8wc740000gn/T/video2blog_ibk8f5v_/audio.wav, timeout=1800s, worker=subprocess
+[2026-05-19T11:54:38] mlx child start: /var/folders/3f/nkz9rcld3fq_ky64xpf8wc740000gn/T/video2blog_ibk8f5v_/audio.wav
+Fetching 4 files:   0%|          | 0/4 [00:00<?, ?it/s]Fetching 4 files: 100%|██████████| 4/4 [00:00<00:00, 50686.45it/s]
+Detected language: Chinese
+  0%|          | 0/46572 [00:00<?, ?frames/s]  6%|▋         | 2992/46572 [00:00<00:09, 4696.40frames/s] 12%|█▏        | 5812/46572 [00:01<00:07, 5117.49frames/s] 19%|█▊        | 8656/46572 [00:01<00:07, 4950.19frames/s] 25%|██▍       | 11420/46572 [00:02<00:06, 5119.48frames/s] 31%|███       | 14394/46572 [00:02<00:06, 5197.67frames/s] 37%|███▋      | 17372/46572 [00:03<00:05, 5595.65frames/s] 44%|████▎     | 20306/46572 [00:03<00:04, 5378.01frames/s] 50%|████▉     | 23164/46572 [00:04<00:04, 5593.67frames/s] 56%|█████▌    | 25906/46572 [00:04<00:03, 5778.66frames/s] 62%|██████▏   | 28824/46572 [00:05<00:03, 5692.98frames/s] 68%|██████▊   | 31796/46572 [00:05<00:02, 5579.68frames/s] 74%|███████▍  | 34688/46572 [00:06<00:02, 5633.94frames/s] 81%|████████  | 37618/46572 [00:06<00:01, 5491.53frames/s] 86%|████████▋ | 40284/46572 [00:07<00:01, 5382.38frames/s] 93%|█████████▎| 43216/46572 [00:07<00:00, 5383.69frames/s] 99%|█████████▉| 46086/46572 [00:08<00:00, 5257.68frames/s]100%|██████████| 46572/46572 [00:08<00:00, 5314.44frames/s]
+[2026-05-19T11:54:50] mlx child complete: /var/folders/3f/nkz9rcld3fq_ky64xpf8wc740000gn/T/video2blog_ibk8f5v_/audio.wav
+[2026-05-19T11:54:51] mlx parent complete: wav=/var/folders/3f/nkz9rcld3fq_ky64xpf8wc740000gn/T/video2blog_ibk8f5v_/audio.wav
+[2026-05-19T11:54:51] process complete: txt=drafts/media-input/output/问题意识-引入.txt, srt=drafts/media-input/output/问题意识-引入.srt, meta=drafts/media-input/output/问题意识-引入.meta.json

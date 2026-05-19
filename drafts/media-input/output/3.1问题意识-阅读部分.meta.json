@@ -1,0 +1,16 @@
+{
+  "created_at": "2026-05-19T02:53:28.519819+00:00",
+  "source_video": "/Users/liangpeng/Downloads/问题意识/3.1问题意识-阅读部分.mp4",
+  "txt": "drafts/media-input/output/3.1问题意识-阅读部分.txt",
+  "srt": "drafts/media-input/output/3.1问题意识-阅读部分.srt",
+  "log": "drafts/media-input/output/3.1问题意识-阅读部分.log",
+  "engine_requested": "mlx",
+  "fallback_policy": "stop",
+  "execution_context": "current_process",
+  "engine": "mlx-whisper",
+  "model": "mlx-community/whisper-large-v3-turbo",
+  "confidence": "native_asr",
+  "chunk_count": 4,
+  "segment_minutes": 15.0,
+  "timeout_seconds": 1800
+}

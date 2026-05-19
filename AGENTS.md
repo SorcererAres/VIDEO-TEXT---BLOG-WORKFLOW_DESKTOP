@@ -4,9 +4,30 @@
 
 ## 不变量（与架构版一致）
 
-1. **先读**：`Context/PREFERENCES.md`、`Context/CONFIG.md`；若质检需要风格对比再读 `Context/HISTORY.md`。
-2. **声明**：起手写出 `ENTRY → video | transcript`、`ROUTING → /default | /lecture | /dialogue | /screencast | /meeting`；文字稿还须 `SOURCE → path`（可为相对仓库的路径，建议落在 **`Context/CONFIG.md`** 约定的「文字稿输入文件根」下，便于检索）。
-3. **技能链**：按 `视频博文工作流-架构版.md` Step 3–8 顺序加载 `.cursor/skills/video2blog/<step>/SKILL.md`，不得默认跳过 Step 4–7。（用户明确免责并标 `DRAFT` 时例外但仍须写出例外原因。）
+1. **先读**：`Context/PREFERENCES.md`、`Context/CONFIG.md`、**`Knowledge/ROUTER.md`**（路由→资源映射单一来源）；若质检需要风格对比再读 `Context/HISTORY.md`。
+2. **Pre-Flight Guard（占位符检测）**：读 `Context/` 后须扫描占位符；命中以下任一种即 **STOP** 并提示「先补全 `<文件>:<字段>` 再继续」：
+   - `____________`（四个及以上连续下划线，表示未填）
+   - `YYYY-MM-DD`（HISTORY 模板行未替换；**首篇允许全空**，但若已有产出却仍是模板则按命中处理）
+   - `[填写]` / `[TODO]` / `[占位]`
+3. **起手必输出 Pre-Flight 状态块**（固定格式，紧跟用户指令的第一条回复）：
+
+   ```
+   > Pre-Flight ✓
+   > PREFERENCES: <语言>｜<人称>｜<字数区间>｜禁用套话 N 条
+   > CONFIG: input_root=<…>｜skills=.cursor/skills/video2blog/
+   > HISTORY: 近 3 篇标题摘要（或「无可比」）
+   > ENTRY → video | transcript
+   > ROUTING → /default | /lecture | /dialogue | /screencast | /meeting
+   > SOURCE → <path>
+   > ROUTER → Structure=Knowledge/Structures/<f>.md｜Style=Knowledge/Styles/<f>.md（由 ROUTER.md 解析；用户覆盖时回显覆盖值）
+   ```
+
+   - `ENTRY → transcript` 必须给 `SOURCE`；`ENTRY → video` 的 `SOURCE` 指向 Step 2 产出的 `xxx.txt`。
+   - 用户未声明 `ROUTING` 时，按 SOURCE 文件名/前 200 字给**建议路由**并等确认（关键词映射见架构版 §三）。
+
+4. **技能链**：按 `视频博文工作流-架构版.md` Step 3–8 顺序加载 `.cursor/skills/video2blog/<step>/SKILL.md`，不得默认跳过 Step 4–7。（用户明确免责并标 `DRAFT` 时例外但仍须写出例外原因。）
+
+5. **模式不变量**：Cursor 切 Ask/Plan/Debug/Agent **仅改变工具权限**，**不改变** Pre-Flight、声明、SKILL 链顺序、自检输出。Ask 模式不能写文件时，仍须在对话里把每步中间稿完整产出。
 
 ## Step 映射（Agent）
 

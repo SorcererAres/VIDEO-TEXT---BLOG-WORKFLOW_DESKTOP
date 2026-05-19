@@ -12,3 +12,12 @@ __pycache__/
 venv/
 *.pyc
 
+# 系统与编辑器
+.DS_Store
+.claude/
+
+# 输入视频素材（大文件，勿入库；文本转写产物 .txt/.srt/.meta.json 仍保留）
+*.mp4
+*.mov
+*.mkv
+
