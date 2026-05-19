@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """本地流水线 Step 1–2：ffmpeg 抽音频 → ASR 转录为 .srt / .txt。
 
-博文 Markdown 不在此脚本生成；按《视频博文工作流-架构版》由 Agent 执行 Step 3–8。
+博文 Markdown 不在此脚本生成；按 knowledge/工作流契约.md 由 Agent 执行 Step 3–8。
 
 支持 **视频输入文件根**（`--input-root` 或环境变量 `VIDEO2BLOG_INPUT_ROOT`）：相对路径的单个文件与 `-w` 监听目录均先相对该根目录解析；`-w` 省略目录时直接监听该根。
 """

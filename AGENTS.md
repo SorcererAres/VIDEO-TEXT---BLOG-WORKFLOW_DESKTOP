@@ -23,9 +23,9 @@
    ```
 
    - `ENTRY → transcript` 必须给 `SOURCE`；`ENTRY → video` 的 `SOURCE` 指向 Step 2 产出的 `work/asr/<stem>.txt`。
-   - 用户未声明 `ROUTING` 时，按 SOURCE 文件名/前 200 字给**建议路由**并等确认（关键词映射见架构版 §三）。
+   - 用户未声明 `ROUTING` 时，按 SOURCE 文件名/前 200 字给**建议路由**并等确认（关键词映射见 `knowledge/工作流契约.md` 二）。
 
-4. **技能链**：按 `视频博文工作流-架构版.md` Step 3–8 顺序加载 `.cursor/skills/video2blog/<step>/SKILL.md`，不得默认跳过 Step 4–7。（用户明确免责并标 `DRAFT` 时例外但仍须写出例外原因。）
+4. **技能链**：按 `knowledge/工作流契约.md` 三（八步技能链）顺序加载 `.cursor/skills/video2blog/<step>/SKILL.md`，不得默认跳过 Step 4–7。（用户明确免责并标 `DRAFT` 时例外但仍须写出例外原因。）
 
 5. **模式不变量**：Cursor 切 Ask/Plan/Debug/Agent **仅改变工具权限**，**不改变** Pre-Flight、声明、SKILL 链顺序、自检输出。Ask 模式不能写文件时，仍须在对话里把每步中间稿完整产出。
 
@@ -60,6 +60,8 @@ python video2blog.py -w
 
 ## 权威文档
 
+- `knowledge/工作流契约.md` — **运行权威**：五规则 / 八步链 / 路由声明 / 差异化（本文件与 SKILL 依赖此处）
 - `使用说明.md` — **人类**快速上手：安装、`video2blog.py`、对 Agent 起手式
-- `视频博文工作流-架构版.md` — 九层模型、守卫、路由、自检
-- `视频自动化工作流方案.md` — 工程性能、风险、可选 API 方案
+- `项目结构.md` — 五分目录速查与数据流
+- `Archive/视频博文工作流-架构版.md` — 设计背景（已归档，不作运行依据）：九层模型推导
+- `Archive/视频自动化工作流方案.md` — 设计背景（已归档）：工程性能、风险、可选 API 方案

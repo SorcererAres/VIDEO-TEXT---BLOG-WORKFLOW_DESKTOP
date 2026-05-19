@@ -13,7 +13,7 @@ description: Step 5 选定叙事骨架并生成文章提纲（不写正文）。
 ## 执行前必读
 
 1. **`knowledge/ROUTER.md`** — 路由到 Structure 的**唯一映射来源**（不要再去 SKILL 里找硬编码）。
-2. `视频博文工作流-架构版.md` — §4.3 工作流差异化要点。
+2. `knowledge/工作流契约.md` 四 — 工作流差异化要点。
 3. 按 ROUTER 选定的 Structure 文件**全文读完**并显性引用。
 
 ## 输入
