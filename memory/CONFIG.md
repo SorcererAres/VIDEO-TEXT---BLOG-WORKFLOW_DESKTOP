@@ -18,7 +18,7 @@
 | 用途 | 路径 | 说明 |
 |---|---|---|
 | 视频收件箱（输入侧） | `$VIDEO2BLOG_INPUT_ROOT`（如 `~/Movies/inbox`） | 「视频输入文件根」；亦可用相对路径 + `-w 子目录` 分层 |
-| 脚本产物（中转侧） | `work/asr/<stem>.{srt,txt,meta.json}` | **五分结构约定：转写时显式带 `--output-dir work/asr`**。脚本默认会写 `<视频目录>/output/`（即 `input/Video/output/`，落回输入侧），不带 `--output-dir` 会破坏输入/中转分离 |
+| 脚本产物（中转侧） | `work/asr/<stem>.{srt,txt,meta.json}` | **脚本默认即写仓库内 `work/asr/`**（`video2blog.py` 内置，无论视频在哪都汇此）；`--output-dir DIR` 可覆盖 |
 | 文字稿收件箱（输入侧） | `input/Text/`（或自建） | `ENTRY → transcript` 的源稿放这里 |
 | **博文定稿（输出侧）** | `output/Posts/<YYYY>/` | Step 8 落盘；PASS 与 `DRAFT-` 前缀都进此处 |
 | **质检报告（输出侧）** | `output/Reviews/` | Step 7 评分 + Re-Brief 留底 |

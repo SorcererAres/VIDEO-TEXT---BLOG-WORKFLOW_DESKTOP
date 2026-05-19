@@ -44,6 +44,11 @@ DEFAULT_SEGMENT_MINUTES = float(
     os.environ.get("VIDEO2BLOG_SEGMENT_MINUTES", "15").strip() or "15"
 )
 
+# 脚本就在仓库根；五分结构下 ASR 产物默认进仓库中转侧 work/asr，
+# 不再写到 <视频目录>/output（那会落回输入侧，破坏输入/中转分离）。
+REPO_ROOT = Path(__file__).resolve().parent
+DEFAULT_OUTPUT_DIR = REPO_ROOT / "work" / "asr"
+
 
 def resolved_input_root(cli_root: Path | None) -> Path | None:
     """CLI --input-root 优先；其次环境变量 VIDEO2BLOG_INPUT_ROOT。"""
@@ -639,7 +644,7 @@ def write_meta(
 
 
 def output_paths(video: Path, output_dir: Path | None) -> Path:
-    base = video.parent / "output" if output_dir is None else Path(output_dir)
+    base = DEFAULT_OUTPUT_DIR if output_dir is None else Path(output_dir)
     return base
 
 
@@ -885,7 +890,7 @@ def watch_loop(
         sys.exit("缺少 watchdog：pip install watchdog")
 
     watch_root = watch_root.expanduser().resolve()
-    out_resolved = (watch_root / "output") if output_dir is None else Path(output_dir).resolve()
+    out_resolved = DEFAULT_OUTPUT_DIR if output_dir is None else Path(output_dir).resolve()
     handler_state = _VideoHandler(
         output_dir=output_dir,
         model_repo=model_repo,
@@ -966,7 +971,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument(
         "--output-dir",
         type=Path,
-        help="产出目录（默认 <视频同级>/output 或监听目录/output）",
+        default=DEFAULT_OUTPUT_DIR,
+        help="产出目录（默认仓库内 work/asr/，五分结构中转侧；显式指定可覆盖）",
     )
     p.add_argument("--force", action="store_true", help="产物已存在时仍重跑")
     p.add_argument(

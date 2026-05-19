@@ -56,7 +56,7 @@ python video2blog.py -w
 
 详见 `memory/CONFIG.md`、`使用说明.md §1.5 / §3`。
 
-产物：**五分结构下转写须带 `--output-dir work/asr`**（脚本默认会写 `<视频目录>/output/` 即落回输入侧，详见 `memory/CONFIG.md`）；随后在此仓库内对 `work/asr/<stem>.txt` 用 Agent 跑 Step 3–8。
+产物：脚本默认即写仓库内 `work/asr/<stem>.{txt,srt,meta.json}`（五分结构中转侧，无需手动指定；`--output-dir` 可覆盖）；随后对 `work/asr/<stem>.txt` 用 Agent 跑 Step 3–8。
 
 ## 权威文档
 
