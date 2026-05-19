@@ -12,8 +12,8 @@ description: Step 4 结构化提炼——观点、金句、案例数据、待确
 
 ## 执行前必读
 
-- `Knowledge/ROUTER.md` — 知道当前路由默认走哪个 Structure（决定哪类条目权重最高）
-- 对应 `Knowledge/Structures/<file>.md` 全文（Step 5 展开前你心里要有目录）
+- `knowledge/ROUTER.md` — 知道当前路由默认走哪个 Structure（决定哪类条目权重最高）
+- 对应 `knowledge/Structures/<file>.md` 全文（Step 5 展开前你心里要有目录）
 
 ## ROUTING 侧重权重（决定每类提取多少条）
 

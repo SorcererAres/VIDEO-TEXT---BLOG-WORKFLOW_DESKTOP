@@ -12,7 +12,7 @@ description: Step 5 选定叙事骨架并生成文章提纲（不写正文）。
 
 ## 执行前必读
 
-1. **`Knowledge/ROUTER.md`** — 路由到 Structure 的**唯一映射来源**（不要再去 SKILL 里找硬编码）。
+1. **`knowledge/ROUTER.md`** — 路由到 Structure 的**唯一映射来源**（不要再去 SKILL 里找硬编码）。
 2. `视频博文工作流-架构版.md` — §4.3 工作流差异化要点。
 3. 按 ROUTER 选定的 Structure 文件**全文读完**并显性引用。
 
@@ -24,8 +24,8 @@ description: Step 5 选定叙事骨架并生成文章提纲（不写正文）。
 
 ```
 > Routing → /<xxx>
-> 默认 Structure：Knowledge/Structures/<file>.md
-> 替补：Knowledge/Structures/<file>.md
+> 默认 Structure：knowledge/Structures/<file>.md
+> 替补：knowledge/Structures/<file>.md
 > 用 "STRUCTURE → x" 覆盖；不回复或写 "端到端" 视为接受默认。
 ```
 
@@ -36,7 +36,7 @@ description: Step 5 选定叙事骨架并生成文章提纲（不写正文）。
 ```markdown
 ## 叙事模板（写明引用）
 
-- 沿用 `Knowledge/Structures/<选定文件>.md` 的 <小节名> 小节
+- 沿用 `knowledge/Structures/<选定文件>.md` 的 <小节名> 小节
 - （引用一句该文件原文以证明确实读了）
 
 ## 标题候选（3）
@@ -63,4 +63,4 @@ description: Step 5 选定叙事骨架并生成文章提纲（不写正文）。
 
 - 在此步写成完整段落正文（跳过 Step 6）。
 - 跳过 Before Starting 块直接给骨架——除非用户已显式覆盖或声明端到端。
-- 选用未在 `Knowledge/ROUTER.md` 列出的文件。
+- 选用未在 `knowledge/ROUTER.md` 列出的文件。

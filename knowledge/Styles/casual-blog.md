@@ -15,5 +15,5 @@
 
 ## 禁止
 
-- `Context/PREFERENCES.md` 中列明的禁用套话。
+- `memory/PREFERENCES.md` 中列明的禁用套话。
 - 「作为 AI」「让我来帮你总结」等元叙述。

@@ -22,19 +22,19 @@ description: Step 6 依据骨架与 Knowledge 文风写第一人称成稿 Markdo
 
 ## 执行前必读
 
-1. `Context/PREFERENCES.md`
-2. **`Knowledge/ROUTER.md`** — 路由到 Style 的**唯一映射来源**（不要在此 SKILL 里找硬编码）。
+1. `memory/PREFERENCES.md`
+2. **`knowledge/ROUTER.md`** — 路由到 Style 的**唯一映射来源**（不要在此 SKILL 里找硬编码）。
 3. 按 ROUTER 选定的 Style 文件**全文读完**。
-4. **`Knowledge/Prompts/zh-cn-mix.md`** 全部硬约束条目（永远加载，与 ROUTING 无关）。
-5. 若 `Knowledge/Examples/` 下有匹配 Style 的成品，**读一篇**作为节奏参照（不照抄措辞）。
+4. **`knowledge/Prompts/zh-cn-mix.md`** 全部硬约束条目（永远加载，与 ROUTING 无关）。
+5. 若 `knowledge/Examples/` 下有匹配 Style 的成品，**读一篇**作为节奏参照（不照抄措辞）。
 
 ## Before Starting（必输出，除非用户已声明 `STYLE → xxx` 或写了「端到端跑」）
 
 ```
 > Routing → /<xxx>
-> 默认 Style：Knowledge/Styles/<file>.md
-> 替补：Knowledge/Styles/<file>.md
-> Examples 参照：Knowledge/Examples/<file>.md（无则注明「无可参照」）
+> 默认 Style：knowledge/Styles/<file>.md
+> 替补：knowledge/Styles/<file>.md
+> Examples 参照：knowledge/Examples/<file>.md（无则注明「无可参照」）
 > 用 "STYLE → x" 覆盖；不回复或写 "端到端" 视为接受默认。
 ```
 
@@ -42,7 +42,7 @@ description: Step 6 依据骨架与 Knowledge 文风写第一人称成稿 Markdo
 
 成稿正文首行前使用 HTML 注释声明引用，便于检索且不影响渲染：
 
-<!-- video2blog: Style=Knowledge/Styles/<file>.md Structure=Knowledge/Structures/<file>.md Prompt=Knowledge/Prompts/zh-cn-mix.md -->
+<!-- video2blog: Style=knowledge/Styles/<file>.md Structure=knowledge/Structures/<file>.md Prompt=knowledge/Prompts/zh-cn-mix.md -->
 
 （其中 Structure 沿用 Step 5 已选定值，保持一致。）
 
@@ -65,8 +65,8 @@ description: Step 6 依据骨架与 Knowledge 文风写第一人称成稿 Markdo
 
 - 编造未出现在清洗稿的事实。
 - 引入播客式互动乞讨话术。
-- 在 HTML 注释里写"Style=Knowledge/Styles/xxx.md"这种占位——必须是真实选定的文件名。
-- 选用未在 `Knowledge/ROUTER.md` 列出的 Style。
+- 在 HTML 注释里写"Style=knowledge/Styles/xxx.md"这种占位——必须是真实选定的文件名。
+- 选用未在 `knowledge/ROUTER.md` 列出的 Style。
 - **视角错位**：以"看完视频的人"为「我」（典型措辞：「我把这期采访看完了」「这场分享我抄走三句」）——必须以演讲人本人为「我」。
 - **混入编者评论**：在演讲人独白里插入"我作为读者觉得"「跨篇对比」「补充观察」「一句我没听进去」类外部视角段落。
 - **跨视频引证**：拿 HISTORY 里其他博文 / 其他演讲人的话来佐证本篇观点——HISTORY 只供风格指纹比对，不是论据。

@@ -12,7 +12,7 @@ description: Step 7 五维打分，决定去留或标 DRAFT。
 
 ## 执行前可读
 
-- `Context/HISTORY.md` —— 检视风格是否与近作过于发散（若不适用则说明「无历史可比」）。
+- `memory/HISTORY.md` —— 检视风格是否与近作过于发散（若不适用则说明「无历史可比」）。
 
 ## 评分维度（各 1–10，求和）
 
@@ -54,16 +54,16 @@ PASS | REVIEW
 
 ## Re-Brief（必填，引用 AGENTS.md §不变量）
 
-> 1. Context/ 已读：PREFERENCES ✓ / CONFIG ✓ / HISTORY ✓|无可比
+> 1. memory/ 已读：PREFERENCES ✓ / CONFIG ✓ / HISTORY ✓|无可比
 > 2. ENTRY → <video|transcript>、ROUTING → /<xxx>、SOURCE → <path> 已声明 ✓
 > 3. clean-transcript 已完成（或豁免原因：<…>）✓
-> 4. Step 5 引用 Knowledge/Structures/<file>.md；Step 6 引用 Knowledge/Styles/<file>.md + Prompts/zh-cn-mix.md ✓
+> 4. Step 5 引用 knowledge/Structures/<file>.md；Step 6 引用 knowledge/Styles/<file>.md + Prompts/zh-cn-mix.md ✓
 > 5. 评分判定：PASS|REVIEW；占位符检测：通过|命中<文件:字段>
 ```
 
 ## 与 Step 8 的衔接
 
-本 Step 的**完整输出**（评分表 + 判定 + 修订清单 + Re-Brief）将被 Step 8 `format-output` 复制到 `Context/Work/Reviews/<YYYY-MM-DD>-<slug>.review.md`。因此：
+本 Step 的**完整输出**（评分表 + 判定 + 修订清单 + Re-Brief）将被 Step 8 `format-output` 复制到 `output/Reviews/<YYYY-MM-DD>-<slug>.review.md`。因此：
 
 - 不要"口头说一下评分"，必须按上节模板**写全**。
 - 评分依据列要言之有物，事后翻 Review 文件时还能看懂。

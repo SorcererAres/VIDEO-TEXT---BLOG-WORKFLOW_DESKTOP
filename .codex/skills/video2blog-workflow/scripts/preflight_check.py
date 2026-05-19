@@ -44,7 +44,7 @@ def strip_explanatory_lines(text: str) -> list[tuple[int, str]]:
 
 def placeholder_hits(repo: Path) -> list[str]:
     hits: list[str] = []
-    for rel in ("Context/PREFERENCES.md", "Context/CONFIG.md", "Context/HISTORY.md"):
+    for rel in ("memory/PREFERENCES.md", "memory/CONFIG.md", "memory/HISTORY.md"):
         path = repo / rel
         text = read(path)
         for lineno, line in strip_explanatory_lines(text):
@@ -70,7 +70,7 @@ def find_after(text: str, pattern: str) -> str | None:
 def config_input_root(text: str) -> str:
     if "VIDEO2BLOG_INPUT_ROOT" in text:
         return "$VIDEO2BLOG_INPUT_ROOT（或 --input-root）"
-    return "见 Context/CONFIG.md"
+    return "见 memory/CONFIG.md"
 
 
 def history_summary(text: str) -> str:
@@ -94,7 +94,7 @@ def router_mapping(text: str, route: str) -> tuple[str, str]:
     for line in text.splitlines():
         cells = [cell.strip(" `") for cell in line.strip().strip("|").split("|")]
         if len(cells) >= 3 and cells[0] == route:
-            return f"Knowledge/{cells[1]}", f"Knowledge/{cells[2]}"
+            return f"knowledge/{cells[1]}", f"knowledge/{cells[2]}"
     return "未解析", "未解析"
 
 
@@ -131,10 +131,10 @@ def main() -> int:
     args = parser.parse_args()
 
     repo = args.repo.expanduser().resolve()
-    prefs = read(repo / "Context/PREFERENCES.md")
-    config = read(repo / "Context/CONFIG.md")
-    router = read(repo / "Knowledge/ROUTER.md")
-    history = read(repo / "Context/HISTORY.md")
+    prefs = read(repo / "memory/PREFERENCES.md")
+    config = read(repo / "memory/CONFIG.md")
+    router = read(repo / "knowledge/ROUTER.md")
+    history = read(repo / "memory/HISTORY.md")
 
     hits = placeholder_hits(repo)
     if hits:

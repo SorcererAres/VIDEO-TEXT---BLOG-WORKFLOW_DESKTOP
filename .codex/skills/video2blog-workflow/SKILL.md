@@ -11,10 +11,10 @@ Treat the repository as the source of truth. This Codex skill is an adapter for 
 
 Before processing any video-to-blog or transcript-to-blog request, read these repo files:
 
-1. `Context/PREFERENCES.md`
-2. `Context/CONFIG.md`
-3. `Knowledge/ROUTER.md`
-4. `Context/HISTORY.md` when quality check or style comparison is needed
+1. `memory/PREFERENCES.md`
+2. `memory/CONFIG.md`
+3. `knowledge/ROUTER.md`
+4. `memory/HISTORY.md` when quality check or style comparison is needed
 
 Then run the Step 3-8 chain by reading the repo-local step contracts:
 
@@ -43,7 +43,7 @@ Never skip Step 4-7 unless the user explicitly accepts `DRAFT`; still record the
 > ENTRY → video | transcript
 > ROUTING → /default | /lecture | /dialogue | /screencast | /meeting
 > SOURCE → <path>
-> ROUTER → Structure=Knowledge/Structures/<f>.md｜Style=Knowledge/Styles/<f>.md（由 ROUTER.md 解析；用户覆盖时回显覆盖值）
+> ROUTER → Structure=knowledge/Structures/<f>.md｜Style=knowledge/Styles/<f>.md（由 ROUTER.md 解析；用户覆盖时回显覆盖值）
 ```
 
 If `ROUTING` is absent, suggest one from the source filename and first 200 characters, then wait for confirmation unless the user wrote `端到端跑`, `跳过确认`, or an equivalent instruction.
@@ -56,7 +56,7 @@ If `ROUTING` is absent, suggest one from the source filename and first 200 chara
 
 ## Routing
 
-Use `Knowledge/ROUTER.md` as the only mapping source. Support:
+Use `knowledge/ROUTER.md` as the only mapping source. Support:
 
 - `/default`
 - `/lecture`
@@ -72,18 +72,18 @@ STYLE → deep-dive
 SPEAKER → 某某
 ```
 
-If an override is not listed in `Knowledge/ROUTER.md` or does not resolve to an existing file, stop and list valid options.
+If an override is not listed in `knowledge/ROUTER.md` or does not resolve to an existing file, stop and list valid options.
 
 ## Output And Files
 
 When Step 8 writes files, use normal Codex file editing rules and the repo contract:
 
-- PASS post: `Context/Work/Posts/<YYYY>/<YYYY-MM-DD>-<slug>.md`
-- DRAFT post: `Context/Work/Posts/<YYYY>/DRAFT-<YYYY-MM-DD>-<slug>.md`
-- Review: `Context/Work/Reviews/<YYYY-MM-DD>-<slug>.review.md`
-- History update: append to `Context/HISTORY.md` and keep only the latest 10 records
+- PASS post: `output/Posts/<YYYY>/<YYYY-MM-DD>-<slug>.md`
+- DRAFT post: `output/Posts/<YYYY>/DRAFT-<YYYY-MM-DD>-<slug>.md`
+- Review: `output/Reviews/<YYYY-MM-DD>-<slug>.review.md`
+- History update: append to `memory/HISTORY.md` and keep only the latest 10 records
 
-Do not write finished posts into `drafts/`; that is input-side storage.
+Do not write finished posts into `input/Text/`; that is input-side storage.
 
 ## Verification
 
@@ -92,7 +92,7 @@ After writing outputs:
 1. Run a placeholder scan on the changed files.
 2. Confirm the Review contains the Step 7 score table and Re-Brief.
 3. Confirm the post frontmatter matches Step 8's required fields.
-4. Confirm `Context/HISTORY.md` contains an演讲人第一人称 summary and at most 10 records.
+4. Confirm `memory/HISTORY.md` contains an演讲人第一人称 summary and at most 10 records.
 
 ## Resource
 

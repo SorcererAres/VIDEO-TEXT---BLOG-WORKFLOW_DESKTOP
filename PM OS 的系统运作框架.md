@@ -6,7 +6,7 @@ PM OS 的系统运作框架
 
 #	规则	设计意图
 1
-每次响应前读 Context/ 文件
+每次响应前读 memory/ 文件
 防止 LLM 丢失用户上下文——长对话中模型会"忘记"你是谁、产品是什么
 2
 PM 请求必须路由到工作流
@@ -18,7 +18,7 @@ PM 请求必须路由到工作流
 只问一个问题，不替你回答
 "记者/间谍法则"——PM 的价值在于自己想清楚，AI 的价值在于问对问题
 5
-给观点前必须引用 Knowledge/ 框架
+给观点前必须引用 knowledge/ 框架
 防止 LLM 给泛泛 PM 建议——你有 300+ 精选框架，不用它们就是浪费
 为什么是这 5 条？ 因为这 5 条对抗的是 LLM 做 PM 助手时最常犯的 5 个错：忘上下文、跳流程、过度输出、替用户想、给泛泛建议。
 
@@ -65,7 +65,7 @@ Step 5: structure-recommendation   → 金字塔原理结构化建议
 Step 6: define-davci               → DAVCI 决策权矩阵 + 沟通计划
 步间控制：默认每步之间确认是否继续；用户说"端到端跑"则跳过确认。
 
-Before starting：每个工作流开头会扫描 Knowledge/ 目录，找到 3-5 个相关框架，让用户选择用哪些——这保证了框架不是硬编码的，而是根据具体问题动态匹配。
+Before starting：每个工作流开头会扫描 knowledge/ 目录，找到 3-5 个相关框架，让用户选择用哪些——这保证了框架不是硬编码的，而是根据具体问题动态匹配。
 
 五、执行层：Skill = 结构化 Prompt
 每个 skill 是一个 SKILL.md 文件，本质是一个精心设计的 prompt：
@@ -108,12 +108,12 @@ STAR 故事、面试掌握
 系统
 ~5
 技能浏览器、迁移
-六、知识层：Knowledge/ = 静态知识库
-Knowledge/ 不参与执行，但被两个地方引用：
+六、知识层：knowledge/ = 静态知识库
+knowledge/ 不参与执行，但被两个地方引用：
 
-工作流 Before starting → 扫描 Knowledge/ 找相关框架，让用户选择
-规则 5 → 给观点前必须引用 Knowledge/ 里的框架
-Knowledge/
+工作流 Before starting → 扫描 knowledge/ 找相关框架，让用户选择
+规则 5 → 给观点前必须引用 knowledge/ 里的框架
+knowledge/
 ├── Frameworks/        118个   ← 被 /strategy, /opportunity, /assumptions 引用
 ├── Prioritization/    50个    ← 被 /decisions, /opportunity 引用
 ├── Interview-Questions/ 6类   ← 被 /research 引用
@@ -121,29 +121,29 @@ Knowledge/
 ├── Metrics/           41个    ← 被北极星/OKR 相关工作流引用
 ├── PM Tasks/          25个    ← 会话结束时推荐练习
 └── Resources/         260+   ← Lenny 文章索引 + AI 工具指南
-七、个性化层：Context/ = 用户记忆
-Context/（读）
+七、个性化层：memory/ = 用户记忆
+memory/（读）
   ├── COMPANY.md      → 公司名、行业、竞品、融资阶段
   ├── PRODUCTS.md     → 产品名、阶段、核心价值、挑战
   ├── GOALS.md        → 90天目标、赢的定义
   ├── TEAM.md         → PM 级别、团队规模、核心摩擦
   ├── CONSTRAINTS.md  → 资源、技术、时间约束
   └── STAKEHOLDERS.md → 利益相关者画像（可选）
-Context/Work/（写）
+output/（写）
   ├── Decisions/      ← /decisions 输出
   ├── PRDs/           ← PRD 起草输出
   ├── Research/       ← /opportunity, /assumptions 输出
   ├── Reviews/        ← /review 输出
   ├── Strategy/       ← /strategy 输出
   └── Drills/         ← 练习记录
-设计意图：每次响应前读 Context/，相当于给 LLM 一个"工作记忆"——它始终知道你是谁、做什么、目标是什么、约束是什么。这比 system prompt 里的静态描述强得多，因为用户可以随时修改。
+设计意图：每次响应前读 memory/，相当于给 LLM 一个"工作记忆"——它始终知道你是谁、做什么、目标是什么、约束是什么。这比 system prompt 里的静态描述强得多，因为用户可以随时修改。
 
 八、模式不变量：Mode Invariance
 Cursor 模式切换（Ask / Plan / Debug / Agent）
   │
   ├─ 改变的：工具权限（Ask 不能写文件，Debug 不能写代码）
   │
-  └─ 不变的：5 条规则 + Pre-Flight + 路由 + Context 读取
+  └─ 不变的：5 条规则 + Pre-Flight + 路由 + memory/ 读取
 为什么？ 因为 Cursor 的模式 system prompt 会说 "this supersedes any other instructions"——如果不在 AGENTS.md 里硬编码模式不变量，LLM 就会认为切换到 Ask 模式后可以跳过 pre-flight block。
 
 九、自检机制：Self-Rebrief
@@ -153,11 +153,11 @@ Cursor 模式切换（Ask / Plan / Debug / Agent）
 完成大型任务后 — 输出 500+ 词后重新检查
 > Re-checking rules after large task:
 > 0. Context Guard checked ✓
-> 1. Read Context/ files before every response ✓
+> 1. Read memory/ files before every response ✓
 > 2. Route PM requests through pm-workflows ✓
 > 3. No deliverables without explicit permission ✓
 > 4. Ask one question — never give the answer ✓
-> 5. Cite Knowledge/ before any PM opinion ✓
+> 5. Cite knowledge/ before any PM opinion ✓
 设计意图：长对话中 LLM 会"规则漂移"——越聊越放松约束。自检是在高风险节点（路由前、大输出后）强制拉回来。
 
 总结：系统运作模型
@@ -173,7 +173,7 @@ Cursor 模式切换（Ask / Plan / Debug / Agent）
                                │ 放行
                     ┌──────────▼──────────┐
                     │  Pre-Flight (安检)    │
-                    │  读 5 个 Context 文件  │
+                    │  读 memory/ 读侧文件   │
                     │  输出状态块            │
                     └──────────┬──────────┘
                                │
@@ -188,11 +188,11 @@ Cursor 模式切换（Ask / Plan / Debug / Agent）
      │  Workflow 编排 (技能链)                 │
      │  Step1 → Step2 → ... → StepN          │
      │  每步: 读 SKILL.md → 执行 → 传给下一步   │
-     │  可选: 引用 Knowledge/ 框架增强          │
+     │  可选: 引用 knowledge/ 框架增强          │
      └────────┬──────────────────────────────┘
               │
      ┌────────▼──────┐
-     │  输出到 Work/   │
+     │  输出到 output/ │
      │  Decisions/    │
      │  PRDs/         │
      │  Research/     │

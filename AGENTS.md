@@ -4,8 +4,8 @@
 
 ## 不变量（与架构版一致）
 
-1. **先读**：`Context/PREFERENCES.md`、`Context/CONFIG.md`、**`Knowledge/ROUTER.md`**（路由→资源映射单一来源）；若质检需要风格对比再读 `Context/HISTORY.md`。
-2. **Pre-Flight Guard（占位符检测）**：读 `Context/` 后须扫描占位符；命中以下任一种即 **STOP** 并提示「先补全 `<文件>:<字段>` 再继续」：
+1. **先读**：`memory/PREFERENCES.md`、`memory/CONFIG.md`、**`knowledge/ROUTER.md`**（路由→资源映射单一来源）；若质检需要风格对比再读 `memory/HISTORY.md`。
+2. **Pre-Flight Guard（占位符检测）**：读 `memory/` 后须扫描占位符；命中以下任一种即 **STOP** 并提示「先补全 `<文件>:<字段>` 再继续」：
    - `____________`（四个及以上连续下划线，表示未填）
    - `YYYY-MM-DD`（HISTORY 模板行未替换；**首篇允许全空**，但若已有产出却仍是模板则按命中处理）
    - `[填写]` / `[TODO]` / `[占位]`
@@ -19,10 +19,10 @@
    > ENTRY → video | transcript
    > ROUTING → /default | /lecture | /dialogue | /screencast | /meeting
    > SOURCE → <path>
-   > ROUTER → Structure=Knowledge/Structures/<f>.md｜Style=Knowledge/Styles/<f>.md（由 ROUTER.md 解析；用户覆盖时回显覆盖值）
+   > ROUTER → Structure=knowledge/Structures/<f>.md｜Style=knowledge/Styles/<f>.md（由 ROUTER.md 解析；用户覆盖时回显覆盖值）
    ```
 
-   - `ENTRY → transcript` 必须给 `SOURCE`；`ENTRY → video` 的 `SOURCE` 指向 Step 2 产出的 `xxx.txt`。
+   - `ENTRY → transcript` 必须给 `SOURCE`；`ENTRY → video` 的 `SOURCE` 指向 Step 2 产出的 `work/asr/<stem>.txt`。
    - 用户未声明 `ROUTING` 时，按 SOURCE 文件名/前 200 字给**建议路由**并等确认（关键词映射见架构版 §三）。
 
 4. **技能链**：按 `视频博文工作流-架构版.md` Step 3–8 顺序加载 `.cursor/skills/video2blog/<step>/SKILL.md`，不得默认跳过 Step 4–7。（用户明确免责并标 `DRAFT` 时例外但仍须写出例外原因。）
@@ -54,9 +54,9 @@ python video2blog.py foo.mp4
 python video2blog.py -w
 ```
 
-详见 `Context/CONFIG.md`、`使用说明.md §1.5 / §3`。
+详见 `memory/CONFIG.md`、`使用说明.md §1.5 / §3`。
 
-产物默认：`<视频目录>/output/<stem>.{srt,txt}`；随后在此仓库内用 Agent 跑 Step 3–8。
+产物：**五分结构下转写须带 `--output-dir work/asr`**（脚本默认会写 `<视频目录>/output/` 即落回输入侧，详见 `memory/CONFIG.md`）；随后在此仓库内对 `work/asr/<stem>.txt` 用 Agent 跑 Step 3–8。
 
 ## 权威文档
 

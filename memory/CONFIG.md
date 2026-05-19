@@ -11,20 +11,20 @@
 
 ### 文字稿（`ENTRY → transcript`，不经 `video2blog.py`）
 
-- **文字稿输入文件根**（建议约定）：例如本仓库的 **`drafts/`**，或你自建的 `~/Notes/transcript-inbox`。Agent 指令里 `SOURCE → path` 推荐写成相对仓库根或绝对路径，避免歧义。
+- **文字稿输入文件根**（建议约定）：例如本仓库的 **`input/Text/`**，或你自建的 `~/Notes/transcript-inbox`。Agent 指令里 `SOURCE → path` 推荐写成相对仓库根或绝对路径，避免歧义。
 
 ## 路径（与上表配合）
 
 | 用途 | 路径 | 说明 |
 |---|---|---|
 | 视频收件箱（输入侧） | `$VIDEO2BLOG_INPUT_ROOT`（如 `~/Movies/inbox`） | 「视频输入文件根」；亦可用相对路径 + `-w 子目录` 分层 |
-| 脚本产物（中间产物） | `<视频所在目录>/output/<stem>.{srt,txt}` | 默认；亦可 `--output-dir` 覆盖 |
-| 文字稿收件箱（输入侧） | `drafts/`（或自建） | `ENTRY → transcript` 的源稿放这里 |
-| **博文定稿（输出侧）** | `Context/Work/Posts/<YYYY>/` | Step 8 落盘；PASS 与 `DRAFT-` 前缀都进此处 |
-| **质检报告（输出侧）** | `Context/Work/Reviews/` | Step 7 评分 + Re-Brief 留底 |
-| 风格指纹库 | `Context/HISTORY.md` | 最近 10 条，供 Step 7 比对 |
+| 脚本产物（中转侧） | `work/asr/<stem>.{srt,txt,meta.json}` | **五分结构约定：转写时显式带 `--output-dir work/asr`**。脚本默认会写 `<视频目录>/output/`（即 `input/Video/output/`，落回输入侧），不带 `--output-dir` 会破坏输入/中转分离 |
+| 文字稿收件箱（输入侧） | `input/Text/`（或自建） | `ENTRY → transcript` 的源稿放这里 |
+| **博文定稿（输出侧）** | `output/Posts/<YYYY>/` | Step 8 落盘；PASS 与 `DRAFT-` 前缀都进此处 |
+| **质检报告（输出侧）** | `output/Reviews/` | Step 7 评分 + Re-Brief 留底 |
+| 风格指纹库 | `memory/HISTORY.md` | 最近 10 条，供 Step 7 比对 |
 
-**严格区分输入侧 / 输出侧**：`drafts/` 是用户喂进来的源稿；`Context/Work/Posts/` 是 Agent 写出去的成品。两者不互串。
+**严格区分输入侧 / 输出侧**：`input/Text/` 是用户喂进来的源稿；`output/Posts/` 是 Agent 写出去的成品。两者不互串。
 
 ## 本地转录（Step 1–2）
 
@@ -41,4 +41,4 @@
 ## Agent 链（Step 3–8）
 
 - **技能根路径**：`.cursor/skills/video2blog/<step>/SKILL.md`
-- **知识库**：`Knowledge/`
+- **知识库**：`knowledge/`
