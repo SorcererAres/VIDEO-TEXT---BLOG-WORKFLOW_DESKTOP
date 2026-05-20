@@ -49,6 +49,12 @@ python3 video2blog.py -w --fallback-policy auto
 python3 video2blog.py --engine external --source transcript.srt placeholder.mp4
 ```
 
+### 在 Cursor / Codex / Claude Code 里跑
+
+这些 IDE/Agent 的内置终端是沙箱，通常拿不到 Metal，MLX 跑不动。脚本会**自动检测沙箱、用 osascript 开一个普通 macOS Terminal 重跑 mlx-whisper**——你不需要手动加 `--run-in-terminal`，产物照样落 `work/<stem>/`。
+
+禁用自动转：`--no-auto-terminal`，或 `export VIDEO2BLOG_NO_AUTO_TERMINAL=1`。
+
 ## Agent 写作
 
 正式长文：

@@ -40,3 +40,4 @@ work/<stem>/clean.md
 - MLX 模型：`VIDEO2BLOG_WHISPER_MODEL`
 - whisper.cpp 模型：`VIDEO2BLOG_WHISPER_CPP_MODEL` 或 `--whisper-cpp-model`
 - whisper.cpp 命令：`VIDEO2BLOG_WHISPER_CPP_BIN` 或 `--whisper-cpp-bin`
+- 沙箱自动转 Terminal：在 Cursor / Codex / Claude Code 内跑时，脚本会检测沙箱并自动用 osascript 开普通 macOS Terminal 重跑 MLX（绕开沙箱 Metal 限制）；禁用：`--no-auto-terminal` 或 `VIDEO2BLOG_NO_AUTO_TERMINAL=1`

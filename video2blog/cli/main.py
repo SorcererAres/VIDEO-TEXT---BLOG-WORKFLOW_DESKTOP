@@ -86,6 +86,21 @@ def launch_in_macos_terminal(command: list[str], cwd: Path) -> None:
         raise RuntimeError(proc.stderr or proc.stdout or "打开 macOS Terminal 失败")
 
 
+def in_sandbox() -> bool:
+    """检测 Cursor / Codex / Claude Code 这类 IDE/Agent 沙箱。
+
+    沙箱里的 Python 通常拿不到 Metal，需自动转到普通 macOS Terminal 才能用 mlx-whisper。
+    新增新沙箱时往下面 env 白名单加一条即可。
+    """
+    if os.environ.get("CLAUDECODE") == "1":  # Claude Code 内置
+        return True
+    if os.environ.get("TERM_PROGRAM", "").lower() in ("cursor", "vscode"):  # Cursor 基于 VSCode
+        return True
+    if any(k in os.environ for k in ("CURSOR_TRACE_ID", "CODEX_HOME", "CODEX_SESSION_ID")):
+        return True
+    return False
+
+
 def preferred_python_executable(cwd: Path) -> str:
     current = Path(sys.executable).resolve()
     with contextlib.suppress(ValueError):
@@ -183,6 +198,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="在普通 macOS Terminal 中重新执行 mlx-whisper 转录（用于绕开沙箱 Metal 限制）",
     )
+    p.add_argument(
+        "--no-auto-terminal",
+        action="store_true",
+        default=os.environ.get("VIDEO2BLOG_NO_AUTO_TERMINAL", "").strip() == "1",
+        help=(
+            "禁用沙箱自动转 Terminal：默认在 Cursor/Codex/Claude Code 内自动用 osascript "
+            "开普通 Terminal 跑 MLX，本 flag 关闭该行为（env VIDEO2BLOG_NO_AUTO_TERMINAL=1 同效）"
+        ),
+    )
     ns = p.parse_args(argv)
 
     watch_on = ns.watch is not None
@@ -260,6 +284,23 @@ def main(argv: list[str] | None = None) -> None:
     if not video.is_file():
         sys.exit(f"文件不存在：{video}")
     terminal_command = terminal_mlx_command(args, video)
+    needs_metal = args.engine in ("auto", "mlx")
+    if (
+        needs_metal
+        and not args.run_in_terminal
+        and not args.no_auto_terminal
+        and in_sandbox()
+    ):
+        print(
+            "⚙ 检测到 Cursor/Codex/Claude Code 沙箱，自动转 macOS Terminal 跑 MLX 以获取 Metal 加速。",
+            file=sys.stderr,
+        )
+        print(
+            "  (禁用：--no-auto-terminal 或 export VIDEO2BLOG_NO_AUTO_TERMINAL=1)",
+            file=sys.stderr,
+        )
+        launch_in_macos_terminal(terminal_command, Path.cwd())
+        return
     if args.run_in_terminal:
         launch_in_macos_terminal(terminal_command, Path.cwd())
         print("已在普通 macOS Terminal 启动 mlx-whisper 转录。", flush=True)
