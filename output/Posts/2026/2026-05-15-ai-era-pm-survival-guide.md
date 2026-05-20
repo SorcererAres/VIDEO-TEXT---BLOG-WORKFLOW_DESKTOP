@@ -1,12 +1,11 @@
 ---
-title: PM 不死，只是换代：AI 时代我给产品经理的生存指南
+title: "PM 不死，只是换代：AI 时代我给产品经理的生存指南"
 date: 2026-05-15
 entry: video
+mode: full
 routing: /lecture
-speaker: 巫师（AI 产品经理导师）
-structure: Knowledge/Structures/pyramid.md
-style: Knowledge/Styles/deep-dive.md
-source: Context/Work/Transcripts/PM觉醒计划：PM不死，只是换代-AI时代PM生存指南.txt
+speaker: "巫师（AI 产品经理导师）"
+source: "Context/Work/Transcripts/PM觉醒计划：PM不死，只是换代-AI时代PM生存指南.txt"
 pass_score: 52/60
 ---
 

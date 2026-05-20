@@ -2,10 +2,9 @@
 title: "如何读《联邦党人文集》第 10 篇：把命题拆回问题"
 date: 2026-05-19
 entry: video
+mode: full
 routing: /lecture
 speaker: "葛旭（教育者，孤独的阅读者创办者）"
-structure: Knowledge/Structures/pyramid.md
-style: Knowledge/Styles/deep-dive.md
 source: "drafts/media-input/output/2.1问题意识之如何阅读联邦党人文集.txt"
 pass_score: 55/60
 ---

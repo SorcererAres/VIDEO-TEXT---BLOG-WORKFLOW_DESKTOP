@@ -90,14 +90,6 @@ def history_summary(text: str) -> str:
     return "；".join(f"{date}《{title}》{summary}" for date, title, summary in recent)
 
 
-def router_mapping(text: str, route: str) -> tuple[str, str]:
-    for line in text.splitlines():
-        cells = [cell.strip(" `") for cell in line.strip().strip("|").split("|")]
-        if len(cells) >= 3 and cells[0] == route:
-            return f"knowledge/{cells[1]}", f"knowledge/{cells[2]}"
-    return "未解析", "未解析"
-
-
 def suggest_route(source_path: Path, sample: str) -> tuple[str, str]:
     haystack = f"{source_path.name}\n{sample[:200]}".lower()
     signals: list[str] = []
@@ -126,14 +118,16 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo", type=Path, default=Path.cwd())
     parser.add_argument("--entry", choices=["video", "transcript"], required=True)
+    parser.add_argument("--mode", choices=["full", "quick"], default="full")
     parser.add_argument("--source", required=True)
     parser.add_argument("--routing", choices=sorted(ROUTES))
     args = parser.parse_args()
 
     repo = args.repo.expanduser().resolve()
+    read(repo / "WORKFLOW.md")
     prefs = read(repo / "memory/PREFERENCES.md")
     config = read(repo / "memory/CONFIG.md")
-    router = read(repo / "knowledge/ROUTER.md")
+    read(repo / "knowledge/STYLE_GUIDE.md")
     history = read(repo / "memory/HISTORY.md")
 
     hits = placeholder_hits(repo)
@@ -159,15 +153,15 @@ def main() -> int:
     if routing is None:
         routing, signal = suggest_route(source, sample)
 
-    structure, style = router_mapping(router, routing)
     print("> Pre-Flight ✓")
     print(f"> PREFERENCES: {preference_summary(prefs)}")
     print(f"> CONFIG: input_root={config_input_root(config)}｜skills=.cursor/skills/video2blog/")
     print(f"> HISTORY: {history_summary(history)}")
     print(f"> ENTRY → {args.entry}")
+    print(f"> MODE → {args.mode}")
     print(f"> ROUTING → {routing}（{signal}）")
     print(f"> SOURCE → {source.relative_to(repo) if source.is_relative_to(repo) else source}")
-    print(f"> ROUTER → Structure={structure}｜Style={style}")
+    print("> STYLE → knowledge/STYLE_GUIDE.md + knowledge/Examples/<pick-one>")
     return 0
 
 

@@ -1,12 +1,11 @@
 ---
-title: 社交不是认识更多人：你在交换什么价值
+title: "社交不是认识更多人：你在交换什么价值"
 date: 2026-05-19
 entry: video
+mode: full
 routing: /lecture
-speaker: 葛旭（教育者，孤独的阅读者创办者）
-structure: Knowledge/Structures/pyramid.md
-style: Knowledge/Styles/deep-dive.md
-source: drafts/media-input/output/6.1问题意识-社交.txt
+speaker: "葛旭（教育者，孤独的阅读者创办者）"
+source: "drafts/media-input/output/6.1问题意识-社交.txt"
 pass_score: 55/60
 ---
 

@@ -1,64 +1,185 @@
 # 视频/文字稿 → 博文工作流
 
-把「口播视频」或「现成文字稿」改写成**以演讲人第一人称署名**的可发布 Markdown 博文。
+把口播视频、访谈、讲座、录屏讲解或现成文字稿，改写成**演讲人第一人称**的可发布 Markdown 博文。
 
-听写在本地完成（`mlx-whisper`，零云转录费、不上传音视频）；写作与质检在 Cursor / Codex / Claude Code 里由 Agent 按 SKILL 链跑，复用编辑器内置模型，**主路径不需要 API Key**。
+这个仓库负责两件事：
 
-## 它能做什么
+- 本地生成原始转录：`video2blog.py` 把视频转成 `work/<stem>/raw.txt|raw.srt|raw.log|meta.json`。
+- Agent 写作工作流：按 `WORKFLOW.md` 做清洗、提炼、结构、改写、质检和归档。
 
-- **两种入口**：`video`（跑脚本听写后改写）｜`transcript`（已有逐字稿/纪要，跳过听写直接改写）
-- **按体裁路由**：`/lecture` `/dialogue` `/screencast` `/meeting` `/default` → 自动选叙事结构与文风
-- **质检后落盘**：六维评分通过才进 `output/Posts/`，附 `output/Reviews/` 报告
-- **多宿主同源**：`.cursor` 与 `.codex` 下 SKILL 执行同一条契约驱动的链路
+`WORKFLOW.md` 是唯一运行合同；README 只帮助人快速理解和上手。
+
+## 适合什么场景
+
+- 把视频课、播客访谈、分享会、会议复盘整理成博客文章。
+- 把已有逐字稿、字幕、会议纪要改写成更像作者本人写的文章。
+- 保留每篇文章的质检报告、历史索引和风格指纹，方便之后复查和持续迭代。
+
+不适合直接把素材写成观众读后感。默认输出视角永远是“演讲人本人在写”。
 
 ## 快速开始
 
 ```bash
-# 1. 环境（仅 ENTRY→video 需要）
 brew install ffmpeg
-pip install -r requirements.txt
-
-# 2. 听写：视频 → 默认落仓库 work/asr/<stem>.{txt,srt,meta.json}
-python video2blog.py /path/to/分享.mp4
-
-# 3. 在 Cursor / Codex / Claude Code 里对 work/asr/xxx.txt 下达起手式：
-#    ENTRY → video ／ ROUTING → /lecture ／ SOURCE → work/asr/xxx.txt
-#    按 .cursor/skills/video2blog/ 的 Step 3–8 端到端跑
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install -r requirements.txt
 ```
 
-> 已有文字稿：放 `input/Text/`，跳过第 2 步，`ENTRY → transcript` 从 Step 3 起。
-> 完整命令、引擎/fallback、起手式细则见 [`使用说明.md`](使用说明.md)。
+默认开发环境使用 `.venv`；`.venv-codex` 仅作为历史兼容环境保留。
 
-## 目录结构（五分）
+视频入口：
 
-```
-input/      输入侧   Video/(视频,git-ignored) · Text/(文字稿源稿)
-knowledge/  写作配方  工作流契约.md · ROUTER.md · Structures/ Styles/ Prompts/
-memory/     读侧记忆  PREFERENCES · CONFIG · HISTORY
-work/       中转      asr/(原始ASR) · Transcripts/(规整稿)
-output/     写侧成品  Posts/<YYYY>/ · Reviews/
+```bash
+python3 video2blog.py /path/to/video.mp4
 ```
 
-输入 / 中转 / 输出三侧严格不互串。完整目录地图与数据流见 [`项目结构.md`](项目结构.md)。
+默认输出：
+
+```text
+work/<stem>/raw.txt
+work/<stem>/raw.srt
+work/<stem>/raw.log
+work/<stem>/meta.json
+```
+
+然后在 Codex / Claude Code / 其他 Agent 中给出：
+
+```text
+ENTRY → video
+MODE → full
+ROUTING → /lecture
+SOURCE → work/<stem>/raw.txt
+```
+
+已有清晰文字稿时，可跳过转录：
+
+```text
+ENTRY → transcript
+MODE → quick
+SOURCE → input/Text/example.md
+```
+
+## 两条入口
+
+| 入口 | 适用素材 | 先做什么 | Agent 从哪里接手 |
+|---|---|---|---|
+| `ENTRY → video` | `.mp4`、`.mov`、`.mkv` | 运行 `python3 video2blog.py <video>` | `work/<stem>/raw.txt` |
+| `ENTRY → transcript` | `.txt`、`.md`、`.srt`、已有文章 | 直接准备 `SOURCE` | `input/Text/*`、`work/*/clean.md` 或其他文本路径 |
+
+`MODE` 可选：
+
+- `full`：完整流程，适合正式长文和重要素材。
+- `quick`：轻量流程，适合清晰文字稿或小改写。
+
+`ROUTING` 可选：
+
+- `/lecture`：讲座、课程、单人分享。
+- `/dialogue`：访谈、对谈，默认嘉宾是“我”。
+- `/screencast`：录屏讲解、产品 walkthrough。
+- `/meeting`：会议、复盘、决策纪要。
+- `/default`：无法明确分类时使用，主声音方是“我”。
+
+## 项目结构
+
+```text
+input/       用户输入：Video/ 放视频，Text/ 放文字稿
+work/        中转：每个素材一个目录 work/<stem>/
+knowledge/   写作知识：STYLE_GUIDE.md + Examples/
+memory/      偏好、配置、历史索引、机器指纹
+output/      Posts/ 定稿，Reviews/ 质检报告
+Archive/     旧规则、旧知识库、设计背景
+```
+
+三条边界很重要：
+
+- `input/` 是原料，不放成品。
+- `work/` 是过程，不覆盖原始 ASR。
+- `output/` 是成品，PASS 与 DRAFT 都写到这里。
+
+## 输出结果
+
+正式通过的文章：
+
+```text
+output/Posts/<YYYY>/<YYYY-MM-DD>-<中文短标题>.md
+```
+
+用户明确接受的未通过稿：
+
+```text
+output/Posts/<YYYY>/DRAFT-<YYYY-MM-DD>-<中文短标题>.md
+```
+
+每篇文章对应一份 Review：
+
+```text
+output/Reviews/<YYYY-MM-DD>-<中文短标题>.review.md
+```
+
+Step 7 只判定 `PASS` 或 `REVIEW`。`DRAFT` 不是质检判定，而是用户明确接受 `REVIEW` 稿后，Step 8 落盘时使用的文件名前缀。
+
+输出目录继续保持英文；只把文章和 Review 文件名改为“日期 + 中文短标题”。中文短标题取自文章标题，去掉文件系统不安全字符和明显标点；同名冲突追加 `-v2`、`-v3`。
+
+## 常用命令
+
+设置视频输入根，之后可以传相对文件名：
+
+```bash
+export VIDEO2BLOG_INPUT_ROOT=~/Movies/inbox
+python3 video2blog.py foo.mp4
+```
+
+监听输入目录：
+
+```bash
+python3 video2blog.py -w --fallback-policy auto
+```
+
+使用外部字幕或文字稿作为转录源：
+
+```bash
+python3 video2blog.py --engine external --source transcript.srt placeholder.mp4
+```
+
+静态校验工作流文档和核心产物：
+
+```bash
+python3 scripts/validate_workflow.py
+```
+
+为文章生成或更新风格指纹：
+
+```bash
+python3 scripts/update_fingerprint.py output/Posts/2026/example.md
+```
+
+## 配置与记忆
+
+- `memory/PREFERENCES.md`：语言、人称、禁用表达、长度和写作偏好。
+- `memory/CONFIG.md`：路径、ASR 引擎、输出约定。
+- `memory/HISTORY.md`：最近 10 篇文章的人类可读索引。
+- `memory/fingerprints.jsonl`：机器生成的风格指纹，用于 Step 7 风格一致性参考。
+
+Pre-Flight 会扫描 `memory/` 中的占位符。命中 `____`、`YYYY-MM-DD`、`[填写]`、`[TODO]`、`[占位]` 时，Agent 应停止并报告文件与行号。
 
 ## 文档导航
 
-| 文档 | 读者 | 用途 |
-|---|---|---|
-| **本文 README** | 你 | 一分钟了解 + 快速开始 |
-| [`使用说明.md`](使用说明.md) | 你 | 安装、命令、对 Agent 起手式 |
-| [`项目结构.md`](项目结构.md) | 你 + Agent | 五分目录速查与数据流 |
-| [`knowledge/工作流契约.md`](knowledge/工作流契约.md) | Agent | **运行权威**：五规则 / 八步链 / 路由 / 差异化 |
-| [`AGENTS.md`](AGENTS.md) | Agent | 不变量、Pre-Flight、SKILL 链 |
-| [`Archive/`](Archive/) | 你 | 设计背景（已归档，不作运行依据） |
+| 文档 | 用途 |
+|---|---|
+| `WORKFLOW.md` | Agent 运行规则，唯一权威 |
+| `GUIDE.md` | 安装、目录、命令、常见任务 |
+| `AGENTS.md` / `CLAUDE.md` | 工具适配入口 |
+| `.codex/skills/video2blog-workflow/SKILL.md` | Codex skill 适配说明 |
+| `.cursor/skills/video2blog/` | Step 3-8 子步骤执行细则 |
+| `knowledge/STYLE_GUIDE.md` | 文风硬约束 |
+| `knowledge/Examples/` | few-shot 范文 |
+| `Archive/` | 旧规则与设计背景，只作历史参考 |
 
-## 工作原理
+## 运行原则
 
-```
-input/ ──(video2blog.py 或已有稿)──► work/ ──(Step 3–8 Agent)──► output/
-                              ▲ 每步读 knowledge/(配方) + memory/(偏好)
-        清洗 → 提要 → 选结构 → 第一人称改写 → 六维质检 → 定稿落盘
-```
-
-- **视角铁律**：博文一律以演讲人本人为「我」，禁观看者/编者视角与跨视频引证。
-- **运行单一来源**：Agent/SKILL 依赖的硬条款只认 `knowledge/工作流契约.md` 与 `ROUTER.md`。
+- 运行规则只改 `WORKFLOW.md`，不要在 README、AGENTS 或 CLAUDE 里复制一份新合同。
+- 写作必须引用 `knowledge/STYLE_GUIDE.md` 和至少一篇相近范文。
+- 正文禁止观看者、编者、跨视频评论视角。
+- 原始 ASR 层只追加和保留，不覆盖；清洗稿写 `work/<stem>/clean.md`。
+- PASS、REVIEW、DRAFT 的含义以 `WORKFLOW.md` 为准。

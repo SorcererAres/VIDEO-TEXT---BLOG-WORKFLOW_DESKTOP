@@ -1,12 +1,11 @@
 ---
-title: 问题意识不是抽象概念：它要在具体场景里练出来
+title: "问题意识不是抽象概念：它要在具体场景里练出来"
 date: 2026-05-19
 entry: video
+mode: full
 routing: /lecture
-speaker: 葛旭（教育者，孤独的阅读者创办者）
-structure: Knowledge/Structures/pyramid.md
-style: Knowledge/Styles/deep-dive.md
-source: drafts/media-input/output/问题意识-引入.txt
+speaker: "葛旭（教育者，孤独的阅读者创办者）"
+source: "drafts/media-input/output/问题意识-引入.txt"
 pass_score: 54/60
 ---
 

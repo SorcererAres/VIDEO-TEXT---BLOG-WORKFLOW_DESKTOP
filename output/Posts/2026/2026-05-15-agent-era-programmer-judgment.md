@@ -1,14 +1,14 @@
 ---
-title: 知道什么是好的，比能写出好的更难：Agent 时代我重新理解程序员
+title: "知道什么是好的，比能写出好的更难：Agent 时代我重新理解程序员"
 date: 2026-05-15
 entry: video
+mode: full
 routing: /dialogue
-speaker: Sonya（前 Meta 工程师，AI & Pharmaceutical 项目实践者）
-structure: Knowledge/Structures/debate.md
-style: Knowledge/Styles/casual-blog.md
-source: Context/Work/Transcripts/知道什么是好的，比能写出好的更难  Agent 时代的程序员、组织与判断力危机 - Indigo Talk EP47.txt
+speaker: "Sonya（前 Meta 工程师，AI & Pharmaceutical 项目实践者）"
+source: "Context/Work/Transcripts/知道什么是好的，比能写出好的更难  Agent 时代的程序员、组织与判断力危机 - Indigo Talk EP47.txt"
 pass_score: 50/60
 ---
+
 <!-- video2blog: Style=Knowledge/Styles/casual-blog.md Structure=Knowledge/Structures/debate.md Prompt=Knowledge/Prompts/zh-cn-mix.md Speaker=Sonya -->
 
 # 知道什么是好的，比能写出好的更难：Agent 时代我重新理解程序员

@@ -2,10 +2,9 @@
 title: "重建作者的逻辑：读者那一半工作怎么做"
 date: 2026-05-19
 entry: video
+mode: full
 routing: /lecture
 speaker: "葛旭（教育者，孤独的阅读者创办者）"
-structure: Knowledge/Structures/pyramid.md
-style: Knowledge/Styles/deep-dive.md
 source: "Context/Work/Transcripts/02 重建作者的逻辑.txt"
 pass_score: 52/60
 ---

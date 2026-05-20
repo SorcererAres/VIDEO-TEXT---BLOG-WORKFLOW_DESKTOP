@@ -1,14 +1,14 @@
 ---
-title: 问题意识：把答案还原成它正在回答的问题
+title: "问题意识：把答案还原成它正在回答的问题"
 date: 2026-05-19
 entry: video
+mode: full
 routing: /lecture
-speaker: 葛旭（教育者，孤独的阅读者创办者）
-structure: Knowledge/Structures/pyramid.md
-style: Knowledge/Styles/deep-dive.md
-source: drafts/media-input/output/1.问题意识是什么.txt
+speaker: "葛旭（教育者，孤独的阅读者创办者）"
+source: "drafts/media-input/output/1.问题意识是什么.txt"
 pass_score: 54/60
 ---
+
 <!-- video2blog: Style=Knowledge/Styles/deep-dive.md Structure=Knowledge/Structures/pyramid.md Prompt=Knowledge/Prompts/zh-cn-mix.md Speaker=葛旭 -->
 
 # 问题意识：把答案还原成它正在回答的问题

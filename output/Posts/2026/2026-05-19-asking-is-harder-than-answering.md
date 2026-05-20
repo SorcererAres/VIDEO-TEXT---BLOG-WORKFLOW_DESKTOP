@@ -2,10 +2,9 @@
 title: "回答不难，难的是提问：把问题意识练成本能"
 date: 2026-05-19
 entry: video
+mode: full
 routing: /lecture
 speaker: "葛旭（教育者，孤独的阅读者创办者）"
-structure: Knowledge/Structures/pyramid.md
-style: Knowledge/Styles/deep-dive.md
 source: "Context/Work/Transcripts/03 回答不难 难的是提问.txt"
 pass_score: 53/60
 ---

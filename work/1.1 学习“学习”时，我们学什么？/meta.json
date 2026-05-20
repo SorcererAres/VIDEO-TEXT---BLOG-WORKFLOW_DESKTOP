@@ -1,0 +1,25 @@
+{
+  "created_at": "2026-05-19T08:55:28.744324+00:00",
+  "source_video": "/Users/liangpeng/Downloads/1.1 学习“学习”时，我们学什么？.mp4",
+  "txt": "/Users/liangpeng/Library/Mobile Documents/com~apple~CloudDocs/_sorcerer/03_Dev/Video_Text - Blog Workflow/work/1.1 学习“学习”时，我们学什么？/raw.txt",
+  "srt": "/Users/liangpeng/Library/Mobile Documents/com~apple~CloudDocs/_sorcerer/03_Dev/Video_Text - Blog Workflow/work/1.1 学习“学习”时，我们学什么？/raw.srt",
+  "log": "/Users/liangpeng/Library/Mobile Documents/com~apple~CloudDocs/_sorcerer/03_Dev/Video_Text - Blog Workflow/work/1.1 学习“学习”时，我们学什么？/raw.log",
+  "engine_requested": "mlx",
+  "fallback_policy": "stop",
+  "execution_context": "current_process",
+  "stages": {
+    "raw": {
+      "created_at": "2026-05-19T08:55:28.744324+00:00",
+      "tool": "video2blog.py",
+      "txt": "/Users/liangpeng/Library/Mobile Documents/com~apple~CloudDocs/_sorcerer/03_Dev/Video_Text - Blog Workflow/work/1.1 学习“学习”时，我们学什么？/raw.txt",
+      "srt": "/Users/liangpeng/Library/Mobile Documents/com~apple~CloudDocs/_sorcerer/03_Dev/Video_Text - Blog Workflow/work/1.1 学习“学习”时，我们学什么？/raw.srt",
+      "log": "/Users/liangpeng/Library/Mobile Documents/com~apple~CloudDocs/_sorcerer/03_Dev/Video_Text - Blog Workflow/work/1.1 学习“学习”时，我们学什么？/raw.log"
+    }
+  },
+  "engine": "mlx-whisper",
+  "model": "mlx-community/whisper-large-v3-turbo",
+  "confidence": "native_asr",
+  "chunk_count": 1,
+  "segment_minutes": 0,
+  "timeout_seconds": 1800
+}

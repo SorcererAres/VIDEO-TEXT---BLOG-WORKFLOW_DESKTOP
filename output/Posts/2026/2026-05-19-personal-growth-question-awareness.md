@@ -1,12 +1,11 @@
 ---
-title: 个人成长不是听谁的话：让输入和输出回答同一个问题
+title: "个人成长不是听谁的话：让输入和输出回答同一个问题"
 date: 2026-05-19
 entry: video
+mode: full
 routing: /lecture
-speaker: 葛旭（教育者，孤独的阅读者创办者）
-structure: Knowledge/Structures/pyramid.md
-style: Knowledge/Styles/deep-dive.md
-source: drafts/media-input/output/5.1问题意识-个人成长.txt
+speaker: "葛旭（教育者，孤独的阅读者创办者）"
+source: "drafts/media-input/output/5.1问题意识-个人成长.txt"
 pass_score: 56/60
 ---
 

@@ -1,14 +1,14 @@
 ---
-title: 不做 AI 才是冒险：我为什么把理想推向具身智能
+title: "不做 AI 才是冒险：我为什么把理想推向具身智能"
 date: 2026-05-15
 entry: video
+mode: full
 routing: /dialogue
-speaker: 李想（理想汽车创始人）
-structure: Knowledge/Structures/debate.md
-style: Knowledge/Styles/casual-blog.md
+speaker: "李想（理想汽车创始人）"
 source: Context/Work/Transcripts/DM_20260515155830_001.txt
 pass_score: 51/60
 ---
+
 <!-- video2blog: Style=Knowledge/Styles/casual-blog.md Structure=Knowledge/Structures/debate.md Prompt=Knowledge/Prompts/zh-cn-mix.md Speaker=李想 -->
 
 # 不做 AI 才是冒险：我为什么把理想推向具身智能

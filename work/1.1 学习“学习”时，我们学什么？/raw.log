@@ -1,0 +1,28 @@
+[2026-05-19T16:54:12] process start: video=/Users/liangpeng/Downloads/1.1 学习“学习”时，我们学什么？.mp4, engine=auto, fallback_policy=ask, mlx_timeout_seconds=1800, segment_minutes=15.0
+[2026-05-19T16:54:12] ffmpeg extract start: /opt/homebrew/bin/ffmpeg -nostdin -y -i '/Users/liangpeng/Downloads/1.1 学习“学习”时，我们学什么？.mp4' -ac 1 -ar 16000 -vn /var/folders/3f/nkz9rcld3fq_ky64xpf8wc740000gn/T/video2blog_bl8p0w_2/audio.wav
+[2026-05-19T16:54:12] ffmpeg extract complete: /var/folders/3f/nkz9rcld3fq_ky64xpf8wc740000gn/T/video2blog_bl8p0w_2/audio.wav
+[2026-05-19T16:54:12] audio duration does not need chunking: duration=696.830875
+[2026-05-19T16:54:12] mlx parent start: wav=/var/folders/3f/nkz9rcld3fq_ky64xpf8wc740000gn/T/video2blog_bl8p0w_2/audio.wav, timeout=1800s, worker=subprocess
+[2026-05-19T16:54:12] mlx child start: /var/folders/3f/nkz9rcld3fq_ky64xpf8wc740000gn/T/video2blog_bl8p0w_2/audio.wav
+[2026-05-19T16:54:12] mlx child failed:
+Traceback (most recent call last):
+  File "<string>", line 26, in <module>
+    import mlx_whisper
+ModuleNotFoundError: No module named 'mlx_whisper'
+
+[2026-05-19T16:54:12] mlx-whisper 不可用：Traceback (most recent call last):
+  File "<string>", line 26, in <module>
+    import mlx_whisper
+ModuleNotFoundError: No module named 'mlx_whisper'
+[2026-05-19T16:55:10] process start: video=/Users/liangpeng/Downloads/1.1 学习“学习”时，我们学什么？.mp4, engine=mlx, fallback_policy=stop, mlx_timeout_seconds=1800, segment_minutes=15.0
+[2026-05-19T16:55:10] ffmpeg extract start: /opt/homebrew/bin/ffmpeg -nostdin -y -i '/Users/liangpeng/Downloads/1.1 学习“学习”时，我们学什么？.mp4' -ac 1 -ar 16000 -vn /var/folders/3f/nkz9rcld3fq_ky64xpf8wc740000gn/T/video2blog_j6ow0kbf/audio.wav
+[2026-05-19T16:55:10] ffmpeg extract complete: /var/folders/3f/nkz9rcld3fq_ky64xpf8wc740000gn/T/video2blog_j6ow0kbf/audio.wav
+[2026-05-19T16:55:10] audio duration does not need chunking: duration=696.830875
+[2026-05-19T16:55:10] mlx parent start: wav=/var/folders/3f/nkz9rcld3fq_ky64xpf8wc740000gn/T/video2blog_j6ow0kbf/audio.wav, timeout=1800s, worker=subprocess
+[2026-05-19T16:55:10] mlx child start: /var/folders/3f/nkz9rcld3fq_ky64xpf8wc740000gn/T/video2blog_j6ow0kbf/audio.wav
+Fetching 4 files:   0%|          | 0/4 [00:00<?, ?it/s]Fetching 4 files: 100%|██████████| 4/4 [00:00<00:00, 80273.76it/s]
+Detected language: Chinese
+  0%|          | 0/69683 [00:00<?, ?frames/s]  4%|▍         | 2706/69683 [00:00<00:15, 4305.05frames/s]  8%|▊         | 5600/69683 [00:01<00:12, 5068.39frames/s] 12%|█▏        | 8556/69683 [00:01<00:11, 5334.26frames/s] 17%|█▋        | 11530/69683 [00:02<00:11, 4965.17frames/s] 21%|██        | 14408/69683 [00:02<00:11, 5018.23frames/s] 25%|██▍       | 17230/69683 [00:03<00:09, 5339.81frames/s] 29%|██▉       | 20082/69683 [00:03<00:09, 5437.33frames/s] 33%|███▎      | 23050/69683 [00:04<00:09, 5178.01frames/s] 37%|███▋      | 25960/69683 [00:04<00:08, 5300.42frames/s] 42%|████▏     | 28920/69683 [00:05<00:07, 5237.08frames/s] 46%|████▌     | 31812/69683 [00:06<00:07, 5217.15frames/s] 50%|████▉     | 34756/69683 [00:06<00:06, 5150.03frames/s] 54%|█████▍    | 37692/69683 [00:07<00:06, 5297.05frames/s] 58%|█████▊    | 40572/69683 [00:07<00:05, 5229.18frames/s] 62%|██████▏   | 43412/69683 [00:08<00:05, 5166.89frames/s] 66%|██████▋   | 46246/69683 [00:08<00:04, 5059.78frames/s] 71%|███████   | 49140/69683 [00:09<00:04, 4984.90frames/s] 75%|███████▍  | 51940/69683 [00:10<00:03, 5073.46frames/s] 79%|███████▉  | 54880/69683 [00:10<00:02, 5171.46frames/s] 83%|████████▎ | 57764/69683 [00:11<00:02, 5395.02frames/s] 87%|████████▋ | 60626/69683 [00:11<00:01, 5408.68frames/s] 91%|█████████ | 63410/69683 [00:12<00:01, 5393.74frames/s] 95%|█████████▌| 66202/69683 [00:12<00:00, 5257.09frames/s] 99%|█████████▉| 69160/69683 [00:13<00:00, 5171.90frames/s]100%|██████████| 69683/69683 [00:13<00:00, 4863.37frames/s]100%|██████████| 69683/69683 [00:13<00:00, 5160.45frames/s]
+[2026-05-19T16:55:28] mlx child complete: /var/folders/3f/nkz9rcld3fq_ky64xpf8wc740000gn/T/video2blog_j6ow0kbf/audio.wav
+[2026-05-19T16:55:28] mlx parent complete: wav=/var/folders/3f/nkz9rcld3fq_ky64xpf8wc740000gn/T/video2blog_j6ow0kbf/audio.wav
+[2026-05-19T16:55:28] process complete: txt=/Users/liangpeng/Library/Mobile Documents/com~apple~CloudDocs/_sorcerer/03_Dev/Video_Text - Blog Workflow/work/1.1 学习“学习”时，我们学什么？/raw.txt, srt=/Users/liangpeng/Library/Mobile Documents/com~apple~CloudDocs/_sorcerer/03_Dev/Video_Text - Blog Workflow/work/1.1 学习“学习”时，我们学什么？/raw.srt, meta=/Users/liangpeng/Library/Mobile Documents/com~apple~CloudDocs/_sorcerer/03_Dev/Video_Text - Blog Workflow/work/1.1 学习“学习”时，我们学什么？/meta.json

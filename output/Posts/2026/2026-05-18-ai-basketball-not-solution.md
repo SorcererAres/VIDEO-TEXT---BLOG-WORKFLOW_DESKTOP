@@ -1,14 +1,14 @@
 ---
-title: 别再买 AI 解决方案了，先自己拍那个球
+title: "别再买 AI 解决方案了，先自己拍那个球"
 date: 2026-05-18
 entry: video
+mode: full
 routing: /dialogue
-speaker: 巫师（AI 产品经理导师）
-structure: Knowledge/Structures/debate.md
-style: Knowledge/Styles/casual-blog.md
+speaker: "巫师（AI 产品经理导师）"
 source: drafts/media-input/output/lhJh1GzpvlaQgiohXkl7TwWLC2Y6.txt
 pass_score: 53/60
 ---
+
 <!-- video2blog: Style=Knowledge/Styles/casual-blog.md Structure=Knowledge/Structures/debate.md Prompt=Knowledge/Prompts/zh-cn-mix.md Speaker=巫师 -->
 
 # 别再买 AI 解决方案了，先自己拍那个球

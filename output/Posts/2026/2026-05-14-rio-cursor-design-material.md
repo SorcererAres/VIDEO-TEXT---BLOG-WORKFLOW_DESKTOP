@@ -1,14 +1,14 @@
 ---
-title: 别再只画 Figma 了：我在 Cursor 看到的设计新材料
+title: "别再只画 Figma 了：我在 Cursor 看到的设计新材料"
 date: 2026-05-14
 entry: video
+mode: full
 routing: /dialogue
-speaker: Rio（Cursor 设计负责人）
-structure: Knowledge/Structures/debate.md
-style: Knowledge/Styles/casual-blog.md
+speaker: "Rio（Cursor 设计负责人）"
 source: input/Video/output/BnL5qaBzmR0.txt
 pass_score: 51/60
 ---
+
 # 别再只画 Figma 了：我在 Cursor 看到的设计新材料
 
 我是 Rio，现在在 Cursor 做设计负责人。过去一年，我越来越强烈地感觉到一件事：如果你真正想做软件，视觉当然重要，但它只是一层。

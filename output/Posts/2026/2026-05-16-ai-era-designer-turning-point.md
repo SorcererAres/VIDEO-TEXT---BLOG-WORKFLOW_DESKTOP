@@ -1,14 +1,14 @@
 ---
-title: AI 时代，设计师不会消失，但只会画图的人会先离场
+title: "AI 时代，设计师不会消失，但只会画图的人会先离场"
 date: 2026-05-16
 entry: video
+mode: full
 routing: /lecture
-speaker: 阿蔡（AI 设计团队负责人）
-structure: Knowledge/Structures/pyramid.md
-style: Knowledge/Styles/deep-dive.md
-source: /Users/sorcererdesign/Downloads/output/AI时代，设计师真的会被取代吗？.txt
+speaker: "阿蔡（AI 设计团队负责人）"
+source: "/Users/sorcererdesign/Downloads/output/AI时代，设计师真的会被取代吗？.txt"
 pass_score: 49/60
 ---
+
 <!-- video2blog: Style=Knowledge/Styles/deep-dive.md Structure=Knowledge/Structures/pyramid.md Prompt=Knowledge/Prompts/zh-cn-mix.md Speaker=阿蔡 -->
 
 # AI 时代，设计师不会消失，但只会画图的人会先离场

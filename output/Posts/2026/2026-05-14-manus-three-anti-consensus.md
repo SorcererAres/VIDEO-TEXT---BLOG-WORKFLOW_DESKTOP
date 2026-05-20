@@ -1,12 +1,11 @@
 ---
-title: 不训模型、不抢入口、不卷垂直：我们做 Manus 这一年的三个反共识决定
+title: "不训模型、不抢入口、不卷垂直：我们做 Manus 这一年的三个反共识决定"
 date: 2026-05-14
 entry: video
+mode: full
 routing: /dialogue
-speaker: 季逍（Peak / Yichao Ji）
-structure: Knowledge/Structures/pyramid.md
-style: Knowledge/Styles/deep-dive.md
-source: input/Video/output/Manus Final Interview Before the Acquisition Oh, the Surreal Odyssey of 2025….txt
+speaker: "季逍（Peak / Yichao Ji）"
+source: "input/Video/output/Manus Final Interview Before the Acquisition Oh, the Surreal Odyssey of 2025….txt"
 pass_score: 50/60
 ---
 

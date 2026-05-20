@@ -1,4 +1,4 @@
 interface:
   display_name: "Video2Blog Workflow"
   short_description: "Run video-to-blog workflows in Codex."
-  default_prompt: "Use video2blog-workflow to process SOURCE with ENTRY and ROUTING, then run the required Step 3-8 workflow."
+  default_prompt: "Use video2blog-workflow to process SOURCE with ENTRY, MODE, and ROUTING according to WORKFLOW.md."

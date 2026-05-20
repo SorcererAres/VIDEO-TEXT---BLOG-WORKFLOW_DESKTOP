@@ -1,11 +1,10 @@
 ---
-title: 英雄主义结束后，我在 Anthropic 和 Gemini 学到的模型训练
+title: "英雄主义结束后，我在 Anthropic 和 Gemini 学到的模型训练"
 date: 2026-05-15
 entry: transcript
+mode: full
 routing: /dialogue
-speaker: 姚顺宇（Google DeepMind 研究员，曾任 Anthropic 研究员）
-structure: Knowledge/Structures/debate.md
-style: Knowledge/Styles/casual-blog.md
+speaker: "姚顺宇（Google DeepMind 研究员，曾任 Anthropic 研究员）"
 source: Context/Work/Transcripts/yao-shunyu-anthropic-gemini-source-notes.md
 pass_score: 49/60
 ---

@@ -1,67 +1,32 @@
 ---
 name: video2blog-clean-transcript
-description: Step 3 清洗转录/文字稿——去口头禅、合并碎片句、标注不确定段，不改动事实。
+description: Step 3 清洗转录/文字稿，不改动事实。
 ---
 
 # clean-transcript
 
-## 何时使用
+适用：`MODE → full` 必跑；`MODE → quick` 默认跳过，除非输入是原始 ASR。
 
-- `ENTRY → video`：Step 2 已产出 `.txt`；或用户指定 `SOURCE` 为 ASR 文本。
-- `ENTRY → transcript`：用户未声明 `SKIP clean` / `light-clean` 时执行完整清洗；若声明 `light-clean` 仅做中英文空格、换行与明显排版修复，并输出「豁免说明」供自检引用。
+执行前读 `WORKFLOW.md`、`memory/PREFERENCES.md`、`knowledge/STYLE_GUIDE.md`。
 
-## 执行前必读
+输入：`work/<stem>/raw.txt`、旧 `work/asr/*.txt`、或 `input/Text/*`。
 
-1. 仓库根目录 `memory/PREFERENCES.md`
-2. `knowledge/工作流契约.md` 一 — 控制规则 3
+输出：
 
-## Before Starting — 路由自动建议（用户未在 Pre-Flight 声明 `ROUTING` 时必跑）
+```markdown
+## 清洗稿
+...
 
-由于 Step 3 是用户与 Agent 实质接触原稿的第一步，路由若到 Step 5 才确定就太晚——清洗策略与体裁强相关（对谈要保留发问、纪要要锁住决议）。本步**强制**做一次路由识别：
+## 不确定清单
+- [?] ...
+```
 
-1. **抓信号**：读 `SOURCE` 文件名 + 原稿首 200 字 + 末 100 字（口播首尾常透露体裁）。
-2. **匹配规则**（按命中数 + 强弱）：
+落盘：写 `work/<stem>/clean.md`。不得覆盖 `raw.txt` 或旧 `work/asr/` 原始件。
 
-   | 候选 ROUTING | 强信号（任一即命中） | 弱信号（叠加才算） |
-   |---|---|---|
-   | `/dialogue` | 「访谈 / 对谈 / interview / dialogue / Q&A」、文件名含人名×2、问答交替 | 「你觉得 / 我想问 / 那您」高频 |
-   | `/lecture` | 「讲座 / talk / keynote / 分享」、单方独白 > 80% | 「今天我要讲 / 第一点 / 第二点」 |
-   | `/screencast` | 「demo / 录屏 / 教程 / screencast / walkthrough」、含"点击 / 打开 / 命令行" | 频繁出现 UI 元素名词 |
-   | `/meeting` | 「会议 / 复盘 / 周会 / standup / 决议 / 行动项」 | 「@某人 / DDL / 下周 / 上周」 |
-   | `/default` | 无强信号且不能定性 | — |
+要求：
 
-3. **输出建议**（紧贴清洗稿之前）：
-
-   ```
-   > Routing-Suggest（Step 3 自动识别）
-   > 命中：<信号 1>、<信号 2>
-   > 推荐 ROUTING → /<xxx>（置信度 高|中|低）
-   > 备选：/<yyy>
-   > 不同意请在下一轮指令里写 "ROUTING → /<xxx>" 覆盖；不回复或写"端到端"视为接受。
-   ```
-
-4. **置信度**：≥ 2 强信号 = 高；1 强 1 弱 = 中；其他 = 低。**低**时优先列两个备选。
-5. **跳过条件**：用户已在 Pre-Flight 声明 `ROUTING` → 不再建议，但仍要回显已声明值。
-
-## 输入
-
-- 原始文本（可内联或文件路径，由用户给出）
-
-## 输出格式
-
-1. `## 清洗稿` — 可读正文，语义忠于原稿。
-2. `## 不确定清单` — 逐项 `[?]` 及原因。
-3. 若 `light-clean`：附加 `## Step3 豁免` 简述原因与用户原话指令摘要。
-
-## 步骤
-
-1. 删除口头禅与无意义 filler（除非具有语气功能且 `PREFERENCES` 允许）。
-2. 合并过短fragment到相邻完整句；保留段落间距。
-3. 数字、单位与英文术语：`PREFERENCES` 要求的中英空格。
-4. 听辨存疑句：不改编，标注 `[?...]`。
-5. **禁止**增补事实、补全未说完整的故事。
-
-## 反例
-
-- 把口述猜测改成确定事实。
-- 「润色成一篇漂亮文章」（本步不负责文采，文采留给 Step 6）。
+- 删除口头禅、求互动话术、无意义重复。
+- 合并碎句，保留语义和顺序。
+- 中英数字混排按 `STYLE_GUIDE.md` 规范。
+- 不确定听辨标 `[?]`，不要猜成事实。
+- 不新增原稿没有的人名、书名、数据、案例。

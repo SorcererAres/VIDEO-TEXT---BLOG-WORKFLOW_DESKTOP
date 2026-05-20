@@ -2,10 +2,9 @@
 title: "别再向别人要书单：用问题意识选书"
 date: 2026-05-19
 entry: video
+mode: full
 routing: /lecture
 speaker: "葛旭（教育者，孤独的阅读者创办者）"
-structure: Knowledge/Structures/pyramid.md
-style: Knowledge/Styles/deep-dive.md
 source: "drafts/media-input/output/3.1问题意识-阅读部分.txt"
 pass_score: 55/60
 ---

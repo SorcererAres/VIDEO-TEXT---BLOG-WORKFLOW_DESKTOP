@@ -2,10 +2,9 @@
 title: "像老板一样思考：职场里的问题意识"
 date: 2026-05-19
 entry: video
+mode: full
 routing: /lecture
 speaker: "葛旭（教育者，孤独的阅读者创办者）"
-structure: Knowledge/Structures/pyramid.md
-style: Knowledge/Styles/deep-dive.md
 source: "drafts/media-input/output/4.1问题意识-职场.txt"
 pass_score: 55/60
 ---

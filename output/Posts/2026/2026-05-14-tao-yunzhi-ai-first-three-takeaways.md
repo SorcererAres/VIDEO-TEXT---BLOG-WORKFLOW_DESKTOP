@@ -1,16 +1,13 @@
 ---
-
-## title: 干眼症、修 prompt、月费用不完——我做 AI 这一年的三个肌肉记忆
+title: "干眼症、修 prompt、月费用不完——我做 AI 这一年的三个肌肉记忆"
 date: 2026-05-14
 entry: video
+mode: full
 routing: /lecture
-speaker: 陶韵智（前 Line 台湾总经理、Line Pay 商业模式发明人）
-structure: Knowledge/Structures/pyramid.md
-style: Knowledge/Styles/deep-dive.md
-source: input/Video/output/【AI First 自我升級革命】線上讀書會.txt
+speaker: "陶韵智（前 Line 台湾总经理、Line Pay 商业模式发明人）"
+source: "input/Video/output/【AI First 自我升級革命】線上讀書會.txt"
 pass_score: 49/60
-
-
+---
 
 # 干眼症、修 prompt、月费用不完——我做 AI 这一年的三个肌肉记忆
 
