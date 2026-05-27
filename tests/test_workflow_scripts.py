@@ -82,6 +82,44 @@ Body stays here.
             self.assertTrue(any("invalid routing" in item for item in errors))
             self.assertTrue(any("invalid pass_score" in item for item in errors))
 
+    def test_pass_score_regex_accepts_em_dash_for_parse_failed(self) -> None:
+        # 数字评分仍合法
+        self.assertIsNotNone(validate_workflow.PASS_SCORE_RE.fullmatch("57/60"))
+        self.assertIsNotNone(validate_workflow.PASS_SCORE_RE.fullmatch("0/60"))
+        # Step 7 解析失败时引擎写 "—/60"，DRAFT 落盘后这是合法的"未评分"占位
+        self.assertIsNotNone(validate_workflow.PASS_SCORE_RE.fullmatch("—/60"))
+        self.assertIsNotNone(validate_workflow.PASS_SCORE_RE.fullmatch("-/60"))
+        # 真垃圾仍要拒
+        self.assertIsNone(validate_workflow.PASS_SCORE_RE.fullmatch("abc/60"))
+        self.assertIsNone(validate_workflow.PASS_SCORE_RE.fullmatch("57"))
+
+    def test_strip_frontmatter_handles_yaml_edge_cases(self) -> None:
+        # 引号必须被剥离——否则 routing/entry/mode/pass_score 的等值检查会误报。
+        data, body = validate_workflow.strip_frontmatter(
+            '---\nrouting: "/lecture"\npass_score: "55/60"\n---\nbody\n'
+        )
+        self.assertEqual(data["routing"], "/lecture")
+        self.assertEqual(data["pass_score"], "55/60")
+        self.assertIn("body", body)
+
+        # 值里的冒号不应破坏解析（split(":", 1) 已经能扛，留作回归）。
+        data, _ = validate_workflow.strip_frontmatter(
+            "---\ntitle: 学习：先弄清楚\n---\n"
+        )
+        self.assertEqual(data["title"], "学习：先弄清楚")
+
+        # 多行 block scalar 必须能被收上来，而不是被静默丢掉。
+        data, _ = validate_workflow.strip_frontmatter(
+            "---\ndesc: |\n  line1\n  line2\n---\n"
+        )
+        self.assertEqual(data["desc"], "line1\nline2")
+
+        # 畸形 YAML 必须 graceful 降级，不要把整个校验链炸掉。
+        data, body = validate_workflow.strip_frontmatter(
+            "---\ntitle: [unclosed\n---\nbody\n"
+        )
+        self.assertEqual(data, {})
+
     def test_validate_requires_fingerprint_for_published_posts(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)

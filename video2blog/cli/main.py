@@ -234,7 +234,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def terminal_mlx_command(args: argparse.Namespace, video: Path) -> list[str]:
     command = [
         preferred_python_executable(Path.cwd()),
-        str(Path(__file__).resolve()),
+        "-m",
+        "video2blog.cli.main",
         str(video),
         "--engine",
         "mlx",

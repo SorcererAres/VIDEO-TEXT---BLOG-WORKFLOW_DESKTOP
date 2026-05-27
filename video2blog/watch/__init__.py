@@ -8,7 +8,9 @@ import time
 from pathlib import Path
 from typing import Callable
 
+from video2blog.output import output_paths
 from video2blog.pipeline import VIDEO_EXT, process_video
+from video2blog.utils import append_log
 
 
 def wait_file_stable(path: Path, repeats: int = 3, delay: float = 1.2) -> None:
@@ -74,6 +76,8 @@ class _VideoHandler:
             return
 
         def run() -> None:
+            out_root = output_paths(path, self._output_dir, self._default_output_dir)
+            watch_log = out_root / "watch.log"
             try:
                 wait_file_stable(path)
                 process_video(
@@ -93,6 +97,9 @@ class _VideoHandler:
                     prompt_fallback_action=self._prompt_fallback_action,
                     launch_in_macos_terminal=self._launch_in_macos_terminal,
                 )
+            except Exception as exc:  # noqa: BLE001 - watchdog worker must not fail silently.
+                append_log(watch_log, f"watch job failed: video={path}, error={exc}")
+                print(f"[watch] 转录失败：{path}；详见 {watch_log}", file=sys.stderr, flush=True)
             finally:
                 lock.release()
 

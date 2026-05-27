@@ -4,37 +4,30 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sys
-import json
 from pathlib import Path
 
-PLACEHOLDER_RE = re.compile(r"_{4,}|YYYY-MM-DD|\[(?:填写|TODO|占位)\]")
-VIEWER_RE = re.compile(r"我看完|这场分享让我|我作为读者|编者按|补充观察|我抄走")
+import yaml
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from video2blog.utils import strip_frontmatter, VIEWER_RE, PLACEHOLDER_RE
 REQUIRED_FRONTMATTER = {"title", "date", "entry", "mode", "routing", "speaker", "source", "pass_score"}
 ENTRY_CHOICES = {"video", "transcript"}
 MODE_CHOICES = {"full", "quick"}
 ROUTING_CHOICES = {"/default", "/lecture", "/dialogue", "/screencast", "/meeting"}
-PASS_SCORE_RE = re.compile(r"^\d{1,2}/60$")
+# 允许 "x/60" 数字评分，也允许 "—/60" / "-/60"：后者表示 Step 7 解析失败时的合法"未评分"标记，
+# 用户明确接受为 DRAFT 后保留在 frontmatter，便于后续按 path 追溯到当时的质检状态。
+PASS_SCORE_RE = re.compile(r"^(?:\d{1,2}|[—-])/60$")
 
 
 def read(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
 
-
-def strip_frontmatter(text: str) -> tuple[dict[str, str], str]:
-    if not text.startswith("---\n"):
-        return {}, text
-    end = text.find("\n---", 4)
-    if end == -1:
-        return {}, text
-    raw = text[4:end]
-    data: dict[str, str] = {}
-    for line in raw.splitlines():
-        if ":" in line:
-            key, value = line.split(":", 1)
-            data[key.strip()] = value.strip()
-    return data, text[end + 4 :]
 
 
 def is_draft_post(path: Path) -> bool:

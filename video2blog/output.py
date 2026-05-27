@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from video2blog.utils import atomic_write
+
 
 def _json_safe(value: Any) -> Any:
     if value is None or isinstance(value, str | int | float | bool):
@@ -51,10 +53,7 @@ def write_meta(
         },
         **_json_safe(engine_meta),
     }
-    meta_path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    atomic_write(meta_path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
 
 
 def output_paths(video: Path, output_dir: Path | None, default_output_dir: Path) -> Path:

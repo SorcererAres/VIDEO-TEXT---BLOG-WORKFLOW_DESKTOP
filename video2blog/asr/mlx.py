@@ -33,6 +33,7 @@ import sys
 import traceback
 from datetime import datetime
 from pathlib import Path
+from video2blog.utils import atomic_write
 
 
 def json_safe(value):
@@ -62,10 +63,10 @@ try:
                 no_speech_threshold=0.6,
             )
         log_fh.write(f"[{datetime.now().isoformat(timespec='seconds')}] mlx child complete: {wav}\n")
-    Path(result_path).write_text(json.dumps(json_safe(raw), ensure_ascii=False), encoding="utf-8")
+    atomic_write(Path(result_path), json.dumps(json_safe(raw), ensure_ascii=False))
 except BaseException:
     tb = traceback.format_exc()
-    Path(error_path).write_text(tb, encoding="utf-8")
+    atomic_write(Path(error_path), tb)
     with Path(log_path).open("a", encoding="utf-8") as log_fh:
         log_fh.write(f"[{datetime.now().isoformat(timespec='seconds')}] mlx child failed:\n{tb}\n")
     sys.exit(1)

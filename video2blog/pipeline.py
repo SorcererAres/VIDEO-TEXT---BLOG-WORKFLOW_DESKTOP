@@ -13,7 +13,7 @@ from video2blog.asr.whisper_cpp import transcribe_audio_whisper_cpp
 from video2blog.media import extract_audio
 from video2blog.output import output_paths, write_meta
 from video2blog.transcript import normalize_transcription_result
-from video2blog.utils import append_log
+from video2blog.utils import append_log, atomic_write
 
 VIDEO_EXT = frozenset({".mp4", ".mov", ".mkv"})
 
@@ -142,8 +142,8 @@ def process_video(
             raise RuntimeError("转录结果为空")
 
         out_root.mkdir(parents=True, exist_ok=True)
-        txt_path.write_text(plain + "\n", encoding="utf-8")
-        srt_path.write_text(srt_body, encoding="utf-8")
+        atomic_write(txt_path, plain + "\n")
+        atomic_write(srt_path, srt_body)
         write_meta(
             meta_path,
             video=video,
