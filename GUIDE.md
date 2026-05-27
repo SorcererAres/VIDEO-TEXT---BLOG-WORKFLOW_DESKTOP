@@ -24,6 +24,7 @@ python3 -m pip install -r requirements.txt
 
 本地 ASR 默认使用 `mlx-whisper`，也支持 `whisper.cpp` 和外部字幕/文字稿。
 默认开发环境使用 `.venv`；历史 `.venv-codex` 只作兼容，不再作为新任务的首选环境。
+日常开发请优先使用顶层 `Makefile`，所有 Python 入口都会固定走 `.venv/bin/python`。直接用系统 `python3` 可能缺少 FastAPI、uvicorn 等服务端依赖。
 
 ## 视频入口
 
@@ -86,8 +87,24 @@ SOURCE → input/Text/example.md
 ## 校验与指纹
 
 ```bash
-python3 scripts/validate_workflow.py
+make validate
 python3 scripts/update_fingerprint.py output/Posts/2026/example.md
 ```
 
 校验脚本只做静态检查，不调用模型。
+
+## 本地开发入口
+
+```bash
+make test
+make validate
+make frontend-lint
+make frontend-build
+make server
+```
+
+## 本地服务安全边界
+
+FastAPI 服务默认只接受 `localhost` / `127.0.0.1` 来源的浏览器请求。额外允许来源可用 `VIDEO2BLOG_CORS_ORIGINS` 配置，多个来源用逗号分隔。
+
+任务 source 默认必须在仓库根目录内。确需读取外部绝对路径时，先设置 `VIDEO2BLOG_ALLOW_EXTERNAL_SOURCE=1` 再启动服务。

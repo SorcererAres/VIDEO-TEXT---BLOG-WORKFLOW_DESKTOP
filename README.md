@@ -27,6 +27,7 @@ python3 -m pip install -r requirements.txt
 ```
 
 默认开发环境使用 `.venv`；`.venv-codex` 仅作为历史兼容环境保留。
+开发、测试和本地服务建议统一走 `make`，它会固定使用 `.venv/bin/python`，避免系统 Python 缺少 FastAPI/uvicorn 等依赖造成误报。
 
 视频入口：
 
@@ -145,7 +146,7 @@ python3 video2blog.py --engine external --source transcript.srt placeholder.mp4
 静态校验工作流文档和核心产物：
 
 ```bash
-python3 scripts/validate_workflow.py
+make validate
 ```
 
 为文章生成或更新风格指纹：
@@ -153,6 +154,20 @@ python3 scripts/validate_workflow.py
 ```bash
 python3 scripts/update_fingerprint.py output/Posts/2026/example.md
 ```
+
+本地工程常用入口：
+
+```bash
+make test            # .venv/bin/python -m unittest discover -s tests
+make validate        # .venv/bin/python scripts/validate_workflow.py
+make frontend-lint   # npm --prefix frontend run lint
+make frontend-build  # npm --prefix frontend run build
+make server          # 启动 FastAPI 本地服务
+```
+
+本地服务默认只接受 `localhost` / `127.0.0.1` 浏览器来源；任务 source 默认必须位于仓库根目录内。需要额外来源时配置 `VIDEO2BLOG_CORS_ORIGINS`，需要读取仓库外文件时显式设置 `VIDEO2BLOG_ALLOW_EXTERNAL_SOURCE=1`。
+
+CI 使用同一组入口：`make test`、`make validate`、`make frontend-lint`、`make frontend-build`。这些检查不调用真实 LLM，不需要配置 API Key。
 
 ## 配置与记忆
 

@@ -3,21 +3,38 @@
 .env
 *.pem
 
-# 常见产物目录（若放在仓库内需删除下列规则）
-# output/
-# inbox/
+# 项目核心产物目录（全部不入库，只作为本地工作区）
+work/
+output/
+inbox/
+input/Video/*.mp4
+input/Video/*.mov
+input/Video/*.mkv
 
 __pycache__/
-.venv/
-venv/
 *.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg-info/
+dist/
+build/
+.venv*
+venv/
+.venv/
+.pytest_cache/
+.mypy_cache/
 
 # 系统与编辑器
 .DS_Store
 .claude/
-
-# 输入视频素材（大文件，勿入库；文本转写产物 .txt/.srt/.meta.json 仍保留）
-*.mp4
-*.mov
-*.mkv
+.codex/
+.cursor/
+.qoder/
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
 
