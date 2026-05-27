@@ -1,0 +1,15 @@
+name: full_basic
+mode: full
+routing: /lecture
+speaker: 我
+expected_final_status: FINISHED
+expected_pass_score: "54/60"
+expected_title: 测试不是质保是改代码的底气
+pause_on_outline: false
+description: |
+  最小 full 模式 fixture：mock Step 3 → 7 全链路。
+  pause_on_outline=false 让 Step 5 完成后直接进 Step 6，避免人工挂起。
+  验证 full 链路 PENDING → CLEANING → EXTRACTING → STRUCTURING → REWRITING
+  → CHECKING → DONE → FINISHED，所有中间产物（clean.md / insights.md /
+  outline.md / draft_v1.md / review_v1.json）落盘正确，最终成品 frontmatter
+  完整且 VIEWER_RE 零违规。

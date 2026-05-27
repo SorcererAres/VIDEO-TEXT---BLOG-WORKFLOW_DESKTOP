@@ -38,6 +38,9 @@ jobs:
       - name: Validate workflow contract
         run: make validate
 
+      - name: Engine regression (mock LLM, golden fixtures)
+        run: make regression
+
       - name: Lint frontend
         run: make frontend-lint
 

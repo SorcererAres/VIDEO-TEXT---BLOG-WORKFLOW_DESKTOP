@@ -160,10 +160,17 @@ python3 scripts/update_fingerprint.py output/Posts/2026/example.md
 ```bash
 make test            # .venv/bin/python -m unittest discover -s tests
 make validate        # .venv/bin/python scripts/validate_workflow.py
+make regression      # mock LLM 跑 tests/fixtures/regression/ 金标 fixture
 make frontend-lint   # npm --prefix frontend run lint
 make frontend-build  # npm --prefix frontend run build
 make server          # 启动 FastAPI 本地服务
 ```
+
+`make regression` 在隔离临时 repo 里用 mock LLM 跑 `tests/fixtures/regression/<name>/`
+预置的金标 fixture，验证状态机、frontmatter、`VIEWER_RE`、HISTORY 与 fingerprints
+等"确定性环节"不退化；零成本、可入 CI。新增 fixture 直接放
+`tests/fixtures/regression/<name>/{fixture.yaml, source.md, expected/<step>.{md,json}}`
+即可，无需改脚本。
 
 本地服务默认只接受 `localhost` / `127.0.0.1` 浏览器来源；任务 source 默认必须位于仓库根目录内。需要额外来源时配置 `VIDEO2BLOG_CORS_ORIGINS`，需要读取仓库外文件时显式设置 `VIDEO2BLOG_ALLOW_EXTERNAL_SOURCE=1`。
 

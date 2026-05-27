@@ -1,0 +1,12 @@
+name: quick_basic
+mode: quick
+routing: /lecture
+speaker: 我
+expected_final_status: FINISHED
+expected_pass_score: "55/60"
+expected_title: 测试不是质保是改代码的底气
+description: |
+  最小 quick 模式 fixture：只 mock Step 6 (rewrite-blog) 和 Step 7 (quality-check)。
+  验证状态机走通 PENDING → REWRITING → CHECKING → DONE → FINISHED，
+  最终落盘 output/Posts/<year>/<date>-<title>.md + output/Reviews/<date>-<title>.review.md，
+  HISTORY 和 fingerprints.jsonl 都被更新；VIEWER_RE 零违规。

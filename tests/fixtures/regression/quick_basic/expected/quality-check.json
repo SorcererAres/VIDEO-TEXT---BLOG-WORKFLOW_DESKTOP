@@ -1,0 +1,13 @@
+{
+  "verdict": "PASS",
+  "scores": {
+    "忠实度": 9,
+    "可读性": 9,
+    "观点密度": 9,
+    "风格一致": 9,
+    "完整性": 9,
+    "视角忠实度": 10
+  },
+  "total": "55/60",
+  "rebrief": "fixture mock review — PASS"
+}

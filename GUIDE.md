@@ -98,6 +98,7 @@ python3 scripts/update_fingerprint.py output/Posts/2026/example.md
 ```bash
 make test
 make validate
+make regression       # mock LLM 跑金标 fixture，验证引擎确定性环节
 make frontend-lint
 make frontend-build
 make server

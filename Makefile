@@ -2,7 +2,7 @@ PYTHON := .venv/bin/python
 PIP := .venv/bin/pip
 FRONTEND_DIR := frontend
 
-.PHONY: install test validate frontend-lint frontend-build server dev
+.PHONY: install test validate regression frontend-lint frontend-build server dev
 
 install:
 	python3 -m venv .venv
@@ -13,6 +13,9 @@ test:
 
 validate:
 	$(PYTHON) scripts/validate_workflow.py
+
+regression:
+	$(PYTHON) scripts/regression.py
 
 frontend-lint:
 	npm --prefix $(FRONTEND_DIR) run lint
