@@ -53,6 +53,8 @@ interface EngineJobRequest {
   force: boolean
   pause_on_outline: boolean
   api_key?: string
+  // §9-C: single (默认) | sectioned。后端会在非 full / outline 不可解析时自动回退 single。
+  rewrite_strategy?: "single" | "sectioned"
 }
 
 interface EngineJob {
@@ -102,6 +104,7 @@ interface CreateDraft {
   model: string
   force: boolean
   pauseOnOutline: boolean
+  rewriteStrategy: "single" | "sectioned"
   ts: number
 }
 const CREATE_DRAFT_KEY = "v2b_create_draft"
@@ -298,6 +301,9 @@ export default function App() {
   const [model, setModel] = useState(() => draftInit?.model ?? "")
   const [force, setForce] = useState(() => draftInit?.force ?? false)
   const [pauseOnOutline, setPauseOnOutline] = useState(() => draftInit?.pauseOnOutline ?? true)
+  const [rewriteStrategy, setRewriteStrategy] = useState<"single" | "sectioned">(
+    () => draftInit?.rewriteStrategy ?? "single",
+  )
   const [isSubmittingJob, setIsSubmittingJob] = useState(false)
   const [draftRestoredTs, setDraftRestoredTs] = useState<number | null>(() => draftInit?.ts ?? null)
 
@@ -325,12 +331,12 @@ export default function App() {
     if (!source.trim()) return
     const timer = window.setTimeout(() => {
       writeCreateDraft({
-        source, speaker, routing, mode, maxRetries, model, force, pauseOnOutline,
+        source, speaker, routing, mode, maxRetries, model, force, pauseOnOutline, rewriteStrategy,
         ts: Date.now(),
       })
     }, 500)
     return () => window.clearTimeout(timer)
-  }, [source, speaker, routing, mode, maxRetries, model, force, pauseOnOutline])
+  }, [source, speaker, routing, mode, maxRetries, model, force, pauseOnOutline, rewriteStrategy])
 
   // OutlineView 编辑器草稿自动存档 —— 仅在 paused 状态下保存,
   // 因为只有这个状态用户才能/才会去编辑 outline。
@@ -760,6 +766,8 @@ export default function App() {
         force,
         pause_on_outline: pauseOnOutline,
       }
+      // §9-C：sectioned 仅在 full 模式有效，quick 时强制回 single 避免后端拒收。
+      payload.rewrite_strategy = mode === "full" ? rewriteStrategy : "single"
       const { apiKey: localApiKey, apiBase: localApiBase, model: localModel } = readLlmSettings()
       if (localApiKey) payload.api_key = localApiKey
       if (localApiBase) payload.api_base = localApiBase
@@ -963,6 +971,7 @@ export default function App() {
     setModel(modelOverride ?? req.model ?? "")
     setForce(req.force)
     setPauseOnOutline(req.pause_on_outline)
+    setRewriteStrategy((req.rewrite_strategy as "single" | "sectioned") ?? "single")
     // 这是"用相同参数重跑",不是"恢复未提交草稿",所以隐藏 banner
     setDraftRestoredTs(null)
     setIsCreating(true)
@@ -983,6 +992,7 @@ export default function App() {
     setModel("")
     setForce(false)
     setPauseOnOutline(true)
+    setRewriteStrategy("single")
     clearCreateDraft()
     setDraftRestoredTs(null)
   }
@@ -1124,6 +1134,7 @@ export default function App() {
               model={model} setModel={setModel}
               force={force} setForce={setForce}
               pauseOnOutline={pauseOnOutline} setPauseOnOutline={setPauseOnOutline}
+              rewriteStrategy={rewriteStrategy} setRewriteStrategy={setRewriteStrategy}
               isSubmitting={isSubmittingJob}
               healthOffline={healthStatus === "offline"}
               draftRestoredTs={draftRestoredTs}
@@ -2264,6 +2275,7 @@ interface CreateFormProps {
   model: string; setModel: (v: string) => void
   force: boolean; setForce: (v: boolean) => void
   pauseOnOutline: boolean; setPauseOnOutline: (v: boolean) => void
+  rewriteStrategy: "single" | "sectioned"; setRewriteStrategy: (v: "single" | "sectioned") => void
   isSubmitting: boolean
   healthOffline: boolean
   draftRestoredTs: number | null
@@ -2387,6 +2399,14 @@ function CreateForm(props: CreateFormProps) {
                 <Checkbox label="强制重跑(忽略缓存)" checked={props.force} onChange={props.setForce} />
                 {props.mode === "full" && (
                   <Checkbox label="大纲生成后暂停审批" checked={props.pauseOnOutline} onChange={props.setPauseOnOutline} hint="关掉则直接跑完全流程,不在 Step 5 后暂停" />
+                )}
+                {props.mode === "full" && (
+                  <Checkbox
+                    label="长稿按节滚动改写(§9-C)"
+                    checked={props.rewriteStrategy === "sectioned"}
+                    onChange={(v) => props.setRewriteStrategy(v ? "sectioned" : "single")}
+                    hint="按 Step 5 outline 拆节调用 LLM,每节附带上一节末段做承上启下,长稿避免撞窗。骨架不可解析或进入自修正循环时引擎会自动回退一次性整篇。"
+                  />
                 )}
               </div>
 

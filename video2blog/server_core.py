@@ -19,6 +19,7 @@ from video2blog.engine import Engine, LLMClient
 
 VALID_ROUTINGS = {"/default", "/lecture", "/dialogue", "/screencast", "/meeting"}
 VALID_MODES = {"full", "quick"}
+VALID_REWRITE_STRATEGIES = {"single", "sectioned"}
 
 
 def redact_sensitive_text(text: str, *secrets: str | None) -> str:
@@ -41,6 +42,9 @@ class EngineJobRequest:
     force: bool = False
     pause_on_outline: bool = True
     api_key: str | None = None
+    # §9-C：single = 一次性整篇（默认），sectioned = 按 outline 拆节滚动改写。
+    # quick 模式或 outline 不可解析时引擎会自动回退 single，不强求按节。
+    rewrite_strategy: str = "single"
 
 
 @dataclass
@@ -264,7 +268,12 @@ class EngineJobService:
                         return True
                 return False
 
-            engine = Engine(repo_root=self.repo_root, client=client, cancel_check=check_cancelled)
+            engine = Engine(
+                repo_root=self.repo_root,
+                client=client,
+                cancel_check=check_cancelled,
+                rewrite_strategy=request.rewrite_strategy,
+            )
             source_path = self._resolve_source(request.source)
 
             if request.force:
@@ -379,6 +388,11 @@ class EngineJobService:
             raise ValueError(f"未知 ROUTING: {request.routing}")
         if request.max_retries < 0:
             raise ValueError("max_retries 不能小于 0")
+        if request.rewrite_strategy not in VALID_REWRITE_STRATEGIES:
+            raise ValueError(
+                f"未知 rewrite_strategy: {request.rewrite_strategy!r}，"
+                f"可选 {sorted(VALID_REWRITE_STRATEGIES)}"
+            )
         self._resolve_source(request.source)
 
     def _resolve_source(self, source: str) -> Path:

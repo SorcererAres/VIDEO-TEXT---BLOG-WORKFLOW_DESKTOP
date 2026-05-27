@@ -34,6 +34,10 @@ class JobCreateRequest(BaseModel):
     force: bool = False
     pause_on_outline: bool = True
     api_key: str | None = None
+    rewrite_strategy: str = Field(
+        default="single",
+        description="single=一次性整篇（默认）；sectioned=full 模式按 outline 拆节滚动改写，长稿用",
+    )
 
 
 class ApproveOutlineRequest(BaseModel):

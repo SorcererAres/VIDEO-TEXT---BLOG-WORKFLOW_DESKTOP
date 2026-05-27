@@ -153,6 +153,56 @@ class TestEngineJobService(unittest.TestCase):
         finally:
             service.shutdown()
 
+    def test_submit_job_rejects_unknown_rewrite_strategy(self) -> None:
+        service = EngineJobService(self.tmp_dir)
+        try:
+            source_path = self.tmp_dir / "input/Text/x.md"
+            source_path.parent.mkdir(parents=True, exist_ok=True)
+            source_path.write_text("dummy", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "未知 rewrite_strategy"):
+                service.submit_job(
+                    EngineJobRequest(
+                        source="input/Text/x.md",
+                        mode="quick",
+                        rewrite_strategy="batch",
+                    )
+                )
+        finally:
+            service.shutdown()
+
+    def test_submit_job_passes_rewrite_strategy_to_engine(self) -> None:
+        """sectioned 必须从 request 透传到 Engine 构造参数，否则 §9-C 在 server 路径里失效。"""
+        from video2blog.engine.runner import Engine
+
+        source_path = self.tmp_dir / "work/strat/raw.txt"
+        source_path.parent.mkdir(parents=True, exist_ok=True)
+        source_path.write_text("raw", encoding="utf-8")
+
+        captured: dict[str, str] = {}
+
+        original_init = Engine.__init__
+
+        def spy_init(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            captured["rewrite_strategy"] = kwargs.get("rewrite_strategy", "MISSING")
+            # 立即抛错，让 job 直接 failed —— 我们只关心引擎构造参数。
+            raise RuntimeError("captured-and-aborted")
+
+        Engine.__init__ = spy_init  # type: ignore[assignment]
+        try:
+            service = EngineJobService(self.tmp_dir, client_factory=lambda _: MockLLMClient([]))
+            job = service.submit_job(
+                EngineJobRequest(
+                    source="work/strat/raw.txt",
+                    mode="full",
+                    rewrite_strategy="sectioned",
+                )
+            )
+            service.wait_for_job(job.id)
+            self.assertEqual(captured.get("rewrite_strategy"), "sectioned")
+            service.shutdown()
+        finally:
+            Engine.__init__ = original_init  # type: ignore[assignment]
+
     def test_source_must_stay_inside_repo_by_default(self) -> None:
         outside = self.tmp_dir.parent / "outside-source.txt"
         outside.write_text("external", encoding="utf-8")
