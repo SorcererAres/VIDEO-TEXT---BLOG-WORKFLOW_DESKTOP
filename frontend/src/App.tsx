@@ -1,0 +1,2692 @@
+import { useState, useEffect, useMemo, useRef } from 'react'
+import {
+  Plus,
+  CheckCircle2,
+  AlertCircle,
+  Loader2,
+  User,
+  FileText,
+  DollarSign,
+  Copy,
+  Edit,
+  RotateCw,
+  Check,
+  X,
+  Award,
+  Settings,
+  Zap,
+  Layers,
+  ListTree,
+  XCircle,
+  FolderOpen,
+  ExternalLink,
+  Search,
+} from 'lucide-react'
+import { Toaster, toast } from 'sonner'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
+import { Badge } from '@/components/ui/badge'
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
+import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert'
+import { Separator } from '@/components/ui/separator'
+import { Empty, EmptyHeader, EmptyMedia, EmptyTitle, EmptyDescription } from '@/components/ui/empty'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
+import { ScrollArea } from '@/components/ui/scroll-area'
+import { cn } from '@/lib/utils'
+import { StepProgress } from '@/components/StepProgress'
+import { LogConsole } from '@/components/LogConsole'
+import { MarkdownView } from '@/components/MarkdownView'
+import { SourcePicker, pushRecentSource } from '@/components/SourcePicker'
+import { ConfirmDialogHost, confirmAction } from '@/components/ConfirmDialog'
+import { inferCurrentStep, parseLogLine, type ParsedEvent } from '@/lib/log-parser'
+import { API_BASE, apiUrl } from '@/lib/api'
+import { readLlmSettings, saveLlmSettings } from '@/lib/settings-store'
+
+interface EngineJobRequest {
+  source: string
+  speaker: string
+  routing: string
+  mode: string
+  max_retries: number
+  model?: string
+  api_base?: string
+  force: boolean
+  pause_on_outline: boolean
+  api_key?: string
+}
+
+interface EngineJob {
+  id: string
+  status: string
+  request: EngineJobRequest
+  stem: string
+  created_at: string
+  updated_at: string
+  final_post_path?: string
+  review_path?: string
+  clean_path?: string
+  insights_path?: string
+  outline_path?: string
+  input_tokens: number
+  output_tokens: number
+  estimated_cost_usd: number
+  error?: string
+  // 历史归档专属字段 —— /jobs/history 返回的对象会有这两个
+  kind?: "historical"
+  pass_score?: string
+  is_draft?: boolean
+}
+
+interface QualityScores {
+  [key: string]: number
+}
+
+interface ReviewJson {
+  version: number
+  verdict: string
+  scores: QualityScores
+  total: string
+  rebrief: string
+  raw_markdown?: string
+  parse_failed?: boolean
+}
+
+// ─── 新建任务表单草稿(localStorage)──
+// 用户在 CreateForm 填到一半切走,回来时不丢内容。提交成功后清掉。
+interface CreateDraft {
+  source: string
+  speaker: string
+  routing: string
+  mode: "full" | "quick"
+  maxRetries: number
+  model: string
+  force: boolean
+  pauseOnOutline: boolean
+  ts: number
+}
+const CREATE_DRAFT_KEY = "v2b_create_draft"
+
+function readCreateDraft(): CreateDraft | null {
+  try {
+    const raw = localStorage.getItem(CREATE_DRAFT_KEY)
+    if (!raw) return null
+    const d = JSON.parse(raw)
+    if (!d || typeof d !== "object" || !d.source) return null
+    return d as CreateDraft
+  } catch {
+    return null
+  }
+}
+
+function writeCreateDraft(d: CreateDraft) {
+  try {
+    localStorage.setItem(CREATE_DRAFT_KEY, JSON.stringify(d))
+  } catch {
+    /* localStorage 满了 / 隐私模式拒绝,忽略 */
+  }
+}
+
+function clearCreateDraft() {
+  try {
+    localStorage.removeItem(CREATE_DRAFT_KEY)
+  } catch {
+    /* ignore */
+  }
+}
+
+// ─── 大纲编辑器草稿(localStorage,按 jobId 分桶)──
+// paused 状态下用户编辑 outline.md,切走/刷新就丢。这里给一份本地备份。
+const OUTLINE_DRAFT_PREFIX = "v2b_outline_draft_"
+
+interface OutlineDraft {
+  content: string
+  ts: number
+}
+
+function readOutlineDraft(jobId: string): OutlineDraft | null {
+  try {
+    const raw = localStorage.getItem(OUTLINE_DRAFT_PREFIX + jobId)
+    if (!raw) return null
+    const d = JSON.parse(raw)
+    if (!d || typeof d !== "object" || typeof d.content !== "string") return null
+    return d as OutlineDraft
+  } catch {
+    return null
+  }
+}
+
+function writeOutlineDraft(jobId: string, content: string) {
+  try {
+    localStorage.setItem(OUTLINE_DRAFT_PREFIX + jobId, JSON.stringify({ content, ts: Date.now() }))
+  } catch {
+    /* ignore */
+  }
+}
+
+function clearOutlineDraft(jobId: string) {
+  try {
+    localStorage.removeItem(OUTLINE_DRAFT_PREFIX + jobId)
+  } catch {
+    /* ignore */
+  }
+}
+
+// ─── 草稿编辑器草稿(localStorage,按 jobId 分桶)──
+// REVIEW 暂停时用户可以在前端微调 draft.md。如果切走/刷新就丢,这里给本地备份。
+const DRAFT_EDIT_PREFIX = "v2b_draft_edit_"
+
+function readDraftEdit(jobId: string): OutlineDraft | null {
+  try {
+    const raw = localStorage.getItem(DRAFT_EDIT_PREFIX + jobId)
+    if (!raw) return null
+    const d = JSON.parse(raw)
+    if (!d || typeof d !== "object" || typeof d.content !== "string") return null
+    return d as OutlineDraft
+  } catch {
+    return null
+  }
+}
+
+function writeDraftEdit(jobId: string, content: string) {
+  try {
+    localStorage.setItem(DRAFT_EDIT_PREFIX + jobId, JSON.stringify({ content, ts: Date.now() }))
+  } catch {
+    /* ignore */
+  }
+}
+
+function clearDraftEdit(jobId: string) {
+  try {
+    localStorage.removeItem(DRAFT_EDIT_PREFIX + jobId)
+  } catch {
+    /* ignore */
+  }
+}
+
+// 常用 LLM 模型 chips —— Settings 用,提交前 sanity check 也用
+const COMMON_MODELS = [
+  "deepseek-chat",
+  "deepseek-reasoner",
+  "gpt-4o",
+  "gpt-4o-mini",
+  "claude-3-5-sonnet-latest",
+] as const
+
+// /api/test-llm 的响应结构 —— Settings 测试连接 + 失败自动归因都用
+interface TestLLMResult {
+  ok: boolean
+  model?: string
+  api_base?: string
+  latency_ms?: number
+  sample?: string
+  error?: string
+}
+
+// 给一个错误字符串归类,推断最可能的根因 + 给用户可读的提示
+type DiagnosisKind = "model_not_found" | "auth" | "forbidden" | "timeout" | "missing_key" | "rate_limit" | "unknown"
+function classifyDiagnosis(err: string): { kind: DiagnosisKind; hint: string } {
+  const lower = err.toLowerCase()
+  if ((lower.includes("model") && (lower.includes("not found") || lower.includes("does not exist"))) || lower.includes("invalid_model")) {
+    return { kind: "model_not_found", hint: "模型名不存在 —— 检查 Settings 中的「默认模型」,改用常见模型 chip 一键填入" }
+  }
+  if (lower.includes("401") || lower.includes("unauthorized") || lower.includes("invalid api key") || lower.includes("invalid_api_key")) {
+    return { kind: "auth", hint: "API Key 错误或已失效 —— 在 Settings 重新填写并保存" }
+  }
+  if (lower.includes("403") || lower.includes("forbidden") || lower.includes("permission")) {
+    return { kind: "forbidden", hint: "API Key 没有该模型的访问权限 —— 换个有权限的 model,或确认账户已开通" }
+  }
+  if (lower.includes("429") || lower.includes("rate") || lower.includes("quota") || lower.includes("limit")) {
+    return { kind: "rate_limit", hint: "触发了速率/配额限制 —— 等几分钟再试,或换 API Key" }
+  }
+  if (lower.includes("缺失 api key") || lower.includes("missing")) {
+    return { kind: "missing_key", hint: "完全没配 API Key —— 到 Settings 填一个" }
+  }
+  if (lower.includes("timeout") || lower.includes("连接超时") || lower.includes("超时") || lower.includes("超过总耗时") || lower.includes("ssl") || lower.includes("eof")) {
+    return { kind: "timeout", hint: "API Base 不可达,或模型名错导致服务端 hang(部分 API 不返回 4xx 而是不响应)" }
+  }
+  return { kind: "unknown", hint: "看下方原文判断" }
+}
+
+// "https://api.deepseek.com/v1" → "api.deepseek.com" —— Header chip 用
+function shortApiBase(url: string | undefined): string {
+  if (!url) return ""
+  try {
+    return new URL(url).host
+  } catch {
+    return url.length > 30 ? url.slice(0, 30) + "…" : url
+  }
+}
+
+export default function App() {
+  const [jobs, setJobs] = useState<EngineJob[]>([])
+  const [historicalJobs, setHistoricalJobs] = useState<EngineJob[]>([])
+  const [selectedJobId, setSelectedJobId] = useState<string | null>(null)
+  const [selectedJob, setSelectedJob] = useState<EngineJob | null>(null)
+  const [isCreating, setIsCreating] = useState(false)
+  const [showSettings, setShowSettings] = useState(false)
+  const [logs, setLogs] = useState<string[]>([])
+  const [activeTab, setActiveTab] = useState<"console" | "outline" | "review" | "final">("console")
+  const [healthStatus, setHealthStatus] = useState<"online" | "offline">("offline")
+
+  // Settings state
+  const [settingsApiKey, setSettingsApiKey] = useState("")
+  const [settingsApiBase, setSettingsApiBase] = useState("")
+  const [settingsModel, setSettingsModel] = useState("")
+
+  // Outline Editing state —— 默认分屏(左编辑右预览),桌面端最高效
+  const [outlineText, setOutlineText] = useState("")
+  const [isSubmittingOutline, setIsSubmittingOutline] = useState(false)
+  const [outlineViewMode, setOutlineViewMode] = useState<"edit" | "preview" | "split">("split")
+  // 如果加载时发现本地有未提交的草稿(跟后端原始不一致),记下时间戳用于显示恢复 banner
+  const [outlineDraftRestoredTs, setOutlineDraftRestoredTs] = useState<number | null>(null)
+
+  // Review & Draft state —— draftContent 可编辑;分屏 / 草稿恢复都跟 OutlineView 一致
+  const [draftContent, setDraftContent] = useState("")
+  const [reviewJson, setReviewJson] = useState<ReviewJson | null>(null)
+  const [isSubmittingDraft, setIsSubmittingDraft] = useState(false)
+  const [draftViewMode, setDraftViewMode] = useState<"edit" | "preview" | "split">("split")
+  const [draftEditRestoredTs, setDraftEditRestoredTs] = useState<number | null>(null)
+
+  // Creation Form state —— 启动时如果有 localStorage 草稿就预填,避免模态切换丢失输入
+  const draftInit = useRef<CreateDraft | null>(readCreateDraft()).current
+  const [source, setSource] = useState(() => draftInit?.source ?? "")
+  // 记住上次用的 speaker —— 这是个高频字段,默认就用上次的值,只有第一次才回退到"我"
+  const [speaker, setSpeaker] = useState(() => draftInit?.speaker ?? (localStorage.getItem("v2b_last_speaker") || "我"))
+  const [routing, setRouting] = useState(() => draftInit?.routing ?? "/lecture")
+  const [mode, setMode] = useState<"full" | "quick">(() => draftInit?.mode ?? "full")
+  const [maxRetries, setMaxRetries] = useState(() => draftInit?.maxRetries ?? 1)
+  const [model, setModel] = useState(() => draftInit?.model ?? "")
+  const [force, setForce] = useState(() => draftInit?.force ?? false)
+  const [pauseOnOutline, setPauseOnOutline] = useState(() => draftInit?.pauseOnOutline ?? true)
+  const [isSubmittingJob, setIsSubmittingJob] = useState(false)
+  const [draftRestoredTs, setDraftRestoredTs] = useState<number | null>(() => draftInit?.ts ?? null)
+
+  // 侧栏任务列表过滤 —— 历史归档一多就难找,加搜索 + 状态 chip
+  const [jobQuery, setJobQuery] = useState("")
+  const [jobFilter, setJobFilter] = useState<"all" | "active" | "waiting" | "done" | "failed">("all")
+
+  const sseRef = useRef<EventSource | null>(null)
+  // SSE 连接状态机 —— terminal 表示任务已 succeeded/failed,不应再重连
+  type SseStatus = "idle" | "connecting" | "connected" | "reconnecting" | "terminal"
+  const [sseStatus, setSseStatus] = useState<SseStatus>("idle")
+  const [lastEventAt, setLastEventAt] = useState<number | null>(null)
+  const sseAttemptsRef = useRef(0)
+  const sseReconnectTimerRef = useRef<number | null>(null)
+  const sseTargetJobRef = useRef<string | null>(null)
+
+  // 强制 dark mode 让 shadcn 的 semantic colors 走深色 token
+  useEffect(() => {
+    document.documentElement.classList.add("dark")
+  }, [])
+
+  // CreateForm 草稿自动存档 —— source 非空就节流写入 500ms
+  // 没填 source 的"空草稿"不写,避免用户每次开页都看到 banner
+  useEffect(() => {
+    if (!source.trim()) return
+    const timer = window.setTimeout(() => {
+      writeCreateDraft({
+        source, speaker, routing, mode, maxRetries, model, force, pauseOnOutline,
+        ts: Date.now(),
+      })
+    }, 500)
+    return () => window.clearTimeout(timer)
+  }, [source, speaker, routing, mode, maxRetries, model, force, pauseOnOutline])
+
+  // OutlineView 编辑器草稿自动存档 —— 仅在 paused 状态下保存,
+  // 因为只有这个状态用户才能/才会去编辑 outline。
+  // 节流 800ms,避免连续按键写穿 localStorage。
+  const sjId = selectedJob?.id
+  const sjStatus = selectedJob?.status
+  const sjIsHistorical = selectedJob?.kind === "historical"
+  useEffect(() => {
+    if (!sjId || sjIsHistorical || sjStatus !== "paused") return
+    if (!outlineText) return
+    const timer = window.setTimeout(() => {
+      writeOutlineDraft(sjId, outlineText)
+    }, 800)
+    return () => window.clearTimeout(timer)
+  }, [outlineText, sjId, sjStatus, sjIsHistorical])
+
+  // DraftReviewView 编辑器草稿同步 —— 跟 outline 一样的节流策略
+  useEffect(() => {
+    if (!sjId || sjIsHistorical || sjStatus !== "paused") return
+    if (!draftContent) return
+    const timer = window.setTimeout(() => {
+      writeDraftEdit(sjId, draftContent)
+    }, 800)
+    return () => window.clearTimeout(timer)
+  }, [draftContent, sjId, sjStatus, sjIsHistorical])
+
+  // Check health and load jobs initially —— 标签页隐藏时暂停轮询,省电省后端
+  useEffect(() => {
+    checkHealth()
+    fetchJobs()
+    fetchHistory()
+
+    const storedSettings = readLlmSettings()
+    setSettingsApiKey(storedSettings.apiKey)
+    setSettingsApiBase(storedSettings.apiBase)
+    setSettingsModel(storedSettings.model)
+
+    let healthId: number | null = null
+    let jobsId: number | null = null
+    let historyId: number | null = null
+
+    const startPolling = () => {
+      if (healthId === null) healthId = window.setInterval(checkHealth, 8000)
+      if (jobsId === null) jobsId = window.setInterval(fetchJobs, 5000)
+      // 历史归档磁盘扫描,频率低一些(磁盘不会频繁变)
+      if (historyId === null) historyId = window.setInterval(fetchHistory, 30000)
+    }
+    const stopPolling = () => {
+      if (healthId !== null) { window.clearInterval(healthId); healthId = null }
+      if (jobsId !== null) { window.clearInterval(jobsId); jobsId = null }
+      if (historyId !== null) { window.clearInterval(historyId); historyId = null }
+    }
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        stopPolling()
+      } else {
+        // 回到前台立刻刷一次,把"离线期间"的状态拉新
+        checkHealth()
+        fetchJobs()
+        fetchHistory()
+        startPolling()
+      }
+    }
+
+    if (!document.hidden) startPolling()
+    document.addEventListener("visibilitychange", handleVisibilityChange)
+
+    return () => {
+      stopPolling()
+      document.removeEventListener("visibilitychange", handleVisibilityChange)
+    }
+  }, [])
+
+  // 全局键盘快捷键 —— 桌面应用必备
+  //   Cmd/Ctrl + N    新建任务
+  //   Cmd/Ctrl + ,    打开设置
+  //   Cmd/Ctrl + K    聚焦侧栏搜索
+  //   Esc             关闭 CreateForm / SettingsForm
+  // (Cmd+Enter 提交在 CreateForm 的 form onKeyDown 里处理)
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const isMod = e.metaKey || e.ctrlKey
+      const target = e.target as HTMLElement | null
+      const inInput = !!target && (
+        target.tagName === "INPUT" ||
+        target.tagName === "TEXTAREA" ||
+        target.isContentEditable
+      )
+
+      if (isMod && e.key.toLowerCase() === "n" && !inInput) {
+        e.preventDefault()
+        if (healthStatus !== "offline") {
+          setIsCreating(true)
+          setSelectedJobId(null)
+          setShowSettings(false)
+        }
+        return
+      }
+
+      if (isMod && e.key === ",") {
+        e.preventDefault()
+        setShowSettings(true)
+        setIsCreating(false)
+        setSelectedJobId(null)
+        return
+      }
+
+      if (isMod && e.key.toLowerCase() === "k") {
+        e.preventDefault()
+        const input = document.querySelector<HTMLInputElement>("input[placeholder^='搜索 stem']")
+        input?.focus()
+        input?.select()
+        return
+      }
+
+      if (e.key === "Escape" && !inInput) {
+        if (isCreating) {
+          setIsCreating(false)
+          return
+        }
+        if (showSettings) {
+          setShowSettings(false)
+          return
+        }
+      }
+    }
+    document.addEventListener("keydown", handler)
+    return () => document.removeEventListener("keydown", handler)
+  }, [healthStatus, isCreating, showSettings])
+
+  // Select job update & SSE trigger
+  useEffect(() => {
+    if (!selectedJobId) {
+      setSelectedJob(null)
+      setLogs([])
+      sseTargetJobRef.current = null
+      tearDownSse()
+      setSseStatus("idle")
+      return
+    }
+
+    // 同时在 live 和 historical 里找;live 优先
+    const job = jobs.find(j => j.id === selectedJobId) ?? historicalJobs.find(j => j.id === selectedJobId)
+    if (job) {
+      const prevStatus = selectedJob?.status
+      setSelectedJob(job)
+
+      // 历史归档:不打 SSE,不拉 work/* 产物,直接挂"成品及报告"tab
+      if (job.kind === "historical") {
+        sseTargetJobRef.current = null
+        tearDownSse()
+        setSseStatus("idle")
+        setLogs([])
+        setActiveTab("final")
+        return
+      }
+
+      if (job.status === "paused") {
+        fetch(API_BASE + `/jobs/${job.id}`)
+          .then(res => res.json())
+          .then(data => {
+            if (data.status === "paused") {
+              loadOutline(job.id)
+              loadDraftAndReview(job.id)
+            }
+          })
+      } else if (job.status === "succeeded") {
+        if (activeTab === "outline" || activeTab === "review") {
+          setActiveTab("final")
+        }
+      }
+
+      if (job.id !== selectedJob?.id || (job.status !== prevStatus && (job.status === "running" || job.status === "queued"))) {
+        startSse(job.id)
+      }
+    }
+  }, [selectedJobId, jobs, historicalJobs])
+
+  const checkHealth = async () => {
+    try {
+      const res = await fetch(API_BASE + "/health")
+      setHealthStatus(res.ok ? "online" : "offline")
+    } catch {
+      setHealthStatus("offline")
+    }
+  }
+
+  const fetchJobs = async () => {
+    try {
+      const res = await fetch(API_BASE + "/jobs")
+      if (res.ok) {
+        const data = await res.json()
+        setJobs(data.reverse())
+      }
+    } catch (e) {
+      console.error("Failed to fetch jobs list", e)
+    }
+  }
+
+  const fetchHistory = async () => {
+    try {
+      const res = await fetch(API_BASE + "/jobs/history")
+      if (res.ok) {
+        const data: EngineJob[] = await res.json()
+        setHistoricalJobs(data)
+      }
+    } catch (e) {
+      console.error("Failed to fetch history", e)
+    }
+  }
+
+  // 彻底关掉 SSE 并清掉待发的重连定时器
+  const tearDownSse = () => {
+    if (sseRef.current) {
+      sseRef.current.close()
+      sseRef.current = null
+    }
+    if (sseReconnectTimerRef.current !== null) {
+      window.clearTimeout(sseReconnectTimerRef.current)
+      sseReconnectTimerRef.current = null
+    }
+  }
+
+  // 启动一个全新的 SSE 会话(新 job 或重选 job 时调一次)
+  const startSse = (jobId: string) => {
+    tearDownSse()
+    sseTargetJobRef.current = jobId
+    sseAttemptsRef.current = 0
+    setLogs([])
+    setSseStatus("connecting")
+    setLastEventAt(null)
+    connectSse(jobId)
+  }
+
+  // 实际建连(也用于退避重连)
+  const connectSse = (jobId: string) => {
+    // 若目标 job 已被换走(用户点了别的任务),直接放弃
+    if (sseTargetJobRef.current !== jobId) return
+
+    const isReconnect = sseAttemptsRef.current > 0
+    setSseStatus(isReconnect ? "reconnecting" : "connecting")
+
+    const source = new EventSource(API_BASE + `/jobs/${jobId}/events`)
+    sseRef.current = source
+
+    const markEvent = () => setLastEventAt(Date.now())
+
+    source.onopen = () => {
+      setSseStatus("connected")
+      sseAttemptsRef.current = 0
+      markEvent()
+    }
+
+    source.addEventListener("log", (e: MessageEvent) => {
+      markEvent()
+      try {
+        const eventData = JSON.parse(e.data)
+        const msg = eventData.data?.message || ""
+        if (msg) setLogs(prev => [...prev, msg])
+      } catch (err) { console.error("Err parsing SSE log event", err) }
+    })
+
+    source.addEventListener("started", () => {
+      markEvent()
+      setLogs(prev => [...prev, "[*] Backend job execution started..."])
+    })
+
+    source.addEventListener("paused", (e: MessageEvent) => {
+      markEvent()
+      try {
+        const eventData = JSON.parse(e.data)
+        const stateStatus = eventData.data?.state_status || ""
+        setLogs(prev => [...prev, `[!] Workflow suspended: Paused at ${stateStatus}`])
+        fetchJobs()
+        if (stateStatus === "WAITING_USER_OUTLINE") {
+          toast("等你审批大纲", { description: "Step 5 已生成 outline.md", icon: <Pause /> })
+        } else if (stateStatus === "WAITING_USER_REVIEW") {
+          toast("等你审稿", { description: "请打开「草稿与质检」", icon: <Pause /> })
+        }
+        setSseStatus("terminal")
+        sseTargetJobRef.current = null
+        tearDownSse()
+      } catch (err) { console.error("Err parsing SSE paused event", err) }
+    })
+
+    source.addEventListener("succeeded", () => {
+      markEvent()
+      setLogs(prev => [...prev, "[✓] Job completed successfully!"])
+      fetchJobs()
+      toast.success("博文生成完成", { description: "成品已落盘到 output/Posts/" })
+      setSseStatus("terminal")
+      sseTargetJobRef.current = null // 防止队列里残留的 onerror 触发重连
+      tearDownSse()
+    })
+
+    source.addEventListener("failed", (e: MessageEvent) => {
+      markEvent()
+      try {
+        const eventData = JSON.parse(e.data)
+        const err = eventData.data?.error || ""
+        setLogs(prev => [...prev, `[错误] Job failed: ${err}`])
+        fetchJobs()
+        toast.error("任务失败", { description: err })
+      } catch (err) { console.error("Err parsing SSE failed event", err) }
+      setSseStatus("terminal")
+      sseTargetJobRef.current = null
+      tearDownSse()
+    })
+
+    source.onerror = () => {
+      // EventSource 会自己尝试重连,但我们要管控状态条 + 实现指数退避。
+      // 关掉它,手动调度下一次。
+      source.close()
+      if (sseRef.current === source) sseRef.current = null
+
+      // 目标已换走 / 已 terminal(succeeded/failed 把 ref 置 null),不再重连
+      if (sseTargetJobRef.current !== jobId) return
+
+      sseAttemptsRef.current += 1
+      const attempts = sseAttemptsRef.current
+      const backoff = Math.min(30000, 1000 * 2 ** (attempts - 1))
+      setSseStatus("reconnecting")
+      sseReconnectTimerRef.current = window.setTimeout(() => {
+        sseReconnectTimerRef.current = null
+        connectSse(jobId)
+      }, backoff)
+    }
+  }
+
+  // force=true: 跳过本地草稿,强制采用后端原始 outline
+  const loadOutline = async (jobId: string, force = false) => {
+    try {
+      const res = await fetch(API_BASE + `/jobs/${jobId}/files/outline`)
+      if (!res.ok) return
+      const data = await res.json()
+      const fetched: string = data.content
+      if (!force) {
+        const draft = readOutlineDraft(jobId)
+        // 本地草稿存在 + 跟后端原始不一致 → 恢复并提示
+        if (draft && draft.content !== fetched) {
+          setOutlineText(draft.content)
+          setOutlineDraftRestoredTs(draft.ts)
+          setActiveTab("outline")
+          return
+        }
+      }
+      setOutlineText(fetched)
+      setOutlineDraftRestoredTs(null)
+      clearOutlineDraft(jobId)
+      setActiveTab("outline")
+    } catch (e) {
+      console.warn("No outline.md yet", e)
+    }
+  }
+
+  // force=true: 跳过本地编辑草稿,强制采用后端原始 draft
+  const loadDraftAndReview = async (jobId: string, force = false) => {
+    try {
+      const draftRes = await fetch(API_BASE + `/jobs/${jobId}/files/draft`)
+      if (draftRes.ok) {
+        const draftData = await draftRes.json()
+        const fetched: string = draftData.content
+        let used = fetched
+        if (!force) {
+          const edit = readDraftEdit(jobId)
+          if (edit && edit.content !== fetched) {
+            used = edit.content
+            setDraftEditRestoredTs(edit.ts)
+          } else {
+            setDraftEditRestoredTs(null)
+            clearDraftEdit(jobId)
+          }
+        } else {
+          setDraftEditRestoredTs(null)
+          clearDraftEdit(jobId)
+        }
+        setDraftContent(used)
+        setActiveTab("review")
+      }
+      const reviewRes = await fetch(API_BASE + `/jobs/${jobId}/files/review_json`)
+      if (reviewRes.ok) {
+        const reviewData = await reviewRes.json()
+        setReviewJson(reviewData)
+      }
+    } catch (e) { console.warn("No draft / review_json found", e) }
+  }
+
+  // 离线守卫 —— 销毁性 / 写操作前调一下,离线直接 toast 拦截
+  const requireOnline = (action: string): boolean => {
+    if (healthStatus === "offline") {
+      toast.error("后端服务离线", { description: `请先启动后端,再${action}` })
+      return false
+    }
+    return true
+  }
+
+  const handleCreateJob = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!source.trim()) return
+    if (!requireOnline("提交任务")) return
+
+    // 提交前 sanity check —— 模型名不在白名单时拦下来,防止用户花 5 分钟等一个 typo 报错
+    const finalModelName = (model.trim() || readLlmSettings().model || "").trim()
+    if (finalModelName && !(COMMON_MODELS as readonly string[]).includes(finalModelName)) {
+      const ok = await confirmAction({
+        title: `模型名 "${finalModelName}" 不在常见列表里`,
+        description: (
+          <>
+            常见模型: <code className="text-xs">{COMMON_MODELS.join(" / ")}</code>
+            <br />
+            如果模型名写错,任务可能会跑 5 分钟才超时失败。
+            <b className="text-foreground">建议先到 Settings 用「测试连接」验证,避免浪费时间。</b>
+          </>
+        ),
+        confirmText: "我确定,直接提交",
+        cancelText: "我想先去 Settings 测一下",
+        variant: "destructive",
+      })
+      if (!ok) return
+    }
+
+    setIsSubmittingJob(true)
+    try {
+      const payload: Record<string, unknown> = {
+        source, speaker, routing, mode,
+        max_retries: maxRetries,
+        force,
+        pause_on_outline: pauseOnOutline,
+      }
+      const { apiKey: localApiKey, apiBase: localApiBase, model: localModel } = readLlmSettings()
+      if (localApiKey) payload.api_key = localApiKey
+      if (localApiBase) payload.api_base = localApiBase
+      const finalModel = model.trim() || localModel || ""
+      if (finalModel) payload.model = finalModel
+
+      const res = await fetch(API_BASE + "/jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+      if (res.ok) {
+        const data = await res.json()
+        pushRecentSource(source) // 记入 localStorage,下次新建任务时排在最前面
+        localStorage.setItem("v2b_last_speaker", speaker.trim() || "我")
+        // 任务提交成功 —— 清掉表单草稿,下次回 CreateForm 是干净状态
+        clearCreateDraft()
+        setDraftRestoredTs(null)
+        setIsCreating(false)
+        setSource("")
+        fetchJobs()
+        setSelectedJobId(data.id)
+        setActiveTab("console")
+        toast.success("任务已提交", { description: `Job ${data.id.substring(0, 8)}` })
+      } else {
+        const err = await res.json()
+        toast.error("创建失败", { description: err.detail || "未知错误" })
+      }
+    } catch (err) {
+      toast.error("网络错误", { description: String(err) })
+    } finally {
+      setIsSubmittingJob(false)
+    }
+  }
+
+  const handleApproveOutline = async () => {
+    if (!selectedJob) return
+    if (!requireOnline("批准大纲")) return
+    setIsSubmittingOutline(true)
+    try {
+      const res = await fetch(API_BASE + `/jobs/${selectedJob.id}/approve-outline`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ outline_markdown: outlineText }),
+      })
+      if (res.ok) {
+        // 大纲已落到后端,本地草稿清掉
+        clearOutlineDraft(selectedJob.id)
+        setOutlineDraftRestoredTs(null)
+        setActiveTab("console")
+        startSse(selectedJob.id)
+        fetchJobs()
+        toast.success("大纲已批准", { description: "进入 Step 6 重写中" })
+      } else {
+        const err = await res.json()
+        toast.error("大纲提交失败", { description: err.detail })
+      }
+    } catch (e) {
+      toast.error("网络错误", { description: String(e) })
+    } finally {
+      setIsSubmittingOutline(false)
+    }
+  }
+
+  const handleApproveDraft = async (accept: boolean) => {
+    if (!selectedJob) return
+    if (!requireOnline(accept ? "接受草稿" : "拒绝草稿")) return
+    // 拒绝是销毁性操作 —— 工作流会中止,这次草稿丢弃。先二次确认。
+    if (!accept) {
+      const ok = await confirmAction({
+        title: "拒绝当前草稿并中止工作流?",
+        description: (
+          <>
+            草稿不会落盘,这次跑产生的内容会丢失。已消耗的 token 不退还。
+            <br />
+            如果只是想做小修改,建议先<b className="text-foreground">接受为 DRAFT</b>,落盘后再手动改。
+          </>
+        ),
+        confirmText: "确认拒绝",
+        cancelText: "再想想",
+        variant: "destructive",
+      })
+      if (!ok) return
+    }
+    setIsSubmittingDraft(true)
+    try {
+      // accept 时把当前编辑后的 draftContent 一并传上去 —— 后端会覆盖 draft_v<best>.md 再落盘
+      const body: Record<string, unknown> = { accept }
+      if (accept && draftContent) {
+        body.draft_markdown = draftContent
+      }
+      const res = await fetch(API_BASE + `/jobs/${selectedJob.id}/approve-draft`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      })
+      if (res.ok) {
+        // 草稿已落盘,清掉本地编辑备份
+        clearDraftEdit(selectedJob.id)
+        setDraftEditRestoredTs(null)
+        setActiveTab("console")
+        if (accept) {
+          startSse(selectedJob.id)
+          toast.success("已接受为 DRAFT", { description: "进入 Step 8 落盘归档" })
+        } else {
+          setLogs(prev => [...prev, "[!] Draft rejected. Workflow aborted by user."])
+          toast("草稿已拒绝", { description: "工作流已中止" })
+        }
+        fetchJobs()
+      } else {
+        const err = await res.json()
+        toast.error("提交失败", { description: err.detail })
+      }
+    } catch (e) {
+      toast.error("网络错误", { description: String(e) })
+    } finally {
+      setIsSubmittingDraft(false)
+    }
+  }
+
+  const handleSaveSettings = (e: React.FormEvent) => {
+    e.preventDefault()
+    saveLlmSettings({ apiKey: settingsApiKey, apiBase: settingsApiBase, model: settingsModel })
+    setShowSettings(false)
+    toast.success("API 配置已保存")
+  }
+
+  const copyText = (text: string) => {
+    navigator.clipboard.writeText(text)
+    toast.success("已复制到剪贴板")
+  }
+
+  const handleCancelJob = async () => {
+    if (!selectedJob) return
+    if (!requireOnline("取消任务")) return
+    const ok = await confirmAction({
+      title: `取消任务「${selectedJob.stem}」?`,
+      description: (
+        <>
+          正在跑的 LLM 调用会在最长 30 秒内结束,
+          <b className="text-foreground">已完成的步骤会保留</b>。已消耗的 token 不退还。
+        </>
+      ),
+      confirmText: "取消任务",
+      cancelText: "继续运行",
+      variant: "destructive",
+    })
+    if (!ok) return
+    try {
+      const res = await fetch(API_BASE + `/jobs/${selectedJob.id}/cancel`, { method: "POST" })
+      if (res.ok) {
+        toast.success("已发出取消信号", { description: "引擎会在下一个 checkpoint 退出" })
+        fetchJobs()
+      } else {
+        const err = await res.json().catch(() => ({}))
+        toast.error("取消失败", { description: err.detail || "未知错误" })
+      }
+    } catch (e) {
+      toast.error("网络错误", { description: String(e) })
+    }
+  }
+
+  const openInOS = async (path: string, mode: "finder" | "editor") => {
+    try {
+      const res = await fetch(API_BASE + "/open", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path, mode }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        toast.error("打开失败", { description: err.detail || "" })
+      }
+    } catch (e) {
+      toast.error("网络错误", { description: String(e) })
+    }
+  }
+
+  // ----- derived state for visual layer -----
+  const parsedEvents: ParsedEvent[] = useMemo(
+    () => logs.map(parseLogLine).filter((e): e is ParsedEvent => e !== null),
+    [logs],
+  )
+  const currentStep = useMemo(() => inferCurrentStep(parsedEvents), [parsedEvents])
+  const pausedAt: "outline" | "review" | null = useMemo(() => {
+    if (selectedJob?.status !== "paused") return null
+    if (draftContent) return "review"
+    if (outlineText) return "outline"
+    return null
+  }, [selectedJob?.status, outlineText, draftContent])
+
+  // 用相同参数重跑失败任务 —— 把 job.request 灌回 CreateForm 并切到新建视图。
+  // 关键:支持 modelOverride,失败 Banner 的"换 deepseek-chat 重跑"这种快速修复就走这一条。
+  const handleRetryFromJob = (job: EngineJob, modelOverride?: string) => {
+    const req = job.request
+    setSource(req.source)
+    setSpeaker(req.speaker)
+    setRouting(req.routing)
+    setMode(req.mode as "full" | "quick")
+    setMaxRetries(req.max_retries)
+    setModel(modelOverride ?? req.model ?? "")
+    setForce(req.force)
+    setPauseOnOutline(req.pause_on_outline)
+    // 这是"用相同参数重跑",不是"恢复未提交草稿",所以隐藏 banner
+    setDraftRestoredTs(null)
+    setIsCreating(true)
+    setSelectedJobId(null)
+    setShowSettings(false)
+    if (modelOverride) {
+      toast.success(`已换模型为 ${modelOverride}`, { description: "其他参数保持不变,确认后提交" })
+    }
+  }
+
+  // 用户点"放弃恢复" —— 重置表单到默认值并清掉本地草稿
+  const handleDiscardDraft = () => {
+    setSource("")
+    setSpeaker(localStorage.getItem("v2b_last_speaker") || "我")
+    setRouting("/lecture")
+    setMode("full")
+    setMaxRetries(1)
+    setModel("")
+    setForce(false)
+    setPauseOnOutline(true)
+    clearCreateDraft()
+    setDraftRestoredTs(null)
+  }
+
+  return (
+    <TooltipProvider delayDuration={200}>
+      <Toaster position="top-right" theme="dark" />
+      <ConfirmDialogHost />
+      <div className="flex flex-col h-screen bg-background text-foreground overflow-hidden font-sans">
+        {healthStatus === "offline" && (
+          <div className="shrink-0 bg-destructive/15 border-b border-destructive/30 px-4 py-2 text-sm flex items-center gap-2 text-destructive">
+            <AlertCircle className="size-4 shrink-0" />
+            <span className="font-medium">后端服务离线</span>
+            <span className="text-destructive/80">
+              ·任务提交、批准、取消等操作已暂停。请运行
+              <code className="mx-1 text-xs bg-destructive/10 px-1 rounded">scripts/run_engine_server.py</code>
+              启动 FastAPI 服务。
+            </span>
+          </div>
+        )}
+        <div className="flex flex-1 overflow-hidden">
+        {/* ─────── Sidebar ─────── */}
+        <aside className="w-80 flex flex-col border-r bg-card/40">
+          {/* Brand + status */}
+          <div className="p-4 border-b flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className={cn(
+                "size-2.5 rounded-full",
+                healthStatus === "online" ? "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.6)]" : "bg-destructive",
+              )} />
+              <h1 className="text-lg font-bold bg-clip-text text-transparent bg-gradient-to-r from-primary to-indigo-300">
+                Video2Blog
+              </h1>
+            </div>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => { setShowSettings(true); setIsCreating(false); setSelectedJobId(null) }}
+                  className="size-8"
+                >
+                  <Settings />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">配置 API Key / Model (Cmd/Ctrl + ,)</TooltipContent>
+            </Tooltip>
+          </div>
+
+          {/* New job button */}
+          <div className="p-3">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  className="w-full"
+                  onClick={() => { setIsCreating(true); setSelectedJobId(null); setShowSettings(false) }}
+                  disabled={healthStatus === "offline"}
+                >
+                  <Plus data-icon="inline-start" />
+                  新建改写任务
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">
+                {healthStatus === "offline" ? "后端离线时无法提交新任务" : "新建改写任务 (Cmd/Ctrl + N)"}
+              </TooltipContent>
+            </Tooltip>
+          </div>
+
+          {/* 搜索 + 状态 chip —— 历史归档多了用来快速定位 */}
+          <div className="px-3 pb-2 flex flex-col gap-2">
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground/70 pointer-events-none" />
+              <input
+                type="text"
+                value={jobQuery}
+                onChange={e => setJobQuery(e.target.value)}
+                placeholder="搜索 stem / 演讲人 / 路由…"
+                title="聚焦搜索 (Cmd/Ctrl + K)"
+                className="w-full bg-card border rounded-md py-1.5 pl-8 pr-7 text-xs outline-none focus:border-primary transition-colors"
+              />
+              {jobQuery && (
+                <button
+                  type="button"
+                  onClick={() => setJobQuery("")}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 size-4 rounded-sm hover:bg-muted flex items-center justify-center"
+                  aria-label="清空搜索"
+                >
+                  <X className="size-3 text-muted-foreground" />
+                </button>
+              )}
+            </div>
+            <div className="flex items-center gap-1 flex-wrap">
+              {([
+                ["all", "全部"],
+                ["active", "进行中"],
+                ["waiting", "待审批"],
+                ["done", "已完成"],
+                ["failed", "失败"],
+              ] as const).map(([key, label]) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setJobFilter(key)}
+                  className={cn(
+                    "px-2 py-0.5 text-[10px] rounded-full border transition-colors",
+                    jobFilter === key
+                      ? "bg-primary/15 border-primary/40 text-primary"
+                      : "bg-transparent border-border text-muted-foreground hover:text-foreground hover:border-foreground/30",
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Job list — live + historical 两段,历史按 path 去重避免和 live succeeded 重复 */}
+          <ScrollArea className="flex-1 px-2 pb-2">
+            <JobList
+              liveJobs={jobs}
+              historicalJobs={historicalJobs}
+              selectedId={selectedJobId}
+              query={jobQuery}
+              filter={jobFilter}
+              onSelect={(id) => { setSelectedJobId(id); setIsCreating(false); setShowSettings(false) }}
+            />
+          </ScrollArea>
+        </aside>
+
+        {/* ─────── Main area ─────── */}
+        <main className="flex-1 flex flex-col overflow-hidden">
+          {isCreating ? (
+            <CreateForm
+              source={source} setSource={setSource}
+              speaker={speaker} setSpeaker={setSpeaker}
+              routing={routing} setRouting={setRouting}
+              mode={mode} setMode={setMode}
+              maxRetries={maxRetries} setMaxRetries={setMaxRetries}
+              model={model} setModel={setModel}
+              force={force} setForce={setForce}
+              pauseOnOutline={pauseOnOutline} setPauseOnOutline={setPauseOnOutline}
+              isSubmitting={isSubmittingJob}
+              healthOffline={healthStatus === "offline"}
+              draftRestoredTs={draftRestoredTs}
+              onDiscardDraft={handleDiscardDraft}
+              onSubmit={handleCreateJob}
+              onCancel={() => setIsCreating(false)}
+            />
+          ) : showSettings ? (
+            <SettingsForm
+              apiKey={settingsApiKey} setApiKey={setSettingsApiKey}
+              apiBase={settingsApiBase} setApiBase={setSettingsApiBase}
+              model={settingsModel} setModel={setSettingsModel}
+              onSubmit={handleSaveSettings}
+              onCancel={() => setShowSettings(false)}
+            />
+          ) : selectedJob ? (
+            <JobWorkspace
+              job={selectedJob}
+              activeTab={activeTab}
+              setActiveTab={setActiveTab}
+              logs={logs}
+              currentStep={currentStep}
+              pausedAt={pausedAt}
+              outlineText={outlineText}
+              setOutlineText={setOutlineText}
+              outlineViewMode={outlineViewMode}
+              setOutlineViewMode={setOutlineViewMode}
+              draftContent={draftContent}
+              reviewJson={reviewJson}
+              isSubmittingOutline={isSubmittingOutline}
+              isSubmittingDraft={isSubmittingDraft}
+              onApproveOutline={handleApproveOutline}
+              onApproveDraft={handleApproveDraft}
+              onRefresh={() => { startSse(selectedJob.id); fetchJobs() }}
+              onCopy={copyText}
+              onCancel={handleCancelJob}
+              onOpenInOS={openInOS}
+              onRetry={handleRetryFromJob}
+              healthOffline={healthStatus === "offline"}
+              sseStatus={sseStatus}
+              lastEventAt={lastEventAt}
+              outlineDraftRestoredTs={outlineDraftRestoredTs}
+              onReloadOutlineOriginal={() => selectedJob && loadOutline(selectedJob.id, true)}
+              setDraftContent={setDraftContent}
+              draftViewMode={draftViewMode}
+              setDraftViewMode={setDraftViewMode}
+              draftEditRestoredTs={draftEditRestoredTs}
+              onReloadDraftOriginal={() => selectedJob && loadDraftAndReview(selectedJob.id, true)}
+              onOpenSettings={() => { setShowSettings(true); setIsCreating(false); setSelectedJobId(null) }}
+            />
+          ) : (
+            <EmptyState />
+          )}
+        </main>
+        </div>
+      </div>
+    </TooltipProvider>
+  )
+}
+
+// ═══════════════════ Status Badge ═══════════════════
+function StatusBadge({ status }: { status: string }) {
+  switch (status) {
+    case "queued":
+      return <Badge variant="secondary" className="shrink-0">排队中</Badge>
+    case "running":
+      return (
+        <Badge className="shrink-0 bg-blue-500/15 text-blue-400 border-blue-500/30 hover:bg-blue-500/15">
+          <Loader2 className="animate-spin" />执行中
+        </Badge>
+      )
+    case "paused":
+      return <Badge className="shrink-0 bg-amber-500/15 text-amber-400 border-amber-500/30 hover:bg-amber-500/15">待人工审批</Badge>
+    case "succeeded":
+      return <Badge className="shrink-0 bg-emerald-500/15 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/15">已完成</Badge>
+    case "draft":
+      return <Badge className="shrink-0 bg-amber-500/15 text-amber-400 border-amber-500/30 hover:bg-amber-500/15">DRAFT</Badge>
+    case "failed":
+      return <Badge variant="destructive" className="shrink-0">失败</Badge>
+    default:
+      return <Badge variant="outline" className="shrink-0">{status}</Badge>
+  }
+}
+
+// ═══════════════════ Failure Diagnosis Hook ═══════════════════
+// 任务失败时自动用 task 的配置打一次 /api/test-llm,把"配置错还是网络问题"立刻定位。
+// 每个 job.id 只跑一次,不重复浪费请求。
+function useFailureDiagnosis(job: EngineJob | null): { diagnosis: TestLLMResult | null; isDiagnosing: boolean } {
+  const [diagnosis, setDiagnosis] = useState<TestLLMResult | null>(null)
+  const [isDiagnosing, setIsDiagnosing] = useState(false)
+  const runForRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    if (!job || job.status !== "failed") {
+      setDiagnosis(null)
+      setIsDiagnosing(false)
+      runForRef.current = null
+      return
+    }
+    if (runForRef.current === job.id) return
+    runForRef.current = job.id
+    setIsDiagnosing(true)
+    setDiagnosis(null)
+
+    const apiKey = readLlmSettings().apiKey || undefined
+    const body = {
+      api_key: apiKey,
+      api_base: job.request.api_base,
+      model: job.request.model,
+    }
+    fetch(API_BASE + "/api/test-llm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })
+      .then(async r => {
+        if (r.status === 404) {
+          return { ok: false, error: "后端版本过旧,/api/test-llm 端点未注册" } as TestLLMResult
+        }
+        if (!r.ok) return { ok: false, error: `HTTP ${r.status}` } as TestLLMResult
+        return r.json() as Promise<TestLLMResult>
+      })
+      .then(data => setDiagnosis(data))
+      .catch(e => setDiagnosis({ ok: false, error: String(e) }))
+      .finally(() => setIsDiagnosing(false))
+  }, [job?.id, job?.status, job])
+
+  return { diagnosis, isDiagnosing }
+}
+
+// ═══════════════════ SSE Status Indicator ═══════════════════
+// 顶部"实时连接"小灯,告诉用户日志流是否还在,断了多久了,正在重连第几次。
+function SseStatusIndicator({
+  status,
+  lastEventAt,
+}: {
+  status: "idle" | "connecting" | "connected" | "reconnecting" | "terminal"
+  lastEventAt: number | null
+}) {
+  // 让 "Xs 前" 每秒刷新一次
+  const [, setTick] = useState(0)
+  useEffect(() => {
+    if (status !== "connected") return
+    const t = window.setInterval(() => setTick(n => n + 1), 1000)
+    return () => window.clearInterval(t)
+  }, [status])
+
+  if (status === "idle" || status === "terminal") return null
+
+  const elapsedSec = lastEventAt != null ? Math.max(0, Math.floor((Date.now() - lastEventAt) / 1000)) : null
+  const elapsedLabel = elapsedSec == null
+    ? null
+    : elapsedSec < 60
+      ? `${elapsedSec}s 前`
+      : `${Math.floor(elapsedSec / 60)}分钟前`
+
+  let dotClass = "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.6)]"
+  let textClass = "text-emerald-400"
+  let label: string
+
+  if (status === "connecting") {
+    dotClass = "bg-amber-400 animate-pulse"
+    textClass = "text-amber-400"
+    label = "连接中…"
+  } else if (status === "reconnecting") {
+    dotClass = "bg-amber-500 animate-pulse"
+    textClass = "text-amber-400"
+    label = "已断开 · 重连中…"
+  } else {
+    // connected
+    label = elapsedLabel ? `实时 · ${elapsedLabel}` : "实时"
+  }
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-muted/30 border text-[11px] cursor-default select-none">
+          <span className={cn("size-1.5 rounded-full shrink-0", dotClass)} />
+          <span className={cn("font-medium tabular-nums", textClass)}>{label}</span>
+        </div>
+      </TooltipTrigger>
+      <TooltipContent side="bottom">
+        <p className="text-xs">
+          {status === "connected" && "事件流实时连接中"}
+          {status === "connecting" && "正在建立事件流"}
+          {status === "reconnecting" && "事件流断开,正在按指数退避重连"}
+        </p>
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
+// ═══════════════════ Failure Banner ═══════════════════
+// 任务失败时把 job.error 顶到醒目位置,不让用户在日志里挖。
+// 关键体验:**自动归因** —— 用任务的 model/api_base + 本地 api_key 立刻 ping 一次 /api/test-llm,
+// 把"是配置错还是网络抽风"这个核心问题在 banner 里直接回答掉。
+function FailureBanner({
+  error,
+  diagnosis,
+  isDiagnosing,
+  currentModel,
+  onCopy,
+  onRetry,
+  onRetryWithModel,
+  onOpenSettings,
+}: {
+  error: string
+  diagnosis: TestLLMResult | null
+  isDiagnosing: boolean
+  currentModel?: string  // 任务原本用的 model,用于把它从"换模型"chip 里过滤掉
+  onCopy: (t: string) => void
+  onRetry: () => void
+  onRetryWithModel: (model: string) => void
+  onOpenSettings: () => void
+}) {
+  // 把诊断结果归类成一句"用户语言"的提示
+  const diagnosisHint = useMemo(() => {
+    if (!diagnosis) return null
+    if (diagnosis.ok) {
+      return {
+        tone: "neutral" as const,
+        title: "LLM 配置本身可用",
+        body: `用相同配置 ping 成功 (${diagnosis.latency_ms ?? "?"}ms,model=${diagnosis.model || "?"})。
+超时大概率是本次任务级别的问题:提示词过长 / 模型一时负载高 / 或单次响应耗时超过 90s。建议重试。`,
+      }
+    }
+    const cls = classifyDiagnosis(diagnosis.error || "")
+    return {
+      tone: "actionable" as const,
+      title: `根因高度疑似:${cls.kind === "model_not_found" ? "模型名错误"
+        : cls.kind === "auth" ? "API Key 错误"
+        : cls.kind === "forbidden" ? "权限不足"
+        : cls.kind === "rate_limit" ? "速率/配额限制"
+        : cls.kind === "missing_key" ? "未配 API Key"
+        : cls.kind === "timeout" ? "API 不可达 / 模型可能不存在"
+        : "未知"}`,
+      body: cls.hint,
+    }
+  }, [diagnosis])
+
+  return (
+    <Alert variant="destructive" className="mt-3">
+      <AlertCircle />
+      <AlertTitle className="flex items-center justify-between gap-2">
+        <span>任务失败</span>
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="outline" onClick={() => onCopy(error)} className="h-7">
+            <Copy data-icon="inline-start" />
+            复制错误
+          </Button>
+          <Button size="sm" onClick={onRetry} className="h-7">
+            <RotateCw data-icon="inline-start" />
+            以相同参数重跑
+          </Button>
+        </div>
+      </AlertTitle>
+      <AlertDescription>
+        <pre className="mt-1 text-xs whitespace-pre-wrap break-all max-h-32 overflow-y-auto font-mono">
+          {error}
+        </pre>
+
+        {/* 自动诊断结果区块 —— 把"为什么超时"这个核心问题尽量回答出来 */}
+        <div className="mt-3 p-2.5 rounded border bg-card/60">
+          <div className="flex items-center gap-2 text-xs font-semibold mb-1">
+            <span>🔍 自动诊断</span>
+            {isDiagnosing && <Loader2 className="size-3 animate-spin" />}
+          </div>
+          {isDiagnosing && (
+            <div className="text-xs text-muted-foreground">
+              正在用任务的 model / api_base + 本地 API Key 调一次 /api/test-llm…
+            </div>
+          )}
+          {!isDiagnosing && !diagnosis && (
+            <div className="text-xs text-muted-foreground">
+              暂无诊断结果(可能后端版本过旧、缺少 /api/test-llm 端点)。
+            </div>
+          )}
+          {!isDiagnosing && diagnosis && diagnosisHint && (
+            <div className="text-xs flex flex-col gap-1.5">
+              <div className={cn(
+                "font-semibold",
+                diagnosisHint.tone === "actionable" ? "text-amber-300" : "text-emerald-300",
+              )}>
+                {diagnosisHint.title}
+              </div>
+              <div className="text-foreground/85 whitespace-pre-wrap leading-relaxed">
+                {diagnosisHint.body}
+              </div>
+            </div>
+          )}
+
+          {/* 快速修复按钮组 —— 换模型重跑(主路径) + 打开 Settings(配置类问题) */}
+          {!isDiagnosing && diagnosis && (
+            <div className="flex items-center gap-1.5 mt-2.5 pt-2 border-t border-border/40 flex-wrap">
+              <span className="text-[11px] text-muted-foreground shrink-0">快速修复:</span>
+              {COMMON_MODELS.filter(m => m !== currentModel).slice(0, 3).map(m => (
+                <Button
+                  key={m}
+                  size="sm"
+                  variant="outline"
+                  onClick={() => onRetryWithModel(m)}
+                  className="h-7 text-xs"
+                  title={`把 model 换成 ${m} 重新提交,其他参数保持不变`}
+                >
+                  <RotateCw data-icon="inline-start" />
+                  换 <code className="font-mono">{m}</code> 重跑
+                </Button>
+              ))}
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={onOpenSettings}
+                className="h-7 text-xs"
+              >
+                <Settings data-icon="inline-start" />
+                打开 Settings
+              </Button>
+            </div>
+          )}
+        </div>
+      </AlertDescription>
+    </Alert>
+  )
+}
+
+// ═══════════════════ Job List (live + historical) ═══════════════════
+type JobFilter = "all" | "active" | "waiting" | "done" | "failed"
+
+interface JobListProps {
+  liveJobs: EngineJob[]
+  historicalJobs: EngineJob[]
+  selectedId: string | null
+  query: string
+  filter: JobFilter
+  onSelect: (id: string) => void
+}
+
+// 同一个 job 是否命中过滤条件
+function matchesJobFilter(job: EngineJob, filter: JobFilter): boolean {
+  if (filter === "all") return true
+  switch (filter) {
+    case "active":
+      return job.status === "running" || job.status === "queued"
+    case "waiting":
+      return job.status === "paused"
+    case "done":
+      // succeeded 实时任务 + 历史归档 + draft 落盘 都算"已完成"
+      return job.status === "succeeded" || job.status === "draft" || job.kind === "historical"
+    case "failed":
+      return job.status === "failed"
+  }
+}
+
+function matchesJobQuery(job: EngineJob, q: string): boolean {
+  if (!q) return true
+  const lower = q.toLowerCase()
+  return (
+    job.stem.toLowerCase().includes(lower) ||
+    job.request.speaker.toLowerCase().includes(lower) ||
+    job.request.routing.toLowerCase().includes(lower)
+  )
+}
+
+function JobList({ liveJobs, historicalJobs, selectedId, query, filter, onSelect }: JobListProps) {
+  // 历史归档去重:同 path 已经在 live 里出现过的(刚跑完还在内存)就不重复显示
+  const livePaths = new Set(liveJobs.map(j => j.final_post_path).filter(Boolean) as string[])
+  const dedupedHistorical = historicalJobs.filter(h => !h.final_post_path || !livePaths.has(h.final_post_path))
+
+  // 再叠加 query + filter
+  const liveFiltered = liveJobs.filter(j => matchesJobFilter(j, filter) && matchesJobQuery(j, query))
+  const historicalFiltered = dedupedHistorical.filter(j => matchesJobFilter(j, filter) && matchesJobQuery(j, query))
+
+  const hasAnyRaw = liveJobs.length > 0 || dedupedHistorical.length > 0
+  const hasAnyFiltered = liveFiltered.length > 0 || historicalFiltered.length > 0
+  const isFiltering = !!query || filter !== "all"
+
+  if (!hasAnyRaw) {
+    return (
+      <div className="text-center py-12 text-muted-foreground text-sm px-4">
+        还没有任务,从上方"新建"开始。
+      </div>
+    )
+  }
+
+  if (!hasAnyFiltered) {
+    return (
+      <div className="text-center py-12 text-muted-foreground text-sm px-4">
+        {isFiltering ? "当前过滤下没有匹配的任务" : "没有任务"}
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      {liveFiltered.length > 0 && (
+        <>
+          <SectionHeader>当前会话{isFiltering ? ` · ${liveFiltered.length}` : ""}</SectionHeader>
+          <div className="flex flex-col gap-1">
+            {liveFiltered.map(job => (
+              <JobRow key={job.id} job={job} selected={selectedId === job.id} onClick={() => onSelect(job.id)} />
+            ))}
+          </div>
+        </>
+      )}
+
+      {historicalFiltered.length > 0 && (
+        <>
+          {liveFiltered.length > 0 && <div className="my-1 border-t" />}
+          <SectionHeader>历史归档 · {historicalFiltered.length} 篇{isFiltering && ` / ${dedupedHistorical.length}`}</SectionHeader>
+          <div className="flex flex-col gap-1">
+            {historicalFiltered.map(job => (
+              <JobRow key={job.id} job={job} selected={selectedId === job.id} onClick={() => onSelect(job.id)} historical />
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+function SectionHeader({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-muted-foreground/70 font-semibold select-none">
+      {children}
+    </div>
+  )
+}
+
+function JobRow({ job, selected, onClick, historical }: { job: EngineJob; selected: boolean; onClick: () => void; historical?: boolean }) {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "group text-left p-3 rounded-lg border transition-all w-full",
+        selected
+          ? "bg-primary/10 border-primary/30"
+          : "bg-transparent border-transparent hover:bg-accent hover:border-border",
+        historical && !selected && "opacity-75 hover:opacity-100",
+      )}
+    >
+      <div className="flex items-start justify-between gap-2 mb-1.5">
+        <h3
+          className="font-semibold text-sm line-clamp-2 flex-1 min-w-0 break-all"
+          title={job.stem}
+        >
+          {job.stem}
+        </h3>
+        <StatusBadge status={job.status} />
+      </div>
+      <div className="flex items-center justify-between text-xs text-muted-foreground">
+        <span className="flex items-center gap-1 truncate">
+          <User className="size-3.5 shrink-0" /> {job.request.speaker}
+        </span>
+        <span className="shrink-0">
+          {historical
+            ? job.created_at
+            : (job.request.mode === "full" ? "完整流程" : "极速改写")}
+        </span>
+      </div>
+    </button>
+  )
+}
+
+// ═══════════════════ Empty State ═══════════════════
+// 离线提示已由顶部全局 OfflineBar 统一承担,这里只保留产品价值文案。
+function EmptyState() {
+  return (
+    <div className="flex-1 flex items-center justify-center p-8">
+      <Empty className="max-w-md">
+        <EmptyHeader>
+          <EmptyMedia variant="icon" className="bg-primary/10 text-primary">
+            <Zap />
+          </EmptyMedia>
+          <EmptyTitle>把素材变成你的署名博文</EmptyTitle>
+          <EmptyDescription>
+            选左侧任务查看进度,或点上方<b>「新建改写任务」</b>从一段 raw.txt 或文字稿开始。
+            AI 会按你的合同清洗、提炼、搭骨架、改写,再做六维质检,最后落盘到 <code className="text-xs">output/Posts/</code>。
+          </EmptyDescription>
+        </EmptyHeader>
+      </Empty>
+    </div>
+  )
+}
+
+// ═══════════════════ Job Workspace ═══════════════════
+interface JobWorkspaceProps {
+  job: EngineJob
+  activeTab: "console" | "outline" | "review" | "final"
+  setActiveTab: (v: "console" | "outline" | "review" | "final") => void
+  logs: string[]
+  currentStep: number | null
+  pausedAt: "outline" | "review" | null
+  outlineText: string
+  setOutlineText: (v: string) => void
+  outlineViewMode: "edit" | "preview" | "split"
+  setOutlineViewMode: (v: "edit" | "preview" | "split") => void
+  draftContent: string
+  reviewJson: ReviewJson | null
+  isSubmittingOutline: boolean
+  isSubmittingDraft: boolean
+  onApproveOutline: () => void
+  onApproveDraft: (accept: boolean) => void
+  onRefresh: () => void
+  onCopy: (text: string) => void
+  onCancel: () => void
+  onOpenInOS: (path: string, mode: "finder" | "editor") => void
+  onRetry: (job: EngineJob, modelOverride?: string) => void
+  healthOffline: boolean
+  sseStatus: "idle" | "connecting" | "connected" | "reconnecting" | "terminal"
+  lastEventAt: number | null
+  outlineDraftRestoredTs: number | null
+  onReloadOutlineOriginal: () => void
+  setDraftContent: (v: string) => void
+  draftViewMode: "edit" | "preview" | "split"
+  setDraftViewMode: (v: "edit" | "preview" | "split") => void
+  draftEditRestoredTs: number | null
+  onReloadDraftOriginal: () => void
+  onOpenSettings: () => void
+}
+
+function JobWorkspace(props: JobWorkspaceProps) {
+  const { job, activeTab, setActiveTab, logs, currentStep, pausedAt } = props
+  const isHistorical = job.kind === "historical"
+  const isFailed = job.status === "failed"
+  // SSE 指示器只在"还可能在跑"的任务上显示;历史归档 / 已 succeeded / 已 failed 都不要
+  const showSseIndicator = !isHistorical && job.status !== "succeeded" && job.status !== "failed"
+  // 失败自动归因 —— hook 内部已经做去重,每个 job.id 只跑一次
+  const { diagnosis, isDiagnosing } = useFailureDiagnosis(isFailed ? job : null)
+
+  return (
+    <div className="flex flex-col h-full overflow-hidden">
+      {/* Header */}
+      <div className="px-6 pt-5 pb-2 border-b">
+        <div className="flex items-start justify-between gap-4 mb-3">
+          <div className="flex-1 min-w-0">
+            <h2 className="text-xl font-bold text-foreground flex items-center gap-2 flex-wrap">
+              <span className="truncate">{job.stem}</span>
+              {!isHistorical && (
+                <code className="text-xs font-mono text-muted-foreground font-normal">
+                  ({job.id.substring(0, 8)})
+                </code>
+              )}
+              <StatusBadge status={job.status} />
+              {isHistorical && job.pass_score && (
+                <Badge variant="outline" className="text-xs">{job.pass_score}</Badge>
+              )}
+            </h2>
+            <div className="flex items-center gap-4 text-xs text-muted-foreground mt-1 flex-wrap">
+              <span className="flex items-center gap-1"><User className="size-3" /> {job.request.speaker}</span>
+              <span>路由 <code className="text-xs">{job.request.routing}</code></span>
+              <span>模式 <code className="text-xs">{job.request.mode}</code></span>
+              {/* 模型 / API Base —— 失败任务定位根因最关键的两个字段,顶到 Header 而不是埋在表单里 */}
+              <span title={job.request.model || "未指定,后端走环境变量默认"}>
+                模型 <code className={cn("text-xs", !job.request.model && "text-muted-foreground/60")}>
+                  {job.request.model || "环境默认"}
+                </code>
+              </span>
+              {job.request.api_base && (
+                <span title={job.request.api_base}>
+                  API <code className="text-xs">{shortApiBase(job.request.api_base)}</code>
+                </span>
+              )}
+              <span className="truncate max-w-[300px]">源 <code className="text-xs">{job.request.source}</code></span>
+              {(job.input_tokens > 0 || job.output_tokens > 0) && (
+                <span className="flex items-center gap-1.5 ml-auto">
+                  <span className="flex items-center gap-1">
+                    <DollarSign className="size-3 text-emerald-500" />
+                    <span className="font-mono text-emerald-400">${job.estimated_cost_usd.toFixed(4)}</span>
+                  </span>
+                  <span className="text-muted-foreground/60">·</span>
+                  <span className="font-mono">
+                    {(job.input_tokens / 1000).toFixed(1)}k in / {(job.output_tokens / 1000).toFixed(1)}k out
+                  </span>
+                </span>
+              )}
+            </div>
+          </div>
+          {!isHistorical && (
+            <div className="flex items-center gap-2 shrink-0">
+              {showSseIndicator && (
+                <SseStatusIndicator status={props.sseStatus} lastEventAt={props.lastEventAt} />
+              )}
+              {(job.status === "running" || job.status === "queued" || job.status === "paused") && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={props.onCancel}
+                      disabled={props.healthOffline}
+                      className="size-8 text-destructive hover:text-destructive hover:bg-destructive/10"
+                    >
+                      <XCircle />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom">
+                    {props.healthOffline ? "后端离线,无法取消" : "取消任务(引擎会在下一个 checkpoint 退出)"}
+                  </TooltipContent>
+                </Tooltip>
+              )}
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button variant="ghost" size="icon" onClick={props.onRefresh} className="size-8">
+                    <RotateCw />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom">刷新状态与日志</TooltipContent>
+              </Tooltip>
+            </div>
+          )}
+        </div>
+
+        {/* Step progress bar — 历史归档直接全绿(已成品)*/}
+        <StepProgress
+          mode={job.request.mode as "full" | "quick"}
+          jobStatus={isHistorical ? "succeeded" : job.status}
+          currentStep={isHistorical ? 8 : currentStep}
+          pausedAt={pausedAt}
+          onJump={target => {
+            // 历史归档只允许跳 final;非历史可任意跳
+            if (isHistorical && target !== "final") return
+            setActiveTab(target)
+          }}
+        />
+
+        {/* 失败 Banner —— 让 job.error 不再藏在日志深处,并嵌一份自动诊断 + 一键换模型重跑 */}
+        {isFailed && (
+          <FailureBanner
+            error={job.error || "未知错误(后端未返回 error 字段)"}
+            diagnosis={diagnosis}
+            isDiagnosing={isDiagnosing}
+            currentModel={job.request.model}
+            onCopy={props.onCopy}
+            onRetry={() => props.onRetry(job)}
+            onRetryWithModel={(m) => props.onRetry(job, m)}
+            onOpenSettings={props.onOpenSettings}
+          />
+        )}
+      </div>
+
+      {/* Tabs — 历史归档只暴露"成品及报告"tab(没日志、没暂停产物)*/}
+      <Tabs value={activeTab} onValueChange={v => setActiveTab(v as "console" | "outline" | "review" | "final")} className="flex-1 flex flex-col overflow-hidden">
+        <div className="px-6 pt-3">
+          <TabsList>
+            {!isHistorical && (
+              <TabsTrigger value="console">
+                <Layers data-icon="inline-start" />
+                运行日志
+              </TabsTrigger>
+            )}
+            {!isHistorical && job.status === "paused" && props.outlineText && !props.draftContent && (
+              <TabsTrigger value="outline">
+                <ListTree data-icon="inline-start" />
+                骨架大纲审批
+              </TabsTrigger>
+            )}
+            {!isHistorical && job.status === "paused" && props.draftContent && (
+              <TabsTrigger value="review">
+                <Edit data-icon="inline-start" />
+                草稿与质检
+              </TabsTrigger>
+            )}
+            {(isHistorical || job.status === "succeeded") && (
+              <TabsTrigger value="final">
+                <Award data-icon="inline-start" />
+                {isHistorical ? "成品归档" : "成品及报告"}
+              </TabsTrigger>
+            )}
+          </TabsList>
+        </div>
+
+        <div className="flex-1 overflow-hidden px-6 py-4">
+          <TabsContent value="console" className="h-full m-0">
+            <LogConsole logs={logs} className="h-full" />
+          </TabsContent>
+
+          <TabsContent value="outline" className="h-full m-0">
+            <OutlineView {...props} />
+          </TabsContent>
+
+          <TabsContent value="review" className="h-full m-0">
+            <DraftReviewView {...props} />
+          </TabsContent>
+
+          <TabsContent value="final" className="h-full m-0">
+            <FinalView job={job} onCopy={props.onCopy} onOpenInOS={props.onOpenInOS} />
+          </TabsContent>
+        </div>
+      </Tabs>
+    </div>
+  )
+}
+
+// ═══════════════════ Outline Edit View ═══════════════════
+function OutlineView({ outlineText, setOutlineText, outlineViewMode, setOutlineViewMode, isSubmittingOutline, onApproveOutline, job, healthOffline, outlineDraftRestoredTs, onReloadOutlineOriginal }: JobWorkspaceProps) {
+  return (
+    <div className="flex flex-col h-full gap-4">
+      {outlineDraftRestoredTs && (
+        <Alert className="border-amber-500/30 bg-amber-500/5 py-2">
+          <RotateCw className="text-amber-500" />
+          <AlertTitle className="flex items-center justify-between gap-2 text-sm">
+            <span>已恢复 {formatRelativeTime(outlineDraftRestoredTs)}的本地编辑</span>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={onReloadOutlineOriginal}
+              className="h-7 text-xs"
+            >
+              <X data-icon="inline-start" />
+              丢弃,载入后端原始
+            </Button>
+          </AlertTitle>
+        </Alert>
+      )}
+      <Alert className="border-primary/30 bg-primary/5">
+        <ListTree className="text-primary" />
+        <AlertTitle className="flex items-center justify-between">
+          <span>Step 5 · 骨架大纲审批</span>
+          <Button onClick={onApproveOutline} disabled={isSubmittingOutline || healthOffline} size="sm" title={healthOffline ? "后端离线,无法提交" : undefined}>
+            {isSubmittingOutline ? <Loader2 data-icon="inline-start" className="animate-spin" /> : <Check data-icon="inline-start" />}
+            批准大纲并开始撰写
+          </Button>
+        </AlertTitle>
+        <AlertDescription>
+          AI 已生成博文骨架,审查后批准会进入 Step 6 全文撰写。改了就改了,这是你的最后一次结构性干预。
+        </AlertDescription>
+      </Alert>
+
+      <Card className="flex-1 flex flex-col overflow-hidden">
+        <CardHeader className="py-2.5 px-4 border-b flex-row items-center justify-between space-y-0">
+          <code className="text-xs text-muted-foreground">work/{job.stem}/outline.md</code>
+          <div className="flex items-center gap-1">
+            <Button
+              variant={outlineViewMode === "edit" ? "secondary" : "ghost"}
+              size="sm"
+              onClick={() => setOutlineViewMode("edit")}
+              className="h-7 text-xs"
+            >
+              源码
+            </Button>
+            <Button
+              variant={outlineViewMode === "split" ? "secondary" : "ghost"}
+              size="sm"
+              onClick={() => setOutlineViewMode("split")}
+              className="h-7 text-xs"
+            >
+              分屏
+            </Button>
+            <Button
+              variant={outlineViewMode === "preview" ? "secondary" : "ghost"}
+              size="sm"
+              onClick={() => setOutlineViewMode("preview")}
+              className="h-7 text-xs"
+            >
+              预览
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent className="p-0 flex-1 overflow-hidden">
+          {outlineViewMode === "split" ? (
+            <div className="grid grid-cols-2 h-full divide-x">
+              <textarea
+                value={outlineText}
+                onChange={e => setOutlineText(e.target.value)}
+                className="w-full h-full bg-transparent p-4 font-mono text-sm leading-relaxed text-foreground outline-none resize-none"
+                spellCheck={false}
+              />
+              <ScrollArea className="h-full">
+                <div className="p-6">
+                  <MarkdownView source={outlineText} />
+                </div>
+              </ScrollArea>
+            </div>
+          ) : outlineViewMode === "edit" ? (
+            <textarea
+              value={outlineText}
+              onChange={e => setOutlineText(e.target.value)}
+              className="w-full h-full bg-transparent p-4 font-mono text-sm leading-relaxed text-foreground outline-none resize-none"
+              spellCheck={false}
+            />
+          ) : (
+            <ScrollArea className="h-full">
+              <div className="p-6">
+                <MarkdownView source={outlineText} />
+              </div>
+            </ScrollArea>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+// ═══════════════════ Draft + Review View ═══════════════════
+function DraftReviewView({ draftContent, setDraftContent, reviewJson, isSubmittingDraft, onApproveDraft, healthOffline, draftViewMode, setDraftViewMode, draftEditRestoredTs, onReloadDraftOriginal }: JobWorkspaceProps) {
+  const parseFailed = reviewJson?.parse_failed === true
+  const offlineTitle = healthOffline ? "后端离线,无法提交" : undefined
+
+  return (
+    <div className="flex flex-col h-full gap-4">
+      {/* 草稿编辑恢复 Banner —— 跟 OutlineView 同款 */}
+      {draftEditRestoredTs && (
+        <Alert className="border-amber-500/30 bg-amber-500/5 py-2">
+          <RotateCw className="text-amber-500" />
+          <AlertTitle className="flex items-center justify-between gap-2 text-sm">
+            <span>已恢复 {formatRelativeTime(draftEditRestoredTs)}的本地编辑</span>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={onReloadDraftOriginal}
+              className="h-7 text-xs"
+            >
+              <X data-icon="inline-start" />
+              丢弃,载入后端原始
+            </Button>
+          </AlertTitle>
+        </Alert>
+      )}
+
+      {/* Banner — 区分 parse_failed 和正常 REVIEW */}
+      {parseFailed ? (
+        <Alert variant="destructive">
+          <AlertCircle />
+          <AlertTitle className="flex items-center justify-between">
+            <span>Step 7 质检系统失效,请人工裁判</span>
+            <div className="flex gap-2">
+              <Button onClick={() => onApproveDraft(true)} disabled={isSubmittingDraft || healthOffline} title={offlineTitle} size="sm" className="bg-emerald-600 hover:bg-emerald-500">
+                {isSubmittingDraft ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <Check data-icon="inline-start" />}
+                接受并以 DRAFT 落盘
+              </Button>
+              <Button onClick={() => onApproveDraft(false)} disabled={isSubmittingDraft || healthOffline} title={offlineTitle} size="sm" variant="outline">
+                <X data-icon="inline-start" />
+                拒绝并中止
+              </Button>
+            </div>
+          </AlertTitle>
+          <AlertDescription>
+            LLM 没按合同输出评分表,引擎跳过了自修正,把决定权交给你。读右侧草稿,
+            <b className="text-foreground">需要小修可直接在编辑器里改</b>,改完点"接受"会一并回写后端。
+          </AlertDescription>
+        </Alert>
+      ) : (
+        <Alert className="border-amber-500/40 bg-amber-500/5">
+          <Award className="text-amber-500" />
+          <AlertTitle className="flex items-center justify-between">
+            <span>Step 7 · 质检人工审批</span>
+            <div className="flex gap-2">
+              <Button onClick={() => onApproveDraft(true)} disabled={isSubmittingDraft || healthOffline} title={offlineTitle} size="sm" className="bg-emerald-600 hover:bg-emerald-500">
+                {isSubmittingDraft ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <Check data-icon="inline-start" />}
+                接受为草稿 (DRAFT)
+              </Button>
+              <Button onClick={() => onApproveDraft(false)} disabled={isSubmittingDraft || healthOffline} title={offlineTitle} size="sm" variant="outline">
+                <X data-icon="inline-start" />
+                拒绝并中止
+              </Button>
+            </div>
+          </AlertTitle>
+          <AlertDescription>
+            博文初稿已生成,但未达到自动发布阈值。看一眼右侧草稿,
+            <b className="text-foreground">需要小修可直接在编辑器里改</b>,改完点"接受为草稿"会一并回写后端;也可弃用重跑。
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {/* Score card (左) + Draft preview (右) */}
+      <div className="flex-1 grid grid-cols-3 gap-4 overflow-hidden">
+        {/* Score card */}
+        <Card className="col-span-1 overflow-hidden flex flex-col">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base flex items-center justify-between">
+              <span>质检得分</span>
+              <span className={cn("text-2xl font-bold tabular-nums", parseFailed ? "text-destructive" : "text-amber-400")}>
+                {reviewJson?.total ?? "—"}
+              </span>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="flex-1 overflow-hidden flex flex-col gap-4">
+            {reviewJson && !parseFailed && Object.entries(reviewJson.scores || {}).length > 0 && (
+              <div className="flex flex-col gap-2.5">
+                {Object.entries(reviewJson.scores).map(([dim, score]) => (
+                  <ScoreBar key={dim} dim={dim} score={score} />
+                ))}
+              </div>
+            )}
+            <Separator />
+            <div className="flex-1 overflow-hidden flex flex-col">
+              <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
+                Re-Brief 改进建议
+              </h4>
+              <ScrollArea className="flex-1">
+                <div className="text-xs text-foreground/80 leading-relaxed pr-2 whitespace-pre-wrap">
+                  {reviewJson?.rebrief?.trim() || (
+                    <span className="text-muted-foreground italic">无具体反馈。可能 LLM 直接给了 PASS,或质检解析失败正在加载详细原因。</span>
+                  )}
+                </div>
+              </ScrollArea>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Draft 编辑/预览 —— 三档切换,改完接受时一并回写后端 */}
+        <Card className="col-span-2 overflow-hidden flex flex-col">
+          <CardHeader className="py-2.5 px-4 border-b flex-row items-center justify-between space-y-0">
+            <div className="flex items-center gap-2 min-w-0">
+              <CardTitle className="text-sm font-normal text-muted-foreground">草稿</CardTitle>
+              <code className="text-[10px] text-muted-foreground/60 truncate">draft_v{reviewJson?.version ?? 1}.md</code>
+            </div>
+            <div className="flex items-center gap-1 shrink-0">
+              <Button
+                variant={draftViewMode === "edit" ? "secondary" : "ghost"}
+                size="sm"
+                onClick={() => setDraftViewMode("edit")}
+                className="h-7 text-xs"
+              >
+                源码
+              </Button>
+              <Button
+                variant={draftViewMode === "split" ? "secondary" : "ghost"}
+                size="sm"
+                onClick={() => setDraftViewMode("split")}
+                className="h-7 text-xs"
+              >
+                分屏
+              </Button>
+              <Button
+                variant={draftViewMode === "preview" ? "secondary" : "ghost"}
+                size="sm"
+                onClick={() => setDraftViewMode("preview")}
+                className="h-7 text-xs"
+              >
+                预览
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent className="p-0 flex-1 overflow-hidden">
+            {!draftContent ? (
+              <div className="px-6 py-5 text-muted-foreground italic text-sm">正在加载初稿...</div>
+            ) : draftViewMode === "split" ? (
+              <div className="grid grid-cols-2 h-full divide-x">
+                <textarea
+                  value={draftContent}
+                  onChange={e => setDraftContent(e.target.value)}
+                  className="w-full h-full bg-transparent p-4 font-mono text-sm leading-relaxed text-foreground outline-none resize-none"
+                  spellCheck={false}
+                />
+                <ScrollArea className="h-full">
+                  <div className="px-6 py-5">
+                    <MarkdownView source={draftContent} />
+                  </div>
+                </ScrollArea>
+              </div>
+            ) : draftViewMode === "edit" ? (
+              <textarea
+                value={draftContent}
+                onChange={e => setDraftContent(e.target.value)}
+                className="w-full h-full bg-transparent p-4 font-mono text-sm leading-relaxed text-foreground outline-none resize-none"
+                spellCheck={false}
+              />
+            ) : (
+              <ScrollArea className="h-full">
+                <div className="px-6 py-5">
+                  <MarkdownView source={draftContent} />
+                </div>
+              </ScrollArea>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  )
+}
+
+function ScoreBar({ dim, score }: { dim: string; score: number }) {
+  return (
+    <div className="flex items-center justify-between gap-3 text-xs">
+      <span className="text-foreground/80 shrink-0 w-20">{dim}</span>
+      <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
+        <div
+          className={cn(
+            "h-full rounded-full transition-all",
+            score >= 8 ? "bg-emerald-500" : score >= 5 ? "bg-amber-500" : "bg-destructive",
+          )}
+          style={{ width: `${(score / 10) * 100}%` }}
+        />
+      </div>
+      <span className="font-semibold tabular-nums w-5 text-right">{score}</span>
+    </div>
+  )
+}
+
+// ═══════════════════ Final View ═══════════════════
+function FinalView({ job, onCopy, onOpenInOS }: { job: EngineJob; onCopy: (text: string) => void; onOpenInOS: (path: string, mode: "finder" | "editor") => void }) {
+  const isHistorical = job.kind === "historical"
+  const isDraft = job.is_draft === true || job.status === "draft"
+
+  return (
+    <ScrollArea className="h-full">
+      <div className="flex flex-col gap-6 pr-2">
+        {isDraft ? (
+          <Alert className="border-amber-500/40 bg-amber-500/5">
+            <Award className="text-amber-500" />
+            <AlertTitle>DRAFT 归档</AlertTitle>
+            <AlertDescription>
+              本篇是用户接受的 REVIEW 草稿,以 <code>DRAFT-</code> 前缀落盘,不算正式发布。
+            </AlertDescription>
+          </Alert>
+        ) : (
+          <Alert className="border-emerald-500/40 bg-emerald-500/5">
+            <CheckCircle2 className="text-emerald-500" />
+            <AlertTitle>{isHistorical ? "成品归档" : "博文生成成功"}</AlertTitle>
+            <AlertDescription>
+              {isHistorical
+                ? "这是磁盘上扫到的历史成品,通过 frontmatter 重建。"
+                : "通过 Step 7 质量检测并在 Step 8 完成落盘 + HISTORY 追加 + 风格指纹更新。"}
+            </AlertDescription>
+          </Alert>
+        )}
+
+        <div className="grid grid-cols-3 gap-4">
+          <Card className="col-span-2">
+            <CardHeader>
+              <CardTitle className="text-base flex items-center gap-2">
+                <FileText className="size-4 text-primary" />
+                博文成品归档
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-3">
+              <PathRow label="成品路径" path={job.final_post_path} onCopy={onCopy} onOpenInOS={onOpenInOS} />
+              <PathRow label="质检报告" path={job.review_path} onCopy={onCopy} onOpenInOS={onOpenInOS} />
+            </CardContent>
+          </Card>
+
+          {isHistorical ? (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base flex items-center gap-2">
+                  <Award className="size-4 text-primary" />
+                  Frontmatter 信息
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="flex flex-col gap-2 text-xs">
+                <InfoRow label="发布日期" value={job.created_at} />
+                <InfoRow label="演讲人" value={job.request.speaker} />
+                <InfoRow label="路由" value={job.request.routing} />
+                <InfoRow label="模式" value={job.request.mode === "full" ? "完整流程" : "极速改写"} />
+                <InfoRow label="质检得分" value={job.pass_score} mono />
+              </CardContent>
+            </Card>
+          ) : (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base flex items-center gap-2">
+                  <DollarSign className="size-4 text-primary" />
+                  API 消费
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="flex flex-col gap-3">
+                <div>
+                  <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">预估成本</div>
+                  <div className="text-2xl font-bold font-mono">${job.estimated_cost_usd.toFixed(5)}</div>
+                </div>
+                <Separator />
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <div>
+                    <div className="text-muted-foreground mb-0.5">输入 Token</div>
+                    <div className="font-semibold font-mono">{job.input_tokens.toLocaleString()}</div>
+                  </div>
+                  <div>
+                    <div className="text-muted-foreground mb-0.5">输出 Token</div>
+                    <div className="font-semibold font-mono">{job.output_tokens.toLocaleString()}</div>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+        </div>
+      </div>
+    </ScrollArea>
+  )
+}
+
+function InfoRow({ label, value, mono }: { label: string; value?: string; mono?: boolean }) {
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <span className="text-muted-foreground">{label}</span>
+      <code className={cn("text-foreground/90", mono && "font-mono")}>{value || "—"}</code>
+    </div>
+  )
+}
+
+function PathRow({ label, path, onCopy, onOpenInOS }: { label: string; path?: string; onCopy: (text: string) => void; onOpenInOS: (path: string, mode: "finder" | "editor") => void }) {
+  if (!path) return null
+  return (
+    <div>
+      <div className="text-xs text-muted-foreground mb-1">{label}</div>
+      <div className="flex items-center justify-between gap-2 bg-muted/40 px-3 py-2 rounded border text-xs">
+        <code className="text-primary truncate select-all">{path}</code>
+        <div className="flex items-center gap-0.5 shrink-0">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button variant="ghost" size="icon" className="size-7" onClick={() => onCopy(path)}>
+                <Copy />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="top">复制路径</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button variant="ghost" size="icon" className="size-7" onClick={() => onOpenInOS(path, "finder")}>
+                <FolderOpen />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="top">在 Finder 中显示</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button variant="ghost" size="icon" className="size-7" onClick={() => onOpenInOS(path, "editor")}>
+                <ExternalLink />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="top">用默认应用打开</TooltipContent>
+          </Tooltip>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ═══════════════════ Create Form ═══════════════════
+interface CreateFormProps {
+  source: string; setSource: (v: string) => void
+  speaker: string; setSpeaker: (v: string) => void
+  routing: string; setRouting: (v: string) => void
+  mode: "full" | "quick"; setMode: (v: "full" | "quick") => void
+  maxRetries: number; setMaxRetries: (v: number) => void
+  model: string; setModel: (v: string) => void
+  force: boolean; setForce: (v: boolean) => void
+  pauseOnOutline: boolean; setPauseOnOutline: (v: boolean) => void
+  isSubmitting: boolean
+  healthOffline: boolean
+  draftRestoredTs: number | null
+  onDiscardDraft: () => void
+  onSubmit: (e: React.FormEvent) => void
+  onCancel: () => void
+}
+
+// 把秒数 / 分钟数转成"刚刚 / X 分钟前 / X 小时前 / 昨天"——给草稿恢复 banner 用
+function formatRelativeTime(ts: number): string {
+  const diff = Math.floor((Date.now() - ts) / 1000)
+  if (diff < 30) return "刚刚"
+  if (diff < 60) return `${diff} 秒前`
+  if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`
+  if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`
+  return `${Math.floor(diff / 86400)} 天前`
+}
+
+function CreateForm(props: CreateFormProps) {
+  return (
+    <div className="flex-1 overflow-y-auto p-8">
+      <div className="max-w-2xl mx-auto flex flex-col gap-4">
+        {props.draftRestoredTs && (
+          <Alert className="border-primary/30 bg-primary/5">
+            <RotateCw className="text-primary" />
+            <AlertTitle className="flex items-center justify-between gap-2">
+              <span>已恢复 {formatRelativeTime(props.draftRestoredTs)}未提交的草稿</span>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={props.onDiscardDraft}
+                className="h-7 text-xs"
+              >
+                <X data-icon="inline-start" />
+                放弃恢复
+              </Button>
+            </AlertTitle>
+            <AlertDescription>
+              上次离开 CreateForm 时填的内容已自动恢复。继续编辑或点"放弃恢复"重置。
+            </AlertDescription>
+          </Alert>
+        )}
+        <Card>
+          <CardHeader>
+            <CardTitle>新建改写任务</CardTitle>
+            <CardDescription>把视频转录稿、字幕或现成文字稿,改写成演讲人第一人称的可发布博文。</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <form
+              onSubmit={props.onSubmit}
+              onKeyDown={e => {
+                if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                  e.preventDefault()
+                  e.currentTarget.requestSubmit()
+                }
+              }}
+              className="flex flex-col gap-5"
+            >
+              <FormField label="输入源" required hint="从已扫到的 work/<stem>/raw.txt 和 input/Text/* 里选一个;或切换手动输入粘任意路径">
+                <SourcePicker
+                  value={props.source}
+                  onChange={props.setSource}
+                  apiBase={API_BASE}
+                />
+              </FormField>
+
+              <div className="grid grid-cols-2 gap-4">
+                <FormField label="演讲人主体" hint="稿件里的主讲人 / 受访者,可能不是你本人。系统会记住上次输入的名字。">
+                  <input
+                    type="text" value={props.speaker}
+                    onChange={e => props.setSpeaker(e.target.value)}
+                    className="w-full bg-card border rounded-md py-2 px-3 text-sm focus:border-primary outline-none transition-colors"
+                  />
+                </FormField>
+                <FormField label="写作角色路由">
+                  <select
+                    value={props.routing}
+                    onChange={e => props.setRouting(e.target.value)}
+                    className="w-full bg-card border rounded-md py-2 px-3 text-sm focus:border-primary outline-none"
+                  >
+                    <option value="/lecture">/lecture · 讲座分享</option>
+                    <option value="/dialogue">/dialogue · 嘉宾对谈</option>
+                    <option value="/screencast">/screencast · 录屏讲解</option>
+                    <option value="/meeting">/meeting · 决策纪要</option>
+                    <option value="/default">/default · 默认声音</option>
+                  </select>
+                </FormField>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <FormField label="工作流模式">
+                  <select
+                    value={props.mode}
+                    onChange={e => props.setMode(e.target.value as "full" | "quick")}
+                    className="w-full bg-card border rounded-md py-2 px-3 text-sm focus:border-primary outline-none"
+                  >
+                    <option value="full">完整流程(清洗 + 提炼 + 骨架 + 重写 + 质检)</option>
+                    <option value="quick">极速改写(直接重写 + 质检)</option>
+                  </select>
+                </FormField>
+                <FormField label="自修正最大重试" hint="默认 1 轮;不需要可设 0">
+                  <input
+                    type="number" min={0} max={3} value={props.maxRetries}
+                    onChange={e => props.setMaxRetries(parseInt(e.target.value) || 0)}
+                    className="w-full bg-card border rounded-md py-2 px-3 text-sm focus:border-primary outline-none"
+                  />
+                </FormField>
+              </div>
+
+              <FormField label="指定模型(选填)" hint="留空则使用全局设置里的模型,如 deepseek-chat / gpt-4o">
+                <input
+                  type="text" value={props.model}
+                  onChange={e => props.setModel(e.target.value)}
+                  placeholder="例如: deepseek-chat"
+                  className="w-full bg-card border rounded-md py-2 px-3 text-sm focus:border-primary outline-none transition-colors"
+                />
+              </FormField>
+
+              <div className="flex flex-col gap-2.5">
+                <Checkbox label="强制重跑(忽略缓存)" checked={props.force} onChange={props.setForce} />
+                {props.mode === "full" && (
+                  <Checkbox label="大纲生成后暂停审批" checked={props.pauseOnOutline} onChange={props.setPauseOnOutline} hint="关掉则直接跑完全流程,不在 Step 5 后暂停" />
+                )}
+              </div>
+
+              <Separator />
+
+              <div className="flex gap-2">
+                <Button
+                  type="submit"
+                  disabled={props.isSubmitting || props.healthOffline}
+                  title={props.healthOffline ? "后端离线,无法提交" : "提交 (Cmd/Ctrl + Enter)"}
+                  className="flex-1"
+                >
+                  {props.isSubmitting ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <Plus data-icon="inline-start" />}
+                  {props.healthOffline ? "后端离线 · 无法提交" : "提交并开始"}
+                </Button>
+                <Button type="button" variant="outline" onClick={props.onCancel} title="取消 (Esc)">取消</Button>
+              </div>
+            </form>
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  )
+}
+
+function FormField({ label, required, hint, children }: { label: string; required?: boolean; hint?: string; children: React.ReactNode }) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <label className="text-sm font-medium">
+        {label}{required && <span className="text-destructive ml-0.5">*</span>}
+      </label>
+      {children}
+      {hint && <span className="text-xs text-muted-foreground">{hint}</span>}
+    </div>
+  )
+}
+
+function Checkbox({ label, hint, checked, onChange }: { label: string; hint?: string; checked: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <label className="flex items-start gap-2 cursor-pointer select-none">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={e => onChange(e.target.checked)}
+        className="mt-0.5 size-4 accent-primary rounded"
+      />
+      <div className="flex-1">
+        <span className="text-sm">{label}</span>
+        {hint && <div className="text-xs text-muted-foreground mt-0.5">{hint}</div>}
+      </div>
+    </label>
+  )
+}
+
+// ═══════════════════ Settings Form ═══════════════════
+interface SettingsFormProps {
+  apiKey: string; setApiKey: (v: string) => void
+  apiBase: string; setApiBase: (v: string) => void
+  model: string; setModel: (v: string) => void
+  onSubmit: (e: React.FormEvent) => void
+  onCancel: () => void
+}
+
+function SettingsForm(props: SettingsFormProps) {
+  const [isTesting, setIsTesting] = useState(false)
+  const [testResult, setTestResult] = useState<TestLLMResult | null>(null)
+
+  // 当前 localStorage 里的"已保存版本",用于判断有没有未保存改动
+  // 保存动作发生后同步,让 hasUnsavedChanges 能正确反映状态
+  const [savedSnapshot, setSavedSnapshot] = useState(() => readLlmSettings())
+  const hasUnsavedChanges = (
+    props.apiKey.trim() !== savedSnapshot.apiKey.trim() ||
+    props.apiBase.trim() !== savedSnapshot.apiBase.trim() ||
+    props.model.trim() !== savedSnapshot.model.trim()
+  )
+
+  // 真正执行一次 LLM ping
+  const runTest = async () => {
+    setIsTesting(true)
+    setTestResult(null)
+    try {
+      const res = await fetch(apiUrl("/api/test-llm"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          api_key: props.apiKey.trim() || undefined,
+          api_base: props.apiBase.trim() || undefined,
+          model: props.model.trim() || undefined,
+        }),
+      })
+      // 404 大概率是本地后端未重启 —— 给清晰提示,别让用户以为是 DeepSeek 那边 404
+      if (res.status === 404) {
+        setTestResult({
+          ok: false,
+          error: "后端服务版本过旧 · /api/test-llm 端点未注册。\n请重启 scripts/run_engine_server.py 后再试。",
+        })
+        return
+      }
+      if (!res.ok) {
+        // 尽量取后端 JSON 里的 error/detail,不然 fallback 到 HTTP <status>
+        let detail = `HTTP ${res.status}`
+        try {
+          const data = await res.json()
+          if (typeof data?.error === "string") detail = data.error
+          else if (typeof data?.detail === "string") detail = data.detail
+        } catch { /* 非 JSON 响应 */ }
+        setTestResult({ ok: false, error: detail })
+        return
+      }
+      const data: TestLLMResult = await res.json()
+      setTestResult(data)
+    } catch (e) {
+      // fetch 自己抛 = 完全没连上本地 8765
+      setTestResult({ ok: false, error: `无法连接到本地后端 (127.0.0.1:8765): ${String(e)}` })
+    } finally {
+      setIsTesting(false)
+    }
+  }
+
+  // 测试连接 —— 仅基于当前输入,不动 localStorage
+  const handleTest = () => runTest()
+
+  // 保存并测试 —— 一气呵成:先落到 localStorage(让任务运行用得到),再 ping 一次
+  const handleSaveAndTest = async () => {
+    saveLlmSettings({ apiKey: props.apiKey, apiBase: props.apiBase, model: props.model })
+    setSavedSnapshot({
+      apiKey: props.apiKey.trim(),
+      apiBase: props.apiBase.trim(),
+      model: props.model.trim(),
+    })
+    toast.success("配置已保存", { description: "正在测试连接…" })
+    await runTest()
+  }
+
+  return (
+    <div className="flex-1 overflow-y-auto p-8">
+      <div className="max-w-2xl mx-auto">
+        <Card>
+          <CardHeader>
+            <CardTitle>LLM API 全局配置</CardTitle>
+            <CardDescription>本配置仅用于本机浏览器 localStorage,提交任务时会带给 127.0.0.1 后端；更稳妥的长期方案是改用后端环境变量或 Keychain。</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <form
+              onSubmit={e => {
+                // 顺手同步 snapshot,防止父组件保留 SettingsForm 时 hasUnsavedChanges 不复位
+                setSavedSnapshot({
+                  apiKey: props.apiKey.trim(),
+                  apiBase: props.apiBase.trim(),
+                  model: props.model.trim(),
+                })
+                props.onSubmit(e)
+              }}
+              onKeyDown={e => {
+                if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                  e.preventDefault()
+                  e.currentTarget.requestSubmit()
+                }
+              }}
+              className="flex flex-col gap-5"
+            >
+              {hasUnsavedChanges && (
+                <Alert className="border-amber-500/30 bg-amber-500/5 py-2">
+                  <AlertCircle className="text-amber-500" />
+                  <AlertTitle className="text-sm">当前输入未保存</AlertTitle>
+                  <AlertDescription className="text-xs">
+                    任务运行时读的是 localStorage 里
+                    <b className="text-foreground">上次保存的配置</b>,
+                    现在输入框里的改动还没生效 —— 点下面的"保存配置"或"保存并测试"。
+                  </AlertDescription>
+                </Alert>
+              )}
+              <FormField label="API Key" hint="DeepSeek / Anthropic / OpenAI 的 sk-xxx。不会同步到任何外部服务。">
+                <input
+                  type="password" value={props.apiKey}
+                  onChange={e => props.setApiKey(e.target.value)}
+                  placeholder="sk-..."
+                  className="w-full bg-card border rounded-md py-2 px-3 text-sm font-mono focus:border-primary outline-none transition-colors"
+                />
+              </FormField>
+              <FormField label="API Base URL" hint="OpenAI 兼容端点。DeepSeek: https://api.deepseek.com/v1 · OpenAI: https://api.openai.com/v1">
+                <input
+                  type="text" value={props.apiBase}
+                  onChange={e => props.setApiBase(e.target.value)}
+                  placeholder="https://api.deepseek.com/v1"
+                  className="w-full bg-card border rounded-md py-2 px-3 text-sm font-mono focus:border-primary outline-none transition-colors"
+                />
+              </FormField>
+              <FormField label="默认模型" hint="点下方常用模型一键填入,或手动填任意 OpenAI 兼容 model 名">
+                <input
+                  type="text" value={props.model}
+                  onChange={e => props.setModel(e.target.value)}
+                  placeholder="deepseek-chat"
+                  className="w-full bg-card border rounded-md py-2 px-3 text-sm font-mono focus:border-primary outline-none transition-colors"
+                />
+                <div className="flex items-center gap-1 flex-wrap pt-1">
+                  {COMMON_MODELS.map(m => (
+                    <button
+                      key={m}
+                      type="button"
+                      onClick={() => props.setModel(m)}
+                      className={cn(
+                        "px-2 py-0.5 text-[10px] font-mono rounded-full border transition-colors",
+                        props.model.trim() === m
+                          ? "bg-primary/15 border-primary/40 text-primary"
+                          : "bg-transparent border-border text-muted-foreground hover:text-foreground hover:border-foreground/30",
+                      )}
+                    >
+                      {m}
+                    </button>
+                  ))}
+                </div>
+              </FormField>
+
+              {/* 测试连接区块 —— 用最小提示 ping 一次,验证 API Key/Base/Model 是否能通 */}
+              <div className="flex flex-col gap-2 -mb-1">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={handleTest}
+                    disabled={isTesting}
+                    title="基于当前输入 ping LLM,不动 localStorage"
+                  >
+                    {isTesting
+                      ? <Loader2 className="animate-spin" data-icon="inline-start" />
+                      : <Zap data-icon="inline-start" />}
+                    {isTesting ? "测试中…" : "测试连接"}
+                  </Button>
+                  {hasUnsavedChanges && (
+                    <Button
+                      type="button"
+                      variant="default"
+                      size="sm"
+                      onClick={handleSaveAndTest}
+                      disabled={isTesting}
+                      title="把当前输入存到 localStorage 后再 ping —— 让任务也能用到新配置"
+                    >
+                      {isTesting
+                        ? <Loader2 className="animate-spin" data-icon="inline-start" />
+                        : <Zap data-icon="inline-start" />}
+                      保存并测试
+                    </Button>
+                  )}
+                  <span className="text-xs text-muted-foreground">
+                    用一句话 ping LLM,验证配置可用。
+                  </span>
+                </div>
+                {testResult && (
+                  testResult.ok ? (
+                    <Alert className="border-emerald-500/40 bg-emerald-500/5 py-2">
+                      <CheckCircle2 className="text-emerald-500" />
+                      <AlertTitle className="text-sm flex items-center gap-2 flex-wrap">
+                        <span>连接成功</span>
+                        {testResult.latency_ms != null && (
+                          <Badge variant="outline" className="text-[10px] font-mono">{testResult.latency_ms}ms</Badge>
+                        )}
+                        {testResult.model && (
+                          <Badge variant="outline" className="text-[10px] font-mono">{testResult.model}</Badge>
+                        )}
+                      </AlertTitle>
+                      {testResult.sample && (
+                        <AlertDescription className="text-xs font-mono break-all">
+                          回包: {testResult.sample}
+                        </AlertDescription>
+                      )}
+                    </Alert>
+                  ) : (
+                    <Alert variant="destructive" className="py-2">
+                      <AlertCircle />
+                      <AlertTitle className="text-sm">连接失败</AlertTitle>
+                      <AlertDescription className="text-xs whitespace-pre-wrap break-all max-h-32 overflow-y-auto font-mono">
+                        {testResult.error || "未知错误"}
+                      </AlertDescription>
+                    </Alert>
+                  )
+                )}
+              </div>
+
+              <Separator />
+
+              <div className="flex gap-2">
+                <Button type="submit" className="flex-1" title="保存 (Cmd/Ctrl + Enter)">保存配置</Button>
+                <Button type="button" variant="outline" onClick={props.onCancel} title="取消 (Esc)">取消</Button>
+              </div>
+            </form>
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  )
+}
+
+// ═══════════════════ Pause icon for toast ═══════════════════
+function Pause() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="size-4">
+      <rect x="6" y="4" width="4" height="16" rx="1" />
+      <rect x="14" y="4" width="4" height="16" rx="1" />
+    </svg>
+  )
+}
