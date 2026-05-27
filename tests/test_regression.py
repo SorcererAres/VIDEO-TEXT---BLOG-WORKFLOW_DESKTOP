@@ -46,6 +46,32 @@ class TestRegressionFixtures(unittest.TestCase):
         )
         self.assertEqual(result.pass_score, "54/60")
 
+    def test_full_sectioned_fixture_passes(self) -> None:
+        """§9-C 按节滚动改写：Step 6 拆 intro/body-00/body-01/outro 共 4 次调用。"""
+        result = run_fixture(FIXTURES_ROOT / "full_sectioned", REPO_ROOT)
+        self.assertTrue(result.ok, msg=f"full_sectioned regression failed: {result.errors}")
+        self.assertEqual(len(result.mock_calls), 8, "sectioned 应总计 8 次调用")
+        rewrite_calls = [c for c in result.mock_calls if c["step"] == "rewrite-blog"]
+        self.assertEqual(len(rewrite_calls), 4, "Step 6 应按节拆成 4 次")
+        section_kinds = [c["section_kind"] for c in rewrite_calls]
+        self.assertEqual(
+            section_kinds,
+            ["intro", "body", "body", "outro"],
+            msg=f"按节调用顺序错: {section_kinds}",
+        )
+        fixture_files = [c["fixture_file"] for c in rewrite_calls]
+        self.assertEqual(
+            fixture_files,
+            [
+                "rewrite-blog-intro.md",
+                "rewrite-blog-body-00.md",
+                "rewrite-blog-body-01.md",
+                "rewrite-blog-outro.md",
+            ],
+            msg=f"按节 fixture 路由错: {fixture_files}",
+        )
+        self.assertEqual(result.pass_score, "54/60")
+
 
 class TestRegressionGuardrails(unittest.TestCase):
     """验证 regression 自身是真在校验，不是空跑通过——防止守卫失效却悄无声息 PASS。"""

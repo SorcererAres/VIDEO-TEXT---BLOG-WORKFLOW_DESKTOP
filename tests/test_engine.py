@@ -338,6 +338,97 @@ class TestEngineRunnerHelpers(unittest.TestCase):
         self.assertFalse(looks_like_json_mode_unsupported(RuntimeError("LLM API 请求失败: HTTP 401 invalid api key")))
 
 
+class TestEngineSectionedRewriteHelpers(unittest.TestCase):
+    """§9-C 按节滚动改写的纯函数辅助方法。"""
+
+    def test_build_section_plan_orders_intro_body_outro(self) -> None:
+        from video2blog.engine.outline import BodySection, OutlineSections
+
+        sections = OutlineSections(
+            intro="开场",
+            body=[
+                BodySection(heading="## A", brief="brief-a"),
+                BodySection(heading="## B", brief="brief-b"),
+            ],
+            outro="收束",
+        )
+        plan = Engine._build_section_plan(sections)
+        self.assertEqual(
+            [(kind, heading) for kind, heading, _ in plan],
+            [("intro", "导语"), ("body-00", "## A"), ("body-01", "## B"), ("outro", "收尾")],
+        )
+
+    def test_build_section_plan_skips_empty_intro_or_outro(self) -> None:
+        from video2blog.engine.outline import BodySection, OutlineSections
+
+        sections = OutlineSections(
+            intro="",
+            body=[BodySection(heading="## Only", brief="b")],
+            outro="",
+        )
+        plan = Engine._build_section_plan(sections)
+        self.assertEqual([kind for kind, *_ in plan], ["body-00"])
+
+    def test_build_section_task_directs_mode_per_kind(self) -> None:
+        # 三种 kind 的指令必须能被 mock 的 _identify_section_kind 识别
+        # —— 改了模板，mock 与 runner 之间的耦合就会断。
+        intro = Engine._build_section_task(
+            kind="intro", heading="导语", brief="开场骨架",
+            clean_text="C", insights_text="I",
+        )
+        self.assertIn("### 本节任务（导语", intro)
+        self.assertIn("# <文章总标题>", intro)
+
+        body = Engine._build_section_task(
+            kind="body-00", heading="## 测试的真功能", brief="承载翻转",
+            clean_text="C", insights_text="I",
+        )
+        self.assertIn("### 本节任务（正文一节）", body)
+        self.assertIn("## 测试的真功能", body)
+
+        outro = Engine._build_section_task(
+            kind="outro", heading="收尾", brief="点出方向差异",
+            clean_text="C", insights_text="I",
+        )
+        self.assertIn("### 本节任务（收尾", outro)
+
+    def test_clean_section_output_strips_runtime_preamble(self) -> None:
+        polluted = (
+            "> Pre-Flight ✓\n"
+            "> ENTRY → transcript\n"
+            "> MODE → full\n"
+            "\n"
+            "# Step 6 rewrite-blog\n"
+            "\n"
+            "## 真功能\n"
+            "正文段落 1\n"
+            "\n"
+            "正文段落 2\n"
+        )
+        cleaned = Engine._clean_section_output(polluted)
+        self.assertTrue(cleaned.startswith("## 真功能"), msg=f"未剥脚手架: {cleaned[:60]!r}")
+        self.assertNotIn("Pre-Flight", cleaned)
+        self.assertNotIn("Step 6", cleaned)
+
+    def test_first_title_candidate_picks_first_numbered_item(self) -> None:
+        outline = (
+            "## 标题候选\n"
+            "1. 第一条标题\n"
+            "2. 第二条\n"
+            "\n"
+            "## 骨架\n"
+            "...\n"
+        )
+        self.assertEqual(Engine._first_title_candidate(outline), "第一条标题")
+
+    def test_first_title_candidate_returns_empty_when_missing(self) -> None:
+        self.assertEqual(Engine._first_title_candidate("## 骨架\n..."), "")
+
+    def test_engine_rewrite_strategy_rejects_unknown_value(self) -> None:
+        with self.assertRaises(ValueError):
+            Engine(repo_root=Path("."), client=object(), rewrite_strategy="batch")
+
+
 class MockLLMClient:
     def __init__(self, responses: list[str]) -> None:
         self.responses = responses

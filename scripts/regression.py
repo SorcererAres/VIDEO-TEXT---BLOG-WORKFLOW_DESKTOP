@@ -53,6 +53,14 @@ class MockLLMClient:
     与 video2blog.engine.client.LLMClient 接口兼容；
     引擎只用到 model / api_base / api_key / total_input_tokens / total_output_tokens /
     total_cost / call_api / check_budget，这里全实现。
+
+    路由规则：
+      Step 3-5 / Step 7：按 SKILL marker 单文件路由 expected/<step>.{md,json}。
+      Step 6 (rewrite-blog)：先看 user_prompt 是否含"### 本节任务"——
+        - 含「导语」→ expected/rewrite-blog-intro.md
+        - 含「收尾」→ expected/rewrite-blog-outro.md
+        - 含「正文一节」→ expected/rewrite-blog-body-{已见次数:02d}.md
+        - 都不含（一次性整篇路径）→ expected/rewrite-blog.md
     """
 
     def __init__(self, fixture_dir: Path) -> None:
@@ -63,6 +71,7 @@ class MockLLMClient:
         self.total_input_tokens = 0
         self.total_output_tokens = 0
         self.calls: list[dict[str, Any]] = []
+        self._body_section_counter = 0  # rewrite-blog body-* 调用计数（按出现顺序映射 fixture）
 
     @property
     def total_cost(self) -> float:
@@ -85,17 +94,41 @@ class MockLLMClient:
                 "Mock 无法从 system_prompt 识别 step；"
                 f"前 300 字：{system_prompt[:300]!r}"
             )
-        ext = "json" if step == "quality-check" else "md"
-        expected_path = self.fixture_dir / "expected" / f"{step}.{ext}"
+
+        if step == "rewrite-blog":
+            section_kind = self._identify_section_kind(user_prompt)
+            if section_kind == "intro":
+                fname = "rewrite-blog-intro.md"
+            elif section_kind == "outro":
+                fname = "rewrite-blog-outro.md"
+            elif section_kind == "body":
+                fname = f"rewrite-blog-body-{self._body_section_counter:02d}.md"
+                self._body_section_counter += 1
+            else:
+                # 一次性整篇路径 —— 现有 quick_basic / full_basic 走这条
+                fname = "rewrite-blog.md"
+        elif step == "quality-check":
+            fname = "quality-check.json"
+        else:
+            fname = f"{step}.md"
+
+        expected_path = self.fixture_dir / "expected" / fname
         if not expected_path.exists():
             raise FileNotFoundError(
-                f"fixture {self.fixture_dir.name} 缺少 expected/{step}.{ext}"
+                f"fixture {self.fixture_dir.name} 缺少 expected/{fname}"
             )
         content = expected_path.read_text(encoding="utf-8")
-        # 模拟 token 计数（按字符数粗略折算，方便调试看用量）
         self.total_input_tokens += len(system_prompt) + len(user_prompt)
         self.total_output_tokens += len(content)
-        self.calls.append({"step": step, "json_mode": json_mode, "out_chars": len(content)})
+        self.calls.append(
+            {
+                "step": step,
+                "section_kind": self._identify_section_kind(user_prompt) if step == "rewrite-blog" else None,
+                "fixture_file": fname,
+                "json_mode": json_mode,
+                "out_chars": len(content),
+            }
+        )
         return content
 
     @staticmethod
@@ -103,6 +136,20 @@ class MockLLMClient:
         for marker, step in STEP_MARKERS:
             if marker in system_prompt:
                 return step
+        return None
+
+    @staticmethod
+    def _identify_section_kind(user_prompt: str) -> str | None:
+        """识别"按节滚动"模式下 rewrite-blog 的本节 kind。
+
+        与 runner._build_section_task 的指令文本耦合 —— 它若改，这里也得跟。
+        """
+        if "### 本节任务（导语" in user_prompt:
+            return "intro"
+        if "### 本节任务（收尾" in user_prompt:
+            return "outro"
+        if "### 本节任务（正文一节）" in user_prompt:
+            return "body"
         return None
 
 
@@ -157,7 +204,12 @@ def run_fixture(
         shutil.copy2(fixture_dir / "source.md", source_dst)
 
         client = MockLLMClient(fixture_dir)
-        engine = Engine(repo_root=tmp_root, client=client)
+        rewrite_strategy = meta.get("rewrite_strategy", "single")
+        engine = Engine(
+            repo_root=tmp_root,
+            client=client,
+            rewrite_strategy=rewrite_strategy,
+        )
 
         # 静音引擎 stdout，除非 verbose
         stdout_buf = io.StringIO()
@@ -260,8 +312,12 @@ def run_fixture(
             if not any(r.get("path") == rel_final for r in fp_records):
                 result.errors.append("fingerprints.jsonl 未记录本篇")
 
-        # mock 调用次数
-        expected_calls = {"quick": 2, "full": 5}.get(meta["mode"])
+        # mock 调用次数。fixture.yaml 显式指定 expected_total_mock_calls 时优先；
+        # 否则按 mode 默认（quick=2, full single=5）兜底。
+        expected_calls = meta.get(
+            "expected_total_mock_calls",
+            {"quick": 2, "full": 5}.get(meta["mode"]),
+        )
         if expected_calls and len(client.calls) != expected_calls:
             result.errors.append(
                 f"mock 调用次数错：expected {expected_calls}，actual {len(client.calls)}"

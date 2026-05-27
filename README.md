@@ -172,6 +172,20 @@ make server          # 启动 FastAPI 本地服务
 `tests/fixtures/regression/<name>/{fixture.yaml, source.md, expected/<step>.{md,json}}`
 即可，无需改脚本。
 
+## 长稿改写：按节滚动（§9-C）
+
+Step 6 默认一次性整篇生成（`VIDEO2BLOG_REWRITE_STRATEGY=single`，无需设置）。
+长稿撞窗时切换：
+
+```bash
+export VIDEO2BLOG_REWRITE_STRATEGY=sectioned
+```
+
+引擎会解析 Step 5 的 `outline.md`，按"导语 + 正文 N 节 + 收尾"拆 LLM 调用；
+每节缓存键独立、上一节末段 400 字喂回做承上启下。
+解析失败（骨架不可识别）或进入自修正循环（v>1）时自动回退一次性整篇，
+不强求按节，保持质量稳定。
+
 本地服务默认只接受 `localhost` / `127.0.0.1` 浏览器来源；任务 source 默认必须位于仓库根目录内。需要额外来源时配置 `VIDEO2BLOG_CORS_ORIGINS`，需要读取仓库外文件时显式设置 `VIDEO2BLOG_ALLOW_EXTERNAL_SOURCE=1`。
 
 CI 使用同一组入口：`make test`、`make validate`、`make frontend-lint`、`make frontend-build`。这些检查不调用真实 LLM，不需要配置 API Key。

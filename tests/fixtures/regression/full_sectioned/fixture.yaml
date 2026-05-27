@@ -1,0 +1,15 @@
+name: full_sectioned
+mode: full
+routing: /lecture
+speaker: 我
+expected_final_status: FINISHED
+expected_pass_score: "54/60"
+expected_title: 测试不是质保是改代码的底气
+pause_on_outline: false
+rewrite_strategy: sectioned
+expected_total_mock_calls: 8
+description: |
+  §9-C 按节滚动改写 fixture。
+  Step 6 按 outline 拆为 intro + body-00 + body-01 + outro 共 4 次 LLM 调用，
+  加上 Step 3 / 4 / 5 / 7 共 4 次，总计 8 次 mock 调用。
+  验证：按节缓存键、合并后 `# 标题` 存在、VIEWER_RE 零违规、frontmatter 落盘正确。

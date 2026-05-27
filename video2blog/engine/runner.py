@@ -14,9 +14,12 @@ import yaml
 
 from video2blog.engine.chunking import TextChunk, chunk_prompt, split_text_chunks
 from video2blog.engine.client import LLMClient
+from video2blog.engine.outline import OutlineSections, parse_outline_sections
 from video2blog.engine.parser import ContextLoader
 from video2blog.engine.utils import atomic_write
 from video2blog.utils import VIEWER_RE, strip_frontmatter
+
+VALID_REWRITE_STRATEGIES = {"single", "sectioned"}
 
 # Try importing fingerprint generation from scripts if available in python path
 try:
@@ -334,6 +337,7 @@ class Engine:
         chunk_char_limit: int | None = None,
         chunk_context_chars: int | None = None,
         cancel_check: Callable[[], bool] | None = None,
+        rewrite_strategy: str | None = None,
     ) -> None:
         self.repo_root = Path(repo_root).resolve()
         self.client = client
@@ -341,6 +345,12 @@ class Engine:
         self.chunk_char_limit = chunk_char_limit or int(os.environ.get("VIDEO2BLOG_CHUNK_CHAR_LIMIT", "30000"))
         self.chunk_context_chars = chunk_context_chars or int(os.environ.get("VIDEO2BLOG_CHUNK_CONTEXT_CHARS", "1200"))
         self.cancel_check = cancel_check
+        strategy = (rewrite_strategy or os.environ.get("VIDEO2BLOG_REWRITE_STRATEGY", "single")).strip().lower()
+        if strategy not in VALID_REWRITE_STRATEGIES:
+            raise ValueError(
+                f"未知 rewrite_strategy: {strategy!r}，可选 {sorted(VALID_REWRITE_STRATEGIES)}"
+            )
+        self.rewrite_strategy = strategy
 
     def _check_cancelled(self) -> None:
         if self.cancel_check and self.cancel_check():
@@ -735,6 +745,175 @@ class Engine:
         )
         return content
 
+    # ─── §9-C 按节滚动改写 ──────────────────────────────────────────────────
+
+    @staticmethod
+    def _build_section_plan(
+        sections: OutlineSections,
+    ) -> list[tuple[str, str, str]]:
+        """返回有序 [(kind, heading, brief), ...] —— 含 intro / body-N / outro。
+
+        intro / outro 的 brief 为空时跳过，确保短稿不被强制塞导语/收尾节。
+        """
+        plan: list[tuple[str, str, str]] = []
+        if sections.intro:
+            plan.append(("intro", "导语", sections.intro))
+        for idx, body in enumerate(sections.body):
+            plan.append((f"body-{idx:02d}", body.heading, body.brief))
+        if sections.outro:
+            plan.append(("outro", "收尾", sections.outro))
+        return plan
+
+    @staticmethod
+    def _build_section_task(
+        *, kind: str, heading: str, brief: str,
+        clean_text: str, insights_text: str,
+    ) -> str:
+        """组装"本节任务"的 user-prompt raw_input。
+
+        每节都附带 clean / insights 全文供查证，但通过明确指令把 LLM 的
+        输出范围限制在本节——不写其他节、不写一级总标题（intro 除外）。
+        """
+        if kind == "intro":
+            task = (
+                "### 本节任务（导语 + 文章总标题）\n"
+                "请只输出文章总标题与导语段落，**不要**输出任何 `## 二级小标题`、其他节内容或收尾段。\n"
+                "- 第一行：`# <文章总标题>`（从骨架的标题候选中选最贴的一条，可微调用词）\n"
+                "- 紧接：开场段落，承载骨架描述\n\n"
+                f"骨架描述：{brief}"
+            )
+        elif kind == "outro":
+            task = (
+                "### 本节任务（收尾段）\n"
+                "请只输出收尾段落。**不要**输出 `## 小标题`、不要重述其他节已写过的具体例子、"
+                "不要重新写文章总标题。\n\n"
+                f"骨架描述：{brief}"
+            )
+        else:
+            task = (
+                "### 本节任务（正文一节）\n"
+                f"请只输出本节，以 `{heading}` 行作为节起点，下面跟若干段落。\n"
+                "**不要**输出文章总标题（`# `）、其他节的 `## `、收尾段。\n\n"
+                f"骨架描述：{brief}"
+            )
+
+        return (
+            "### Step 3 清洗稿（供查证细节，禁止照抄整段）\n"
+            f"{clean_text}\n\n"
+            "### Step 4 提要\n"
+            f"{insights_text}\n\n"
+            f"{task}"
+        )
+
+    @staticmethod
+    def _clean_section_output(content: str) -> str:
+        """剥掉单节输出可能携带的 frontmatter / Pre-Flight / Step 标题脚手架。"""
+        _, body = strip_frontmatter(content)
+        lines = body.replace("\r\n", "\n").replace("\r", "\n").splitlines()
+        drop_prefixes = ("> Pre-Flight", "> ENTRY", "> MODE", "> ROUTING", "> SOURCE", "> SPEAKER", "> STYLE")
+        # 顶部连续的 Pre-Flight 引用块 + Step 标题行先剥掉
+        while lines and (
+            not lines[0].strip()
+            or lines[0].strip().startswith(drop_prefixes)
+            or re.match(r"^#{1,6}\s*Step\s+\d+\b", lines[0].strip(), re.IGNORECASE)
+        ):
+            lines.pop(0)
+        # 末尾空行剥掉
+        while lines and not lines[-1].strip():
+            lines.pop()
+        return "\n".join(lines).strip()
+
+    def _run_rewrite_sectioned(
+        self,
+        *,
+        stem: str,
+        state: dict[str, Any],
+        work_dir: Path,
+        clean_text: str,
+        insights_text: str,
+        outline_text: str,
+        sections: OutlineSections,
+        contract_fingerprint: str,
+        version: int,
+    ) -> str:
+        """按节滚动调用 LLM，最终合并成整篇 draft。每节独立缓存键。"""
+        plan = self._build_section_plan(sections)
+        section_dir = work_dir / "chunks" / "rewrite" / f"v{version}"
+        section_dir.mkdir(parents=True, exist_ok=True)
+
+        parts: list[str] = []
+        prev_tail: str = ""  # 上一节末段（最后 400 字承上启下）
+
+        for kind, heading, brief in plan:
+            self._check_cancelled()
+            section_path = section_dir / f"{kind}.md"
+            cache_key = f"REWRITING_v{version}_{kind}"
+
+            section_task = self._build_section_task(
+                kind=kind, heading=heading, brief=brief,
+                clean_text=clean_text, insights_text=insights_text,
+            )
+            current_cache_meta = {
+                "input_hash": self._hash_text(section_task + "\n---prev---\n" + prev_tail),
+                "model": self.client.model,
+                "contract_fingerprint": contract_fingerprint,
+                "outline_hash": self._hash_text(outline_text),
+            }
+            cached_meta = state.get("cache", {}).get(cache_key)
+            cache_hit = (
+                cached_meta is not None
+                and all(cached_meta.get(k) == v for k, v in current_cache_meta.items())
+                and section_path.exists()
+            )
+
+            if cache_hit and not state.get("force_retry", False):
+                print(f"    -> rewrite section {kind} 缓存命中。", flush=True)
+                content = section_path.read_text(encoding="utf-8")
+            else:
+                print(f"    -> rewrite section {kind} ({heading}) 调用 LLM...", flush=True)
+                system_prompt, user_prompt = self.loader.assemble_prompt(
+                    step_name="rewrite-blog",
+                    variables=state["variables"],
+                    raw_input=section_task,
+                    prev_written_section=prev_tail or None,
+                    global_outline=outline_text,
+                )
+                raw_content = self.client.call_api(system_prompt, user_prompt)
+                content = self._clean_section_output(raw_content)
+                atomic_write(section_path, content)
+                state.setdefault("cache", {})[cache_key] = current_cache_meta
+                self.save_state(stem, state)
+
+            parts.append(content)
+            prev_tail = content
+
+        merged = "\n\n".join(p.strip() for p in parts if p.strip()) + "\n"
+
+        # 兜底：合并后若没有 `# 标题`，从 outline 标题候选首条补上——保证下游
+        # validate_rewrite_output 的 `^#\s+\S+` 校验通过，否则 Step 6 直接 raise。
+        if not re.search(r"^#\s+\S+", merged, re.MULTILINE):
+            fallback_title = self._first_title_candidate(outline_text) or "未命名博文"
+            merged = f"# {fallback_title}\n\n{merged.lstrip()}"
+
+        return merged
+
+    @staticmethod
+    def _first_title_candidate(outline_text: str) -> str:
+        """从 outline 的「## 标题候选」区抓首条编号项，作为合并后兜底标题。"""
+        m = re.search(
+            r"^##\s*标题候选\s*\n(.*?)(?=^##\s|\Z)",
+            outline_text,
+            re.MULTILINE | re.DOTALL,
+        )
+        if not m:
+            return ""
+        for line in m.group(1).splitlines():
+            line = line.strip()
+            item = re.match(r"^\d+[\.\)、]\s*(.+)$", line)
+            if item:
+                return item.group(1).strip()
+        return ""
+
     def run_job(
         self,
         stem: str,
@@ -924,22 +1103,44 @@ class Engine:
 
             if state["status"] == "REWRITING":
                 print(f"[+] [Step 6] 正在生成第 {version} 版博文草稿...", flush=True)
-                
-                # Check idempotence / cache (hash of input + step/version + model + contract version)
+
+                # §9-C 按节策略仅在 full 模式 + outline 骨架可解析时生效，
+                # 自修正循环 (version>1) 强制回退 single：上轮失败要看全局，不再分节。
+                active_strategy = "single"
+                outline_sections: OutlineSections | None = None
+                outline_text_for_rewrite = ""
+                if (
+                    self.rewrite_strategy == "sectioned"
+                    and mode == "full"
+                    and version == 1
+                ):
+                    outline_path = work_dir / "outline.md"
+                    if outline_path.exists():
+                        outline_text_for_rewrite = outline_path.read_text(encoding="utf-8")
+                        parsed_sections = parse_outline_sections(outline_text_for_rewrite)
+                        if parsed_sections.has_skeleton:
+                            outline_sections = parsed_sections
+                            active_strategy = "sectioned"
+                        else:
+                            print(
+                                "    -> outline 骨架不可解析，回退一次性整篇改写。",
+                                flush=True,
+                            )
+
+                # Check idempotence / cache (hash of input + step/version + model + contract + strategy)
                 cache_key = f"REWRITING_v{version}"
                 cached_meta = state.get("cache", {}).get(cache_key)
-                
+
                 current_cache_meta = {
                     "input_hash": self._hash_text(rewrite_input),
                     "model": self.client.model,
-                    "contract_fingerprint": contract_fingerprint
+                    "contract_fingerprint": contract_fingerprint,
+                    "strategy": active_strategy,
                 }
 
                 cache_hit = (
                     cached_meta is not None
-                    and cached_meta.get("input_hash") == current_cache_meta["input_hash"]
-                    and cached_meta.get("model") == self.client.model
-                    and cached_meta.get("contract_fingerprint") == contract_fingerprint
+                    and all(cached_meta.get(k) == v for k, v in current_cache_meta.items())
                     and draft_path.exists()
                 )
 
@@ -956,15 +1157,36 @@ class Engine:
                         state["variables"]["PREV_TOTAL"] = "N/A"
                         state["variables"]["PREV_REBRIEF"] = "无"
 
-                    system_prompt, user_prompt = self.loader.assemble_prompt(
-                        step_name="rewrite-blog",
-                        variables=state["variables"],
-                        raw_input=rewrite_input,
-                    )
-                    
-                    draft_content = self.client.call_api(system_prompt, user_prompt)
+                    if active_strategy == "sectioned":
+                        assert outline_sections is not None
+                        clean_text_for_rewrite = (work_dir / "clean.md").read_text(encoding="utf-8")
+                        insights_text_for_rewrite = (work_dir / "insights.md").read_text(encoding="utf-8")
+                        print(
+                            f"    -> 按节滚动改写：导语 + {len(outline_sections.body)} 节 + 收尾"
+                            f"（预计 {outline_sections.total_calls} 次 LLM 调用）...",
+                            flush=True,
+                        )
+                        draft_content = self._run_rewrite_sectioned(
+                            stem=stem,
+                            state=state,
+                            work_dir=work_dir,
+                            clean_text=clean_text_for_rewrite,
+                            insights_text=insights_text_for_rewrite,
+                            outline_text=outline_text_for_rewrite,
+                            sections=outline_sections,
+                            contract_fingerprint=contract_fingerprint,
+                            version=version,
+                        )
+                    else:
+                        system_prompt, user_prompt = self.loader.assemble_prompt(
+                            step_name="rewrite-blog",
+                            variables=state["variables"],
+                            raw_input=rewrite_input,
+                        )
+                        draft_content = self.client.call_api(system_prompt, user_prompt)
+
                     atomic_write(draft_path, draft_content)
-                    
+
                     # Update cache key
                     state.setdefault("cache", {})[cache_key] = current_cache_meta
                     self.save_state(stem, state)
