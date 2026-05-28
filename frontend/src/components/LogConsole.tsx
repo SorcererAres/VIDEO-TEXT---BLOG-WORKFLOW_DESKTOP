@@ -37,9 +37,10 @@ function deriveActiveFlags(events: ParsedEvent[], jobStatus: string | undefined)
   if (jobStatus === "succeeded" || jobStatus === "failed") {
     return events.map(() => false)
   }
-  // running：最后一条 step 事件保持 actionable，更早的 step 全转完成
-  // paused：最后一条 paused 事件保持 actionable，更早的 paused 全转历史
-  // 注意：step 和 paused 各自独立追踪，因为它们可能交错
+  // running：最后一条 step 事件保持 actionable，更早的 step 全转完成；
+  //          paused 事件全标历史 —— 任务从 paused 恢复跑后，"等你审批"已不
+  //          再是当前可操作项，必须全灰显，否则用户看着别扭（5/28 截图实证）。
+  // paused： 最后一条 paused 才是当前真实活跃的人工节点，更早的全历史。
   let lastStepIdx = -1
   let lastPausedIdx = -1
   for (let i = events.length - 1; i >= 0; i--) {
@@ -49,7 +50,10 @@ function deriveActiveFlags(events: ParsedEvent[], jobStatus: string | undefined)
   }
   return events.map((e, idx) => {
     if (e.type === "step") return idx === lastStepIdx
-    if (e.type === "paused") return idx === lastPausedIdx
+    if (e.type === "paused") {
+      // 关键：只在 job 确实 paused 时才把最后一条 paused 标 active
+      return jobStatus === "paused" && idx === lastPausedIdx
+    }
     // 非 step/paused 类型（system/success/warning/error/detail）不受此规则影响
     return true
   })
