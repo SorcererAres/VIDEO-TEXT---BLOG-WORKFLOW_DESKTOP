@@ -1029,6 +1029,36 @@ class TestEngineRecoversFromTerminalFailureStatus(unittest.TestCase):
         self.assertNotEqual(s["status"], "CANCELLED")
         self.assertNotIn("REWRITING_v1", s["cache"])
 
+    def test_reset_also_purges_stale_draft_and_review_files(self) -> None:
+        """5/28 长稿 live 验证撞到的 UI bug：用户拒绝草稿后，下一轮跑 paused 时
+        前端 fetch /files/draft 拿到的是上一轮残留的 draft_v1.md，被当成
+        本轮内容渲染。修复：FAILED/CANCELLED → PENDING 重置时必须连物理文件
+        一起清，否则 server.py 的 /files/draft 端点会把旧内容暴露给前端。"""
+        self._write_state("FAILED")
+        # 预置旧产物文件
+        work_dir = self.tmp_dir / "work/x"
+        (work_dir / "draft_v1.md").write_text("OLD DRAFT v1", encoding="utf-8")
+        (work_dir / "draft_v2.md").write_text("OLD DRAFT v2", encoding="utf-8")
+        (work_dir / "review_v1.json").write_text('{"verdict":"REVIEW"}', encoding="utf-8")
+        rewrite_chunk_dir = work_dir / "chunks" / "rewrite" / "v1"
+        rewrite_chunk_dir.mkdir(parents=True)
+        (rewrite_chunk_dir / "intro.md").write_text("OLD INTRO", encoding="utf-8")
+
+        source = work_dir / "raw.txt"
+        source.write_text("raw", encoding="utf-8")
+        engine = Engine(self.tmp_dir, self._RaisingClient())  # type: ignore[arg-type]
+        with self.assertRaises(RuntimeError):
+            engine.run_job(stem="x", source_path=source,
+                           mode="quick", routing="/lecture", speaker="我", max_retries=0)
+
+        # 重置之后 draft_v*/review_v*/chunks/rewrite 全清，避免污染下一轮
+        self.assertFalse((work_dir / "draft_v1.md").exists(), "旧 draft_v1 未清")
+        self.assertFalse((work_dir / "draft_v2.md").exists(), "旧 draft_v2 未清")
+        self.assertFalse((work_dir / "review_v1.json").exists(), "旧 review_v1 未清")
+        self.assertFalse((work_dir / "chunks" / "rewrite").exists(), "旧 sectioned 节产物未清")
+        # 但 raw.txt 必须留下（它是本轮的输入源）
+        self.assertTrue(source.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1012,6 +1012,19 @@ class Engine:
                 for k, v in (state.get("cache") or {}).items()
                 if not (k.startswith("REWRITING_v") or k.startswith("CHECKING_v"))
             }
+            # 清磁盘上的旧 draft_v* / review_v* / chunks/rewrite/* —— 否则下轮
+            # paused 时前端会 fetch 到 5/27 那种残留文件，误以为是本轮草稿。
+            # 5/28 长稿 live 验证里撞到的具体 UI bug 根因之一。
+            import shutil as _shutil
+            stale_work_dir = self.repo_root / "work" / stem
+            if stale_work_dir.exists():
+                for old in stale_work_dir.glob("draft_v*.md"):
+                    old.unlink(missing_ok=True)
+                for old in stale_work_dir.glob("review_v*.json"):
+                    old.unlink(missing_ok=True)
+                stale_rewrite_chunks = stale_work_dir / "chunks" / "rewrite"
+                if stale_rewrite_chunks.exists():
+                    _shutil.rmtree(stale_rewrite_chunks, ignore_errors=True)
 
         state["mode"] = mode
         state["variables"] = {

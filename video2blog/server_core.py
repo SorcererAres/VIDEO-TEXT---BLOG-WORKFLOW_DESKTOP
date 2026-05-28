@@ -64,6 +64,12 @@ class EngineJob:
     output_tokens: int = 0
     estimated_cost_usd: float = 0.0
     error: str | None = None
+    # status == "paused" 时进一步说明在哪个人工节点：
+    #   "WAITING_USER_OUTLINE" → Step 5 大纲审批
+    #   "WAITING_USER_REVIEW"  → Step 7 草稿审批
+    # 其余时间为 None。前端不应再用"磁盘上有没有 draft 内容"反推子状态，
+    # 否则 5/27 留下的 draft_v1.md 会被当成 5/28 这次的内容渲染（真实撞过的 UI bug）。
+    paused_state: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -166,6 +172,8 @@ class EngineJobService:
         job = runtime.job
         if job.status != "paused":
             raise ValueError(f"只有处于暂停 (paused) 状态的任务才可以恢复。当前状态为: {job.status}")
+        # 走出暂停 → 子状态清空，避免 UI 仍按上一个 paused_state 渲染
+        job.paused_state = None
         self._mark(job, "queued")
         self._emit(job.id, "queued", {"job_id": job.id, "stem": job.stem})
         runtime.future = self._executor.submit(self._run_job, job.id)
@@ -300,7 +308,7 @@ class EngineJobService:
                     job.clean_path = self._existing_rel(self.repo_root / "work" / job.stem / "clean.md")
                     job.insights_path = self._existing_rel(self.repo_root / "work" / job.stem / "insights.md")
                     job.outline_path = self._existing_rel(self.repo_root / "work" / job.stem / "outline.md")
-                    
+
                     best_ver = state.get("best_version", 1)
                     review_json_path = self.repo_root / "work" / job.stem / f"review_v{best_ver}.json"
                     if review_json_path.exists():
@@ -309,7 +317,10 @@ class EngineJobService:
                     job.input_tokens = getattr(client, "total_input_tokens", 0)
                     job.output_tokens = getattr(client, "total_output_tokens", 0)
                     job.estimated_cost_usd = float(getattr(client, "total_cost", 0.0))
-                    
+
+                    # 前端用这个字段渲染 outline 编辑器 vs 草稿审批界面，
+                    # 不再依赖"磁盘上有无 draft_v* 内容"的脆弱推断
+                    job.paused_state = state.get("status")
                     self._mark(job, "paused")
                     self._emit(
                         job.id,
@@ -474,7 +485,8 @@ class EngineJobService:
                 pause_on_outline=True,
                 api_key=None,
             )
-            restored_status, error = self._restored_http_status(str(state.get("status") or "PENDING"))
+            engine_status = str(state.get("status") or "PENDING")
+            restored_status, error = self._restored_http_status(engine_status)
             now = self._now()
             job = EngineJob(
                 id="disk-" + uuid.uuid5(uuid.NAMESPACE_URL, str(state_path.resolve())).hex[:20],
@@ -485,6 +497,8 @@ class EngineJobService:
                 updated_at=str(state.get("updated_at") or now),
                 final_post_path=state.get("final_post_path"),
                 error=error,
+                # 重启 server 也要把 paused 子状态恢复，否则前端拿不到
+                paused_state=engine_status if restored_status == "paused" else None,
             )
             best_ver = state.get("best_version", state.get("version", 1))
             job.clean_path = self._existing_rel(self.repo_root / "work" / job.stem / "clean.md")

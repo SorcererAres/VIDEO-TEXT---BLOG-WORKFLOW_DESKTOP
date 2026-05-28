@@ -57,6 +57,7 @@ interface EngineJobRequest {
   rewrite_strategy?: "single" | "sectioned"
 }
 
+
 interface EngineJob {
   id: string
   status: string
@@ -73,6 +74,11 @@ interface EngineJob {
   output_tokens: number
   estimated_cost_usd: number
   error?: string
+  // status==="paused" 时进一步说明在哪个人工节点：
+  //   "WAITING_USER_OUTLINE" → Step 5 大纲审批
+  //   "WAITING_USER_REVIEW"  → Step 7 草稿审批
+  // 不用磁盘上是否有 draft 内容反推，避免被上一轮残留文件误导（真实撞过的 UI bug）。
+  paused_state?: "WAITING_USER_OUTLINE" | "WAITING_USER_REVIEW" | null
   // 历史归档专属字段 —— /jobs/history 返回的对象会有这两个
   kind?: "historical"
   pass_score?: string
@@ -954,10 +960,17 @@ export default function App() {
   const currentStep = useMemo(() => inferCurrentStep(parsedEvents), [parsedEvents])
   const pausedAt: "outline" | "review" | null = useMemo(() => {
     if (selectedJob?.status !== "paused") return null
+    // 首选：用后端给的 paused_state。这是引擎实际状态机的真相，不会被
+    // 上一轮残留的 draft_v* / review_v* 文件骗到。
+    if (selectedJob.paused_state === "WAITING_USER_OUTLINE") return "outline"
+    if (selectedJob.paused_state === "WAITING_USER_REVIEW") return "review"
+    // 兜底：旧版后端没这个字段时按内容启发式（保持向后兼容）。
     if (draftContent) return "review"
     if (outlineText) return "outline"
     return null
-  }, [selectedJob?.status, outlineText, draftContent])
+    // deps 跟 React Compiler 推断对齐（整个 selectedJob 而非分散属性），
+    // 否则触发 "Existing memoization could not be preserved" 编译失败。
+  }, [selectedJob, outlineText, draftContent])
 
   // 用相同参数重跑失败任务 —— 把 job.request 灌回 CreateForm 并切到新建视图。
   // 关键:支持 modelOverride,失败 Banner 的"换 deepseek-chat 重跑"这种快速修复就走这一条。

@@ -276,8 +276,52 @@ class TestEngineJobService(unittest.TestCase):
             self.assertEqual(job.status, "paused")
             self.assertEqual(job.outline_path, "work/restored/outline.md")
             self.assertEqual(job.request.source, "work/restored/raw.txt")
+            # 关键：paused 子状态必须恢复，否则前端拿不到，UI 又会回退到
+            # "看磁盘有没有 draft 内容"那套被旧文件误导的启发式
+            self.assertEqual(job.paused_state, "WAITING_USER_OUTLINE")
             events = list(service.iter_events(job.id, timeout=0.01))
             self.assertEqual(events[0]["event"], "paused")
+        finally:
+            service.shutdown()
+
+    def test_paused_state_cleared_after_resume(self) -> None:
+        """resume 之后 paused_state 必须清空，避免 UI 还按上个人工节点渲染。"""
+        work_dir = self.tmp_dir / "work/resume_clear"
+        work_dir.mkdir(parents=True, exist_ok=True)
+        (work_dir / "raw.txt").write_text("raw", encoding="utf-8")
+        (work_dir / ".state.json").write_text(
+            json.dumps(
+                {
+                    "stem": "resume_clear",
+                    "status": "WAITING_USER_REVIEW",
+                    "mode": "quick",
+                    "variables": {"SOURCE": "work/resume_clear/raw.txt", "SPEAKER": "我",
+                                  "ROUTING": "/lecture", "MODE": "quick"},
+                    "version": 1,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        service = EngineJobService(self.tmp_dir)
+        try:
+            job = service.list_jobs()[0]
+            self.assertEqual(job.paused_state, "WAITING_USER_REVIEW")
+            # 模拟 resume：会触发 _executor.submit 再跑一次 run_job
+            # 用 raising client 让它立刻挂掉，但 paused_state 应该已经清空
+            service._client_factory = lambda _r: type("X", (), {  # type: ignore[attr-defined]
+                "model": "raising",
+                "api_base": "",
+                "api_key": "",
+                "total_input_tokens": 0,
+                "total_output_tokens": 0,
+                "total_cost": 0.0,
+                "call_api": lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("expected")),
+                "check_budget": lambda *_a, **_kw: None,
+            })()
+            service.resume_job(job.id)
+            service.wait_for_job(job.id)
+            self.assertIsNone(job.paused_state)
         finally:
             service.shutdown()
 
