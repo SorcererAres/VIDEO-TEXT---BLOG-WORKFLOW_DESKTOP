@@ -1029,6 +1029,47 @@ class TestEngineRecoversFromTerminalFailureStatus(unittest.TestCase):
         self.assertNotEqual(s["status"], "CANCELLED")
         self.assertNotIn("REWRITING_v1", s["cache"])
 
+    def test_finished_short_circuit_misses_when_strategy_changes(self) -> None:
+        """5/28 sectioned live 验证第 5 次撞到的具体 bug：用户上次跑 single 成功
+        后，重提 sectioned 应该真按节走，而不是被 FINISHED 短路返回上次的 single
+        成品 —— 否则用户意图被悄悄无视。FINISHED 短路必须把 strategy 算进
+        命中条件。"""
+        state_path = self._write_state("FINISHED")
+        # 模拟上次 single 跑完留下的 cache + 真实成品文件
+        s = json.loads(state_path.read_text(encoding="utf-8"))
+        s["final_post_path"] = "output/Posts/2026/x.md"
+        s["best_version"] = 1
+        s["cache"]["REWRITING_v1"] = {
+            "input_hash": "kept",
+            "model": "raising",
+            "contract_fingerprint": "anything",  # 测试不依赖真实 fingerprint
+            "strategy": "single",  # 上次跑的是 single
+        }
+        state_path.write_text(json.dumps(s, ensure_ascii=False), encoding="utf-8")
+        # 写一份假的 final post 让 final_path.exists() 命中
+        (self.tmp_dir / "output/Posts/2026").mkdir(parents=True, exist_ok=True)
+        (self.tmp_dir / "output/Posts/2026/x.md").write_text("old single post", encoding="utf-8")
+
+        source = self.tmp_dir / "work/x/raw.txt"
+        source.write_text("raw", encoding="utf-8")
+
+        # 这次用 sectioned 提交 —— 短路必须 miss，进入重置 + 重新跑
+        engine = Engine(
+            self.tmp_dir, self._RaisingClient(),  # type: ignore[arg-type]
+            rewrite_strategy="sectioned",
+        )
+        # raising client 会让重写阶段抛错；关键是 raise 之前已经走过 FINISHED 重置路径
+        with self.assertRaises(RuntimeError):
+            engine.run_job(stem="x", source_path=source,
+                           mode="quick", routing="/lecture", speaker="我", max_retries=0)
+
+        s2 = json.loads(state_path.read_text(encoding="utf-8"))
+        # 关键断言：strategy 切换让短路 miss，FINISHED 走重置，cache 被清
+        self.assertNotIn("REWRITING_v1", s2["cache"],
+                         "strategy 切换时旧 cache 必须被清，否则后续按节路径会复用 single 草稿")
+        self.assertNotIn("final_post_path", s2,
+                         "重置时旧 final_post_path 也必须清掉")
+
     def test_finished_status_also_resets_and_purges_stale_files(self) -> None:
         """5/28 撞到的第 3 个回归点：FINISHED 不被特殊清理时，下一次重跑同 stem 会
         因磁盘上还残留旧 draft_v1.md 而让前端 /files/draft 返回过期内容、UI tab

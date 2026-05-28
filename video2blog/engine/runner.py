@@ -964,10 +964,15 @@ class Engine:
             best_version = state.get("best_version", 1)
             rewrite_meta = state.get("cache", {}).get(f"REWRITING_v{best_version}", {})
             cleaning_meta = state.get("cache", {}).get("CLEANING", {})
+            # 关键：rewrite_strategy 也得算进短路命中条件。否则上次 single 跑完
+            # cache 命中后，用户重提 sectioned 会被直接短路返回 single 成品 ——
+            # 用户意图被悄悄无视。5/28 第 5 次 sectioned 验证撞到的具体 bug。
+            cached_strategy = rewrite_meta.get("strategy", "single")
             finished_cache_valid = (
                 final_path.exists()
                 and rewrite_meta.get("model") == self.client.model
                 and rewrite_meta.get("contract_fingerprint") == contract_fingerprint
+                and cached_strategy == self.rewrite_strategy
             )
             if mode == "quick":
                 finished_cache_valid = (
