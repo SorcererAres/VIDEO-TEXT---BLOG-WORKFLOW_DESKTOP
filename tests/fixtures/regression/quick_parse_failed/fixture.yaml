@@ -1,0 +1,15 @@
+name: quick_parse_failed
+mode: quick
+routing: /lecture
+speaker: 我
+max_retries: 1
+expected_final_status: WAITING_USER_REVIEW
+expected_pass_score: "—/60"
+expect_parse_failed: true
+expected_total_mock_calls: 2
+description: |
+  Step 7 LLM 返回不合规输出（不是 JSON 也不是 quality-check 评分表 Markdown）时，
+  引擎硬 guard：标 parse_failed=True，跳过自修正（即使 max_retries=1），
+  直接转人工审稿 → 状态机 WAITING_USER_REVIEW。
+  验证 §2.3 "Step 7 解析失败硬 guard"，避免基于假反馈再烧一轮 token。
+  mock 调用：rewrite-blog → quality-check（垃圾响应），共 2 次。

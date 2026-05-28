@@ -1,0 +1,14 @@
+name: quick_self_correction
+mode: quick
+routing: /lecture
+speaker: 我
+max_retries: 1
+expected_final_status: FINISHED
+expected_pass_score: "55/60"
+expected_title: 测试不是质保是改代码的底气
+expected_total_mock_calls: 4
+description: |
+  §9-A 自修正闭环回归：v1 草稿被 Step 7 判 REVIEW (39/60)，
+  引擎自动跑第 2 轮重写 + 质检；v2 通过 (55/60) → 进入 FINISHED。
+  mock 顺序：rewrite-blog → quality-check (REVIEW) → rewrite-blog-v2
+  → quality-check-v2 (PASS)，共 4 次调用。

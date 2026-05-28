@@ -174,17 +174,19 @@ make server          # 启动 FastAPI 本地服务
 
 ## 长稿改写：按节滚动（§9-C）
 
-Step 6 默认一次性整篇生成（`VIDEO2BLOG_REWRITE_STRATEGY=single`，无需设置）。
-长稿撞窗时切换：
+Step 6 默认一次性整篇生成（`single`）。长稿撞窗时切换 sectioned，有两种姿势：
 
-```bash
-export VIDEO2BLOG_REWRITE_STRATEGY=sectioned
-```
+- **本地服务 + UI**（推荐）：`make server` 起 FastAPI，前端 `npm run dev`；
+  新建任务时把"长稿按节滚动改写(§9-C)"勾上即可（仅 `full` 模式显示）。
+- **全局默认**：在启动 server 之前 `export VIDEO2BLOG_REWRITE_STRATEGY=sectioned`，
+  之后所有 job 默认按节。
 
 引擎会解析 Step 5 的 `outline.md`，按"导语 + 正文 N 节 + 收尾"拆 LLM 调用；
-每节缓存键独立、上一节末段 400 字喂回做承上启下。
-解析失败（骨架不可识别）或进入自修正循环（v>1）时自动回退一次性整篇，
-不强求按节，保持质量稳定。
+每节缓存键独立、上一节末段 400 字喂回做承上启下。骨架不可识别或进入自修正
+循环（v>1）时自动回退一次性整篇，不强求按节。
+
+提交 job 前用 `make regression` 兜底——5 个 fixture 覆盖 single / sectioned /
+自修正 / 解析失败 / 退人工 五条路径，全 mock 零花费。
 
 本地服务默认只接受 `localhost` / `127.0.0.1` 浏览器来源；任务 source 默认必须位于仓库根目录内。需要额外来源时配置 `VIDEO2BLOG_CORS_ORIGINS`，需要读取仓库外文件时显式设置 `VIDEO2BLOG_ALLOW_EXTERNAL_SOURCE=1`。
 

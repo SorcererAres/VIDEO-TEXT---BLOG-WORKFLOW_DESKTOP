@@ -55,12 +55,18 @@ class MockLLMClient:
     total_cost / call_api / check_budget，这里全实现。
 
     路由规则：
-      Step 3-5 / Step 7：按 SKILL marker 单文件路由 expected/<step>.{md,json}。
+      Step 3-5：按 SKILL marker 单文件路由 expected/<step>.md。
+      Step 7：按"本 step 调用第几次"路由——
+        - 第 1 次 → expected/quality-check.json
+        - 第 N>1 次 → expected/quality-check-v{N}.json
+        覆盖自修正闭环（v1 REVIEW → v2 PASS）等多轮场景。
       Step 6 (rewrite-blog)：先看 user_prompt 是否含"### 本节任务"——
         - 含「导语」→ expected/rewrite-blog-intro.md
         - 含「收尾」→ expected/rewrite-blog-outro.md
         - 含「正文一节」→ expected/rewrite-blog-body-{已见次数:02d}.md
-        - 都不含（一次性整篇路径）→ expected/rewrite-blog.md
+        - 都不含（一次性整篇路径）：
+          · 第 1 次 → expected/rewrite-blog.md
+          · 第 N>1 次 → expected/rewrite-blog-v{N}.md
     """
 
     def __init__(self, fixture_dir: Path) -> None:
@@ -72,6 +78,9 @@ class MockLLMClient:
         self.total_output_tokens = 0
         self.calls: list[dict[str, Any]] = []
         self._body_section_counter = 0  # rewrite-blog body-* 调用计数（按出现顺序映射 fixture）
+        # 自修正等多轮场景下，同一 step 第 N 次调用映射到 -v{N} 后缀的 expected 文件。
+        # quality-check 总用这条路径；rewrite-blog 只在"一次性整篇"路径（非按节）下用。
+        self._versioned_step_counts: dict[str, int] = {}
 
     @property
     def total_cost(self) -> float:
@@ -105,12 +114,14 @@ class MockLLMClient:
                 fname = f"rewrite-blog-body-{self._body_section_counter:02d}.md"
                 self._body_section_counter += 1
             else:
-                # 一次性整篇路径 —— 现有 quick_basic / full_basic 走这条
-                fname = "rewrite-blog.md"
+                # 一次性整篇路径：第 1 次走基名，后续按 -v{N} 路由（覆盖自修正第 2 轮）
+                fname = self._versioned_filename("rewrite-blog", "md")
         elif step == "quality-check":
-            fname = "quality-check.json"
+            # 自修正闭环里 Step 7 会被多次调用，每轮 verdict 可能不同，按 -v{N} 路由
+            fname = self._versioned_filename("quality-check", "json")
         else:
-            fname = f"{step}.md"
+            # Step 3-5：理论上单 job 只调一次，超过 1 次仍按 -v{N} 路由，便于扩展
+            fname = self._versioned_filename(step, "md")
 
         expected_path = self.fixture_dir / "expected" / fname
         if not expected_path.exists():
@@ -130,6 +141,17 @@ class MockLLMClient:
             }
         )
         return content
+
+    def _versioned_filename(self, step: str, ext: str) -> str:
+        """递增计数器，返回第 N 次调用对应的 expected 文件名。
+
+        N==1 → "{step}.{ext}"；N>1 → "{step}-v{N}.{ext}"。
+        """
+        n = self._versioned_step_counts.get(step, 0) + 1
+        self._versioned_step_counts[step] = n
+        if n == 1:
+            return f"{step}.{ext}"
+        return f"{step}-v{n}.{ext}"
 
     @staticmethod
     def _identify_step(system_prompt: str) -> str | None:
@@ -213,6 +235,7 @@ def run_fixture(
 
         # 静音引擎 stdout，除非 verbose
         stdout_buf = io.StringIO()
+        max_retries = int(meta.get("max_retries", 0))
         try:
             with contextlib.redirect_stdout(stdout_buf):
                 final_path = engine.run_job(
@@ -221,7 +244,7 @@ def run_fixture(
                     mode=meta["mode"],
                     routing=meta["routing"],
                     speaker=meta["speaker"],
-                    max_retries=0,
+                    max_retries=max_retries,
                     pause_on_outline=bool(meta.get("pause_on_outline", False)),
                 )
         except Exception as exc:
@@ -236,8 +259,18 @@ def run_fixture(
         result.mock_calls = list(client.calls)
 
         # ── 验证 ─────────────────────────────────────────
-        if final_path is None:
+        expected_status = meta.get("expected_final_status", "FINISHED")
+        # paused 终态（WAITING_USER_REVIEW / WAITING_USER_OUTLINE）下 run_job 合法返回 None，
+        # 引擎只把中间产物落盘并等待人工——这是 §9-B 设计。
+        paused_terminal = expected_status.startswith("WAITING_USER_")
+
+        if final_path is None and not paused_terminal:
             result.errors.append("engine.run_job 返回 None（未产生成品）")
+            return result
+        if final_path is not None and paused_terminal:
+            result.errors.append(
+                f"预期 {expected_status} 但 run_job 仍产出成品 {final_path}"
+            )
             return result
 
         state_path = tmp_root / "work" / name / ".state.json"
@@ -246,71 +279,120 @@ def run_fixture(
             return result
         state = json.loads(state_path.read_text(encoding="utf-8"))
 
-        expected_status = meta.get("expected_final_status", "FINISHED")
         if state.get("status") != expected_status:
             result.errors.append(
                 f"状态机终态错误：expected {expected_status}，actual {state.get('status')}"
             )
 
-        rel_final = state.get("final_post_path") or ""
-        result.final_post_path = rel_final
-        if not rel_final.startswith(f"output/Posts/"):
-            result.errors.append(f"final_post_path 路径不规范：{rel_final}")
+        if paused_terminal:
+            # paused 终态校验：work/<stem>/draft_v{best}.md + review_v{best}.json 必须存在；
+            # final_post_path 应为空，HISTORY / fingerprints 不该被更新。
+            best_ver = state.get("best_version", state.get("version", 1))
+            draft_path = tmp_root / "work" / name / f"draft_v{best_ver}.md"
+            review_json = tmp_root / "work" / name / f"review_v{best_ver}.json"
+            if not draft_path.exists():
+                result.errors.append(f"paused 下应有 work/{name}/draft_v{best_ver}.md")
+            if not review_json.exists():
+                result.errors.append(f"paused 下应有 work/{name}/review_v{best_ver}.json")
+            if state.get("final_post_path"):
+                result.errors.append(
+                    f"paused 终态不该有 final_post_path：{state.get('final_post_path')}"
+                )
 
-        post_abs = tmp_root / rel_final if rel_final else None
-        if not post_abs or not post_abs.exists():
-            result.errors.append(f"成品文件不存在：{rel_final}")
-            return result
+            if review_json.exists():
+                review_data = json.loads(review_json.read_text(encoding="utf-8"))
+                result.pass_score = review_data.get("total")
+                expected_score = meta.get("expected_pass_score")
+                if expected_score and result.pass_score != expected_score:
+                    result.errors.append(
+                        f"pass_score 错：{result.pass_score} ≠ {expected_score}"
+                    )
+                # 解析失败标记（parse_failed=True 走的"跳过自修正、直接转人工"路径）
+                if meta.get("expect_parse_failed") and not review_data.get("parse_failed"):
+                    result.errors.append(
+                        "fixture 期望 parse_failed=True，但 review json 没标记"
+                    )
 
-        post_text = post_abs.read_text(encoding="utf-8")
-        fm, body = strip_frontmatter(post_text)
-
-        required_fm = {"title", "date", "entry", "mode", "routing", "speaker", "source", "pass_score"}
-        missing_fm = required_fm - set(fm)
-        if missing_fm:
-            result.errors.append(f"frontmatter 缺字段：{sorted(missing_fm)}")
-
-        if fm.get("mode") != meta["mode"]:
-            result.errors.append(f"frontmatter.mode 错：{fm.get('mode')} ≠ {meta['mode']}")
-        if fm.get("routing") != meta["routing"]:
-            result.errors.append(f"frontmatter.routing 错：{fm.get('routing')} ≠ {meta['routing']}")
-        if fm.get("speaker") != meta["speaker"]:
-            result.errors.append(f"frontmatter.speaker 错：{fm.get('speaker')} ≠ {meta['speaker']}")
-
-        result.pass_score = fm.get("pass_score")
-        expected_score = meta.get("expected_pass_score")
-        if expected_score and fm.get("pass_score") != expected_score:
-            result.errors.append(
-                f"pass_score 错：{fm.get('pass_score')} ≠ {expected_score}"
-            )
-
-        if VIEWER_RE.search(body):
-            match = VIEWER_RE.search(body)
-            result.errors.append(f"正文含观看者视角词：{match.group(0)!r}")
-
-        # Review
-        review_rel = post_abs.stem
-        if review_rel.startswith("DRAFT-"):
-            review_rel = review_rel[len("DRAFT-"):]
-        review_path = tmp_root / "output" / "Reviews" / f"{review_rel}.review.md"
-        if not review_path.exists():
-            result.errors.append(f"Review 文件不存在：{review_path.relative_to(tmp_root)}")
+            # paused 终态不该污染人类索引 / 机器指纹（Step 8 没跑）
+            history_text = (tmp_root / "memory" / "HISTORY.md").read_text(encoding="utf-8")
+            for line in history_text.splitlines():
+                if line.startswith("|") and name in line and "日期" not in line:
+                    result.errors.append(
+                        f"paused 终态不该把任务写进 HISTORY.md: {line.strip()[:80]}"
+                    )
+            fp_text = (tmp_root / "memory" / "fingerprints.jsonl").read_text(encoding="utf-8")
+            for fp_line in fp_text.splitlines():
+                if not fp_line.strip():
+                    continue
+                try:
+                    fp_obj = json.loads(fp_line)
+                except json.JSONDecodeError:
+                    continue
+                if name in (fp_obj.get("path") or ""):
+                    result.errors.append(
+                        f"paused 终态不该写 fingerprints.jsonl: {fp_obj.get('path')}"
+                    )
         else:
-            review_text = review_path.read_text(encoding="utf-8")
-            if "## 评分" not in review_text or "## Re-Brief" not in review_text:
-                result.errors.append("Review 缺少 ## 评分 或 ## Re-Brief")
+            # FINISHED 路径：完整产物链路 + frontmatter + Review + HISTORY + fingerprint
+            rel_final = state.get("final_post_path") or ""
+            result.final_post_path = rel_final
+            if not rel_final.startswith(f"output/Posts/"):
+                result.errors.append(f"final_post_path 路径不规范：{rel_final}")
 
-        # HISTORY
-        history_text = (tmp_root / "memory" / "HISTORY.md").read_text(encoding="utf-8")
-        if rel_final not in history_text:
-            result.errors.append("HISTORY.md 未记录本篇成品路径")
+            post_abs = tmp_root / rel_final if rel_final else None
+            if not post_abs or not post_abs.exists():
+                result.errors.append(f"成品文件不存在：{rel_final}")
+                return result
 
-        # Fingerprint（DRAFT 不更新指纹；非 DRAFT 必须有记录）
-        if not post_abs.stem.startswith("DRAFT-"):
-            fp_lines = (tmp_root / "memory" / "fingerprints.jsonl").read_text(encoding="utf-8").splitlines()
-            fp_records = [json.loads(line) for line in fp_lines if line.strip()]
-            if not any(r.get("path") == rel_final for r in fp_records):
-                result.errors.append("fingerprints.jsonl 未记录本篇")
+            post_text = post_abs.read_text(encoding="utf-8")
+            fm, body = strip_frontmatter(post_text)
+
+            required_fm = {"title", "date", "entry", "mode", "routing", "speaker", "source", "pass_score"}
+            missing_fm = required_fm - set(fm)
+            if missing_fm:
+                result.errors.append(f"frontmatter 缺字段：{sorted(missing_fm)}")
+
+            if fm.get("mode") != meta["mode"]:
+                result.errors.append(f"frontmatter.mode 错：{fm.get('mode')} ≠ {meta['mode']}")
+            if fm.get("routing") != meta["routing"]:
+                result.errors.append(f"frontmatter.routing 错：{fm.get('routing')} ≠ {meta['routing']}")
+            if fm.get("speaker") != meta["speaker"]:
+                result.errors.append(f"frontmatter.speaker 错：{fm.get('speaker')} ≠ {meta['speaker']}")
+
+            result.pass_score = fm.get("pass_score")
+            expected_score = meta.get("expected_pass_score")
+            if expected_score and fm.get("pass_score") != expected_score:
+                result.errors.append(
+                    f"pass_score 错：{fm.get('pass_score')} ≠ {expected_score}"
+                )
+
+            if VIEWER_RE.search(body):
+                match = VIEWER_RE.search(body)
+                result.errors.append(f"正文含观看者视角词：{match.group(0)!r}")
+
+            # Review
+            review_rel = post_abs.stem
+            if review_rel.startswith("DRAFT-"):
+                review_rel = review_rel[len("DRAFT-"):]
+            review_path = tmp_root / "output" / "Reviews" / f"{review_rel}.review.md"
+            if not review_path.exists():
+                result.errors.append(f"Review 文件不存在：{review_path.relative_to(tmp_root)}")
+            else:
+                review_text = review_path.read_text(encoding="utf-8")
+                if "## 评分" not in review_text or "## Re-Brief" not in review_text:
+                    result.errors.append("Review 缺少 ## 评分 或 ## Re-Brief")
+
+            # HISTORY
+            history_text = (tmp_root / "memory" / "HISTORY.md").read_text(encoding="utf-8")
+            if rel_final not in history_text:
+                result.errors.append("HISTORY.md 未记录本篇成品路径")
+
+            # Fingerprint（DRAFT 不更新指纹；非 DRAFT 必须有记录）
+            if not post_abs.stem.startswith("DRAFT-"):
+                fp_lines = (tmp_root / "memory" / "fingerprints.jsonl").read_text(encoding="utf-8").splitlines()
+                fp_records = [json.loads(line) for line in fp_lines if line.strip()]
+                if not any(r.get("path") == rel_final for r in fp_records):
+                    result.errors.append("fingerprints.jsonl 未记录本篇")
 
         # mock 调用次数。fixture.yaml 显式指定 expected_total_mock_calls 时优先；
         # 否则按 mode 默认（quick=2, full single=5）兜底。

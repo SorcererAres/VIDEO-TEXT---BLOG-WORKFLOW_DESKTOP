@@ -46,6 +46,37 @@ class TestRegressionFixtures(unittest.TestCase):
         )
         self.assertEqual(result.pass_score, "54/60")
 
+    def test_quick_self_correction_runs_two_rounds(self) -> None:
+        """§9-A 自修正闭环：v1 REVIEW → v2 PASS → FINISHED。"""
+        result = run_fixture(FIXTURES_ROOT / "quick_self_correction", REPO_ROOT)
+        self.assertTrue(result.ok, msg=f"quick_self_correction failed: {result.errors}")
+        self.assertEqual(len(result.mock_calls), 4, "v1 + v2 各调 rewrite + check，共 4 次")
+        fixture_files = [c["fixture_file"] for c in result.mock_calls]
+        self.assertEqual(
+            fixture_files,
+            [
+                "rewrite-blog.md",       # v1 初稿
+                "quality-check.json",    # v1 评审 → REVIEW
+                "rewrite-blog-v2.md",    # 自修正第 2 轮重写
+                "quality-check-v2.json", # v2 评审 → PASS
+            ],
+            msg=f"自修正调用顺序错: {fixture_files}",
+        )
+        self.assertEqual(result.pass_score, "55/60", "最终成品应记录 v2 的 PASS 分数")
+
+    def test_quick_parse_failed_skips_self_correction(self) -> None:
+        """§2.3 Step 7 解析失败硬 guard：parse_failed 跳过自修正，直接转人工。"""
+        result = run_fixture(FIXTURES_ROOT / "quick_parse_failed", REPO_ROOT)
+        self.assertTrue(result.ok, msg=f"quick_parse_failed failed: {result.errors}")
+        # 关键：尽管 max_retries=1，引擎也不应该跑第 2 轮——只有 2 次调用
+        self.assertEqual(
+            len(result.mock_calls), 2,
+            f"parse_failed 必须跳过自修正，actual={[c['fixture_file'] for c in result.mock_calls]}",
+        )
+        self.assertEqual(result.pass_score, "—/60")
+        # paused 终态下 final_post_path 必须为空（引擎根本没走到 Step 8 落盘）
+        self.assertFalse(result.final_post_path, msg="paused 终态不该有 final_post_path")
+
     def test_full_sectioned_fixture_passes(self) -> None:
         """§9-C 按节滚动改写：Step 6 拆 intro/body-00/body-01/outro 共 4 次调用。"""
         result = run_fixture(FIXTURES_ROOT / "full_sectioned", REPO_ROOT)
