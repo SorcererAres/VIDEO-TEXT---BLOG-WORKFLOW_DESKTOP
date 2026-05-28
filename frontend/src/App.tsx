@@ -212,6 +212,55 @@ function clearDraftEdit(jobId: string) {
   }
 }
 
+// ─── 本会话提交的 job ID 跟踪（localStorage）──
+// 5/28 UX 诊断：侧栏"当前会话"实际上是"所有 restore 出来的活跃 job"，
+// 把今天主动提交的和半年前残留的混在一起。用 localStorage 显式记录本浏览器
+// 用户主动提交过的 job ID，让"本会话" tab 真正只显示用户视角的"本会话"。
+const SESSION_JOB_IDS_KEY = "v2b_session_job_ids"
+
+function readSessionJobIds(): string[] {
+  try {
+    const raw = localStorage.getItem(SESSION_JOB_IDS_KEY)
+    if (!raw) return []
+    const arr = JSON.parse(raw)
+    return Array.isArray(arr) ? arr.filter(x => typeof x === "string") : []
+  } catch {
+    return []
+  }
+}
+
+function pushSessionJobId(id: string) {
+  try {
+    const ids = readSessionJobIds()
+    if (!ids.includes(id)) {
+      ids.push(id)
+      // 留最近 100 个，避免无限增长
+      const trimmed = ids.length > 100 ? ids.slice(-100) : ids
+      localStorage.setItem(SESSION_JOB_IDS_KEY, JSON.stringify(trimmed))
+    }
+  } catch {
+    /* localStorage 满了忽略 */
+  }
+}
+
+// 把 ISO 或 'YYYY-MM-DD HH:MM:SS' 时间字符串转成"刚刚 / X 分钟前 / 今天 14:30 / 5/26"
+function formatRelativeOrAbsolute(ts: string | undefined | null): string {
+  if (!ts) return ""
+  const t = new Date(ts.replace(" ", "T"))
+  if (isNaN(t.getTime())) return ts
+  const diff = (Date.now() - t.getTime()) / 1000
+  if (diff < 60) return "刚刚"
+  if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`
+  if (diff < 86400) {
+    const today = new Date()
+    const sameDay = t.getDate() === today.getDate() && t.getMonth() === today.getMonth() && t.getFullYear() === today.getFullYear()
+    if (sameDay) return `今天 ${String(t.getHours()).padStart(2,"0")}:${String(t.getMinutes()).padStart(2,"0")}`
+    return `${Math.floor(diff / 3600)} 小时前`
+  }
+  if (diff < 86400 * 7) return `${Math.floor(diff / 86400)} 天前`
+  return `${t.getMonth() + 1}/${t.getDate()}`
+}
+
 // 常用 LLM 模型 chips —— Settings 用,提交前 sanity check 也用
 const COMMON_MODELS = [
   "deepseek-chat",
@@ -798,6 +847,7 @@ export default function App() {
         const data = await res.json()
         pushRecentSource(source) // 记入 localStorage,下次新建任务时排在最前面
         localStorage.setItem("v2b_last_speaker", speaker.trim() || "我")
+        pushSessionJobId(data.id) // 标记本会话主动提交，sidebar"本会话"区只显示这些
         // 任务提交成功 —— 清掉表单草稿,下次回 CreateForm 是干净状态
         clearCreateDraft()
         setDraftRestoredTs(null)
@@ -1525,12 +1575,26 @@ function JobList({ liveJobs, historicalJobs, selectedId, query, filter, onSelect
   const livePaths = new Set(liveJobs.map(j => j.final_post_path).filter(Boolean) as string[])
   const dedupedHistorical = historicalJobs.filter(h => !h.final_post_path || !livePaths.has(h.final_post_path))
 
+  // 5/28 UX 重构：把"当前会话"拆成两类
+  // - 本会话（sessionIds 命中）：用户在这个浏览器主动提交过 → 永远置顶
+  // - 后端活跃但非本会话：server _restore_jobs_from_disk 出来的 disk-xxx，
+  //   或者其他 session 提交的；放第二段，视觉降权
+  const sessionIds = useMemo(() => new Set(readSessionJobIds()), [])
+  const sessionJobs = liveJobs.filter(j => sessionIds.has(j.id))
+  const restoredJobs = liveJobs.filter(j => !sessionIds.has(j.id))
+
   // 再叠加 query + filter
-  const liveFiltered = liveJobs.filter(j => matchesJobFilter(j, filter) && matchesJobQuery(j, query))
+  const sessionFiltered = sessionJobs.filter(j => matchesJobFilter(j, filter) && matchesJobQuery(j, query))
+  const restoredFiltered = restoredJobs.filter(j => matchesJobFilter(j, filter) && matchesJobQuery(j, query))
   const historicalFiltered = dedupedHistorical.filter(j => matchesJobFilter(j, filter) && matchesJobQuery(j, query))
 
+  // 排序：本会话 / 活跃按更新时间倒序；历史归档 server 已按 mtime 排好
+  const sortByUpdated = (a: EngineJob, b: EngineJob) => (b.updated_at || "").localeCompare(a.updated_at || "")
+  sessionFiltered.sort(sortByUpdated)
+  restoredFiltered.sort(sortByUpdated)
+
   const hasAnyRaw = liveJobs.length > 0 || dedupedHistorical.length > 0
-  const hasAnyFiltered = liveFiltered.length > 0 || historicalFiltered.length > 0
+  const hasAnyFiltered = sessionFiltered.length > 0 || restoredFiltered.length > 0 || historicalFiltered.length > 0
   const isFiltering = !!query || filter !== "all"
 
   if (!hasAnyRaw) {
@@ -1551,12 +1615,29 @@ function JobList({ liveJobs, historicalJobs, selectedId, query, filter, onSelect
 
   return (
     <div className="flex flex-col gap-2">
-      {liveFiltered.length > 0 && (
+      {sessionFiltered.length > 0 && (
         <>
-          <SectionHeader>当前会话{isFiltering ? ` · ${liveFiltered.length}` : ""}</SectionHeader>
+          <SectionHeader>本会话 · {sessionFiltered.length}</SectionHeader>
           <div className="flex flex-col gap-1">
-            {liveFiltered.map(job => (
+            {sessionFiltered.map(job => (
               <JobRow key={job.id} job={job} selected={selectedId === job.id} onClick={() => onSelect(job.id)} />
+            ))}
+          </div>
+        </>
+      )}
+
+      {restoredFiltered.length > 0 && (
+        <>
+          {sessionFiltered.length > 0 && <div className="my-1 border-t border-border/50" />}
+          <SectionHeader muted>
+            后端活跃 · {restoredFiltered.length}
+            <span className="ml-1.5 text-[9px] normal-case tracking-normal text-muted-foreground/50">
+              · 服务重启 restore 的 job
+            </span>
+          </SectionHeader>
+          <div className="flex flex-col gap-1">
+            {restoredFiltered.map(job => (
+              <JobRow key={job.id} job={job} selected={selectedId === job.id} onClick={() => onSelect(job.id)} dim />
             ))}
           </div>
         </>
@@ -1564,8 +1645,13 @@ function JobList({ liveJobs, historicalJobs, selectedId, query, filter, onSelect
 
       {historicalFiltered.length > 0 && (
         <>
-          {liveFiltered.length > 0 && <div className="my-1 border-t" />}
-          <SectionHeader>历史归档 · {historicalFiltered.length} 篇{isFiltering && ` / ${dedupedHistorical.length}`}</SectionHeader>
+          {(sessionFiltered.length > 0 || restoredFiltered.length > 0) && (
+            <div className="my-1 border-t border-border/50" />
+          )}
+          <SectionHeader muted>
+            历史归档 · {historicalFiltered.length} 篇
+            {isFiltering && historicalFiltered.length !== dedupedHistorical.length && ` / ${dedupedHistorical.length}`}
+          </SectionHeader>
           <div className="flex flex-col gap-1">
             {historicalFiltered.map(job => (
               <JobRow key={job.id} job={job} selected={selectedId === job.id} onClick={() => onSelect(job.id)} historical />
@@ -1577,44 +1663,111 @@ function JobList({ liveJobs, historicalJobs, selectedId, query, filter, onSelect
   )
 }
 
-function SectionHeader({ children }: { children: React.ReactNode }) {
+function SectionHeader({ children, muted }: { children: React.ReactNode; muted?: boolean }) {
   return (
-    <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-muted-foreground/70 font-semibold select-none">
+    <div
+      className={cn(
+        "px-3 py-1 text-[10px] uppercase tracking-wider font-semibold select-none",
+        muted ? "text-muted-foreground/50" : "text-muted-foreground/80",
+      )}
+    >
       {children}
     </div>
   )
 }
 
-function JobRow({ job, selected, onClick, historical }: { job: EngineJob; selected: boolean; onClick: () => void; historical?: boolean }) {
+// status 对应的左侧 colored dot —— 比 badge 更轻量的视觉锚
+function StatusDot({ status }: { status: string }) {
+  const cls = (() => {
+    switch (status) {
+      case "running": return "bg-blue-400 animate-pulse"
+      case "queued": return "bg-slate-400"
+      case "paused": return "bg-amber-400 animate-pulse"
+      case "succeeded": return "bg-emerald-500"
+      case "draft": return "bg-amber-500"
+      case "failed": return "bg-destructive"
+      default: return "bg-muted-foreground/40"
+    }
+  })()
+  return <span className={cn("size-2 rounded-full shrink-0", cls)} aria-hidden />
+}
+
+function JobRow({
+  job, selected, onClick, historical, dim,
+}: {
+  job: EngineJob; selected: boolean; onClick: () => void;
+  historical?: boolean; dim?: boolean
+}) {
+  // 5/28 UX 重构：信息密度优先，去掉演讲人占据右下显眼位（改放成本/评分元数据）。
+  // 标题用 Tooltip 替代 native title 避免浮窗错位 bug。
+  const strategy = job.request.rewrite_strategy
+  const isSectioned = strategy === "sectioned"
+  const modeLabel = job.request.mode === "full" ? "full" : "quick"
+  const passScore = job.pass_score // 历史归档专属
+  const hasCost = !historical && job.estimated_cost_usd > 0
+  const tsLabel = formatRelativeOrAbsolute(job.updated_at || job.created_at)
+
   return (
     <button
       onClick={onClick}
       className={cn(
-        "group text-left p-3 rounded-lg border transition-all w-full",
+        "group text-left p-2.5 rounded-lg border transition-all w-full",
         selected
           ? "bg-primary/10 border-primary/30"
-          : "bg-transparent border-transparent hover:bg-accent hover:border-border",
-        historical && !selected && "opacity-75 hover:opacity-100",
+          : "bg-transparent border-transparent hover:bg-accent/50 hover:border-border",
+        // dim：后端 restore 但非本会话；historical：已归档成品。两者都视觉降权。
+        (dim || historical) && !selected && "opacity-70 hover:opacity-100",
       )}
     >
-      <div className="flex items-start justify-between gap-2 mb-1.5">
-        <h3
-          className="font-semibold text-sm line-clamp-2 flex-1 min-w-0 break-all"
-          title={job.stem}
-        >
-          {job.stem}
-        </h3>
+      {/* Row 1：左侧 colored dot + 标题（带 Radix Tooltip）+ 右侧 status badge */}
+      <div className="flex items-start gap-2 mb-1">
+        <div className="pt-1">
+          <StatusDot status={job.status} />
+        </div>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <h3 className="font-semibold text-sm leading-snug line-clamp-2 flex-1 min-w-0 break-all cursor-default">
+              {job.stem}
+            </h3>
+          </TooltipTrigger>
+          <TooltipContent side="right" align="start" collisionPadding={16} className="max-w-xs">
+            <p className="text-xs leading-relaxed break-all">{job.stem}</p>
+          </TooltipContent>
+        </Tooltip>
         <StatusBadge status={job.status} />
       </div>
-      <div className="flex items-center justify-between text-xs text-muted-foreground">
-        <span className="flex items-center gap-1 truncate">
-          <User className="size-3.5 shrink-0" /> {job.request.speaker}
-        </span>
-        <span className="shrink-0">
-          {historical
-            ? job.created_at
-            : (job.request.mode === "full" ? "完整流程" : "极速改写")}
-        </span>
+
+      {/* Row 2: meta chips —— 时间 · 模式 · sectioned 标记 · 评分 · 成本 · 演讲人(轻) */}
+      <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 pl-4 text-[10.5px] text-muted-foreground">
+        {tsLabel && <span className="font-medium">{tsLabel}</span>}
+        <span className="text-muted-foreground/40">·</span>
+        <span className="uppercase tracking-wide">{modeLabel}</span>
+        {isSectioned && (
+          <>
+            <span className="text-muted-foreground/40">·</span>
+            <span className="text-primary/80">sectioned</span>
+          </>
+        )}
+        {passScore && (
+          <>
+            <span className="text-muted-foreground/40">·</span>
+            <span className="text-emerald-400/80">{passScore}</span>
+          </>
+        )}
+        {hasCost && (
+          <>
+            <span className="text-muted-foreground/40">·</span>
+            <span className="text-amber-400/70 font-mono">${job.estimated_cost_usd.toFixed(4)}</span>
+          </>
+        )}
+        {job.request.speaker && job.request.speaker !== "我" && (
+          <>
+            <span className="text-muted-foreground/40">·</span>
+            <span className="truncate max-w-[80px] text-muted-foreground/60" title={job.request.speaker}>
+              {job.request.speaker}
+            </span>
+          </>
+        )}
       </div>
     </button>
   )
