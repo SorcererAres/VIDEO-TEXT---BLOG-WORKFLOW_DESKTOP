@@ -994,6 +994,25 @@ class Engine:
         if state.get("status") == "FINISHED":
             state["status"] = "PENDING"
 
+        # 用户拒绝草稿（POST /approve-draft accept=False）或运行被中止后，
+        # state 会停在 FAILED / CANCELLED。如果不在入口重置，下次提交同 stem
+        # 时所有 if 分支都不匹配，run_job 走到末尾 return None，server 抛
+        # "工作流未产生成品" —— 用户体验是"提交了但啥也没发生"。
+        #
+        # 这里重置 → PENDING + 清 Step 6/7 版本化 cache + checked_results，
+        # 让用户的"再试一次"真正重新跑 Step 6/7；Step 3-5 cache 保留，
+        # 已有的 clean/insights/outline 命中即用，不重复烧钱。
+        if state.get("status") in {"FAILED", "CANCELLED"}:
+            state["status"] = "PENDING"
+            state["version"] = 1
+            state["checked_results"] = []
+            state.pop("best_version", None)
+            state["cache"] = {
+                k: v
+                for k, v in (state.get("cache") or {}).items()
+                if not (k.startswith("REWRITING_v") or k.startswith("CHECKING_v"))
+            }
+
         state["mode"] = mode
         state["variables"] = {
             "SPEAKER": speaker,

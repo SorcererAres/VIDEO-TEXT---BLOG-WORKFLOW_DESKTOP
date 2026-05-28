@@ -921,5 +921,114 @@ class TestEngineRunner(unittest.TestCase):
         self.assertNotIn(str(post_a.relative_to(repo_root)), hist)
 
 
+class TestEngineRecoversFromTerminalFailureStatus(unittest.TestCase):
+    """回归：用户拒绝草稿(approve-draft accept=False) 或取消任务后 .state.json 留下
+    FAILED / CANCELLED，下次提交同 stem 时引擎入口必须能重置——否则所有 if 分支不
+    匹配，run_job 走到末尾 return None，server 抛"工作流未产生成品"，UI 体验是
+    "提交了但啥也没发生"。这是真实在 5/28 长稿 live 验证里撞到的 bug。"""
+
+    def setUp(self) -> None:
+        self.tmp_dir = Path(tempfile.mkdtemp())
+        (self.tmp_dir / "memory").mkdir(parents=True, exist_ok=True)
+        (self.tmp_dir / "knowledge").mkdir(parents=True, exist_ok=True)
+        (self.tmp_dir / "work/x").mkdir(parents=True, exist_ok=True)
+        (self.tmp_dir / ".cursor/skills/video2blog/rewrite-blog").mkdir(parents=True, exist_ok=True)
+        (self.tmp_dir / ".cursor/skills/video2blog/quality-check").mkdir(parents=True, exist_ok=True)
+        (self.tmp_dir / "WORKFLOW.md").write_text("contract", encoding="utf-8")
+        (self.tmp_dir / "knowledge/STYLE_GUIDE.md").write_text("style", encoding="utf-8")
+        (self.tmp_dir / "memory/PREFERENCES.md").write_text("pref", encoding="utf-8")
+        (self.tmp_dir / "memory/CONFIG.md").write_text("config", encoding="utf-8")
+        (self.tmp_dir / "memory/HISTORY.md").write_text(
+            "# 索引\n| 日期 | 标题 | 演讲人 | 一句摘要 | 成品路径 |\n|---|---|---|---|---|\n",
+            encoding="utf-8",
+        )
+        (self.tmp_dir / ".cursor/skills/video2blog/rewrite-blog/SKILL.md").write_text(
+            "---\nname: rw\n---\n# Step 6\n", encoding="utf-8"
+        )
+        (self.tmp_dir / ".cursor/skills/video2blog/quality-check/SKILL.md").write_text(
+            "---\nname: qc\n---\n# Step 7\n", encoding="utf-8"
+        )
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp_dir)
+
+    def _write_state(self, status: str, *, with_v1_cache: bool = True) -> Path:
+        state_path = self.tmp_dir / "work/x/.state.json"
+        state = {
+            "stem": "x",
+            "status": status,
+            "mode": "quick",
+            "version": 1,
+            "variables": {"SPEAKER": "我", "ROUTING": "/lecture", "MODE": "quick"},
+            "history": [],
+            "checked_results": [
+                {"version": 1, "verdict": "REVIEW", "scores": {}, "total": "—/60",
+                 "rebrief": "parse_failed", "parse_failed": True}
+            ],
+            "cache": {
+                "CLEANING": {"input_hash": "kept", "model": "m", "contract_fingerprint": "c"},
+            },
+        }
+        if with_v1_cache:
+            state["cache"]["REWRITING_v1"] = {"input_hash": "old", "model": "m", "contract_fingerprint": "c"}
+            state["cache"]["CHECKING_v1"] = {"input_hash": "old", "model": "m", "contract_fingerprint": "c"}
+            state["best_version"] = 1
+        state_path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+        return state_path
+
+    class _RaisingClient:
+        """让引擎一调 LLM 就 raise；目的是把'入口已经重置状态'这一事实暴露出来。"""
+        total_input_tokens = 0
+        total_output_tokens = 0
+        total_cost = 0.0
+        model = "raising"
+
+        def call_api(self, *_a, **_kw):  # type: ignore[no-untyped-def]
+            raise RuntimeError("intentional-after-reset")
+
+        def check_budget(self, _t):  # type: ignore[no-untyped-def]
+            return None
+
+    def test_failed_status_is_reset_and_versioned_cache_cleared(self) -> None:
+        state_path = self._write_state("FAILED")
+        source = self.tmp_dir / "work/x/raw.txt"
+        source.write_text("raw", encoding="utf-8")
+        engine = Engine(self.tmp_dir, self._RaisingClient())  # type: ignore[arg-type]
+
+        # 引擎在 Step 6 调 LLM 时 raise；关键是 raise 之前入口已经把状态推进过
+        with self.assertRaisesRegex(RuntimeError, "intentional-after-reset"):
+            engine.run_job(
+                stem="x", source_path=source,
+                mode="quick", routing="/lecture", speaker="我", max_retries=0,
+            )
+
+        s = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertNotEqual(s["status"], "FAILED",
+                            "FAILED 必须被重置，否则下次提交同 stem 永远跑不动")
+        self.assertEqual(s["checked_results"], [],
+                         "checked_results 必须清空，避免命中旧 parse_failed review")
+        self.assertNotIn("best_version", s,
+                         "best_version 必须移除，否则下游 next(...) 会查到陈年版本")
+        self.assertNotIn("REWRITING_v1", s["cache"],
+                         "REWRITING_v1 cache 必须清，让用户的'再试一次'真去调 LLM")
+        self.assertNotIn("CHECKING_v1", s["cache"], "CHECKING_v1 同理")
+        self.assertIn("CLEANING", s["cache"],
+                      "Step 3-5 cache 必须保留，避免重复烧 clean/extract/structure 钱")
+
+    def test_cancelled_status_also_recovers(self) -> None:
+        state_path = self._write_state("CANCELLED")
+        source = self.tmp_dir / "work/x/raw.txt"
+        source.write_text("raw", encoding="utf-8")
+        engine = Engine(self.tmp_dir, self._RaisingClient())  # type: ignore[arg-type]
+
+        with self.assertRaises(RuntimeError):
+            engine.run_job(stem="x", source_path=source,
+                           mode="quick", routing="/lecture", speaker="我", max_retries=0)
+
+        s = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertNotEqual(s["status"], "CANCELLED")
+        self.assertNotIn("REWRITING_v1", s["cache"])
+
+
 if __name__ == "__main__":
     unittest.main()
