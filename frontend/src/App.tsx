@@ -1821,7 +1821,8 @@ function JobWorkspace(props: JobWorkspaceProps) {
 
         <div className="flex-1 overflow-hidden px-6 py-4">
           <TabsContent value="console" className="h-full m-0">
-            <LogConsole logs={logs} className="h-full" />
+            {/* 历史归档不渲染 LogConsole；这里把 jobStatus 传下去让日志事件按 job 整体态降级历史 step / paused */}
+            <LogConsole logs={logs} jobStatus={isHistorical ? "succeeded" : job.status} className="h-full" />
           </TabsContent>
 
           <TabsContent value="outline" className="h-full m-0">

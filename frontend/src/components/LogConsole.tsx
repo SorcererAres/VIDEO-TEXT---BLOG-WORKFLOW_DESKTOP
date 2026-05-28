@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import {
   CheckCircle2,
+  Check,
   Loader2,
   Pause,
   AlertTriangle,
@@ -23,7 +24,35 @@ import { cn } from "@/lib/utils"
 
 interface LogConsoleProps {
   logs: string[]
+  /** 后端 job.status —— 决定 step/paused 事件用 actionable 还是 historical 渲染。
+   *  参考 GitHub Actions / Vercel 的设计：只有"当前活跃"事件保留 spinner/橙色，
+   *  历史事件降级为 ✓ / 灰色，避免 succeeded 后还显示"等待审批"误导用户。 */
+  jobStatus?: string
   className?: string
+}
+
+/** 每个事件在"当前 job 视角"下应该用 actionable 渲染还是 historical 渲染。 */
+function deriveActiveFlags(events: ParsedEvent[], jobStatus: string | undefined): boolean[] {
+  // succeeded / failed 后所有事件都成历史 —— 这是 5/28 撞到的具体 bug 场景
+  if (jobStatus === "succeeded" || jobStatus === "failed") {
+    return events.map(() => false)
+  }
+  // running：最后一条 step 事件保持 actionable，更早的 step 全转完成
+  // paused：最后一条 paused 事件保持 actionable，更早的 paused 全转历史
+  // 注意：step 和 paused 各自独立追踪，因为它们可能交错
+  let lastStepIdx = -1
+  let lastPausedIdx = -1
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (lastStepIdx === -1 && events[i].type === "step") lastStepIdx = i
+    if (lastPausedIdx === -1 && events[i].type === "paused") lastPausedIdx = i
+    if (lastStepIdx !== -1 && lastPausedIdx !== -1) break
+  }
+  return events.map((e, idx) => {
+    if (e.type === "step") return idx === lastStepIdx
+    if (e.type === "paused") return idx === lastPausedIdx
+    // 非 step/paused 类型（system/success/warning/error/detail）不受此规则影响
+    return true
+  })
 }
 
 /**
@@ -34,7 +63,7 @@ interface LogConsoleProps {
  *   - 智能跟随滚动:用户在底部才自动跟,否则浮动"↓ N 条新事件"按钮
  *   - 顶部搜索过滤 + 一键复制全部
  */
-export function LogConsole({ logs, className }: LogConsoleProps) {
+export function LogConsole({ logs, jobStatus, className }: LogConsoleProps) {
   const [showDetails, setShowDetails] = useState(false)
   const [query, setQuery] = useState("")
   const [showSearch, setShowSearch] = useState(false)
@@ -67,6 +96,12 @@ export function LogConsole({ logs, className }: LogConsoleProps) {
       )
     })
   }, [events, showDetails, query])
+
+  // 派生每条 visible 事件的"是否当前活跃"标记 —— 历史事件不该再 spinner / amber
+  const activeFlags = useMemo(
+    () => deriveActiveFlags(visibleEvents, jobStatus),
+    [visibleEvents, jobStatus],
+  )
 
   // 抓 ScrollArea 内部的 viewport,挂 scroll 监听判断"是否在底部"
   useEffect(() => {
@@ -225,7 +260,9 @@ export function LogConsole({ logs, className }: LogConsoleProps) {
                 没有匹配「{query}」的事件
               </div>
             ) : (
-              visibleEvents.map(ev => <EventRow key={ev.id} event={ev} />)
+              visibleEvents.map((ev, idx) => (
+                <EventRow key={ev.id} event={ev} isActive={activeFlags[idx]} />
+              ))
             )}
             <div ref={endRef} />
           </div>
@@ -257,8 +294,15 @@ const ICONS: Record<LogEventType, typeof Sparkles> = {
   detail: ChevronRight,
 }
 
-function EventRow({ event }: { event: ParsedEvent }) {
-  const Icon = ICONS[event.type]
+function EventRow({ event, isActive = true }: { event: ParsedEvent; isActive?: boolean }) {
+  // step / paused 历史化时改图标：step → ✓（已完成）、paused → Check（已审批过去）
+  // 不动 success/warning/error/detail —— 它们本身已经语义明确，没有"过期"问题
+  const Icon = (() => {
+    if (!isActive && event.type === "step") return CheckCircle2
+    if (!isActive && event.type === "paused") return Check
+    return ICONS[event.type]
+  })()
+
   return (
     <div
       className={cn(
@@ -272,11 +316,15 @@ function EventRow({ event }: { event: ParsedEvent }) {
           "shrink-0 mt-0.5",
           event.type === "detail" ? "size-3" : "size-4",
           event.type === "system" && "text-primary",
-          event.type === "step" && "text-primary animate-spin",
+          // step：当前活跃才转圈 + 主色；历史用绿勾且不再 animate
+          event.type === "step" && isActive && "text-primary animate-spin",
+          event.type === "step" && !isActive && "text-emerald-500/70",
           event.type === "success" && "text-emerald-500",
           event.type === "warning" && "text-amber-500",
           event.type === "error" && "text-destructive",
-          event.type === "paused" && "text-amber-500",
+          // paused：当前活跃才橙色；历史降级为静默的 muted
+          event.type === "paused" && isActive && "text-amber-500",
+          event.type === "paused" && !isActive && "text-muted-foreground/60",
           event.type === "detail" && "text-muted-foreground/60",
         )}
       />
@@ -287,16 +335,21 @@ function EventRow({ event }: { event: ParsedEvent }) {
               "leading-snug",
               event.type === "system" && "font-semibold",
               event.type === "step" && "font-semibold",
+              event.type === "step" && !isActive && "text-muted-foreground",
               event.type === "success" && "text-foreground",
               event.type === "warning" && "text-amber-700 dark:text-amber-400",
               event.type === "error" && "text-destructive font-medium",
-              event.type === "paused" && "text-amber-700 dark:text-amber-400 font-medium",
+              // 当前活跃的 paused 才高亮，历史的归类为已过去
+              event.type === "paused" && isActive && "text-amber-700 dark:text-amber-400 font-medium",
+              event.type === "paused" && !isActive && "text-muted-foreground",
             )}
           >
             {event.title}
           </span>
           {event.subtitle && (
-            <span className="text-xs text-muted-foreground">{event.subtitle}</span>
+            <span className="text-xs text-muted-foreground">
+              {!isActive && event.type === "paused" ? "已审批" : event.subtitle}
+            </span>
           )}
         </div>
       </div>
