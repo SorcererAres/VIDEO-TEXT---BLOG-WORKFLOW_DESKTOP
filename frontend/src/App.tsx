@@ -501,10 +501,19 @@ export default function App() {
       }
 
       if (job.status === "paused") {
+        // 关键：用后端的 paused_state 决定加载 outline 还是 draft，**不再盲调两个**。
+        // 之前是 loadDraftAndReview 末尾 setActiveTab("review") 永远赢，把 WAITING_USER_OUTLINE
+        // 的任务硬切到 review tab + 显示上一轮残留的 draft —— 5/28 撞了 3 次的同一类 bug。
         fetch(API_BASE + `/jobs/${job.id}`)
           .then(res => res.json())
           .then(data => {
-            if (data.status === "paused") {
+            if (data.status !== "paused") return
+            if (data.paused_state === "WAITING_USER_OUTLINE") {
+              loadOutline(job.id)
+            } else if (data.paused_state === "WAITING_USER_REVIEW") {
+              loadDraftAndReview(job.id)
+            } else {
+              // 老后端兼容：缺 paused_state 字段时按"outline 永远先于 draft"试
               loadOutline(job.id)
               loadDraftAndReview(job.id)
             }
@@ -1798,13 +1807,16 @@ function JobWorkspace(props: JobWorkspaceProps) {
                 运行日志
               </TabsTrigger>
             )}
-            {!isHistorical && job.status === "paused" && props.outlineText && !props.draftContent && (
+            {/* tab 切换器用 paused_state 而非看磁盘内容 —— 旧 draft_v* 残留时
+                outlineText/draftContent 启发式会让 outline tab 不出现、review
+                tab 出现，把用户卡在错误的审批界面无法继续。5/28 撞过两次。 */}
+            {!isHistorical && job.status === "paused" && job.paused_state === "WAITING_USER_OUTLINE" && (
               <TabsTrigger value="outline">
                 <ListTree data-icon="inline-start" />
                 骨架大纲审批
               </TabsTrigger>
             )}
-            {!isHistorical && job.status === "paused" && props.draftContent && (
+            {!isHistorical && job.status === "paused" && job.paused_state === "WAITING_USER_REVIEW" && (
               <TabsTrigger value="review">
                 <Edit data-icon="inline-start" />
                 草稿与质检

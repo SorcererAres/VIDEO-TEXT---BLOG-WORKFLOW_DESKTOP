@@ -181,13 +181,19 @@ class EngineJobService:
     def cancel_job(self, job_id: str) -> None:
         runtime = self._runtime(job_id)
         job = runtime.job
-        
+
         if job.status in {"succeeded", "failed"}:
             return
-            
+
         with self._lock:
             runtime.cancelled = True
-            
+
+        # 写 state.status = "CANCELLED" 到磁盘 —— 否则取消 paused 任务后 state
+        # 留在 WAITING_USER_OUTLINE，下次提交同 stem 又走 paused 分支死循环。
+        # 5/28 撞过的具体 bug：用户取消后重提，引擎入口所有 if 不命中。
+        # runner 的 CANCELLED → PENDING 重置会接管后续清理（旧 draft/review/cache）。
+        self._write_state_status(job.stem, "CANCELLED")
+
         if job.status == "queued" and runtime.future:
             cancelled = runtime.future.cancel()
             if cancelled:
@@ -195,10 +201,29 @@ class EngineJobService:
                 self._mark(job, "failed")
                 self._emit(job.id, "failed", {"error": job.error})
                 return
-                
+
         job.error = "任务被用户手动中断"
         self._mark(job, "failed")
         self._emit(job.id, "failed", {"error": job.error})
+
+    def _write_state_status(self, stem: str, status: str) -> None:
+        """原子地把 work/<stem>/.state.json 的 status 字段改成指定值。
+
+        不存在或解析失败时静默跳过 —— 这是兜底操作，不该让 cancel 自身失败。
+        """
+        state_path = self.repo_root / "work" / stem / ".state.json"
+        if not state_path.exists():
+            return
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        state["status"] = status
+        try:
+            from video2blog.engine.utils import atomic_write
+            atomic_write(state_path, json.dumps(state, ensure_ascii=False, indent=2))
+        except Exception:
+            pass
 
     def get_artifacts(self, job_id: str) -> dict[str, str | None]:
         job = self.get_job(job_id)

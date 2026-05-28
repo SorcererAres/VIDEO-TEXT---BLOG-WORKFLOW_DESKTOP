@@ -1029,6 +1029,35 @@ class TestEngineRecoversFromTerminalFailureStatus(unittest.TestCase):
         self.assertNotEqual(s["status"], "CANCELLED")
         self.assertNotIn("REWRITING_v1", s["cache"])
 
+    def test_finished_status_also_resets_and_purges_stale_files(self) -> None:
+        """5/28 撞到的第 3 个回归点：FINISHED 不被特殊清理时，下一次重跑同 stem 会
+        因磁盘上还残留旧 draft_v1.md 而让前端 /files/draft 返回过期内容、UI tab
+        被误推到 review 模式。FINISHED 现在也走 FAILED/CANCELLED 那套清理。"""
+        state_path = self._write_state("FINISHED")
+        # FINISHED 状态下通常 final_post_path 不空，验证它被一并清掉，
+        # 避免 Step 8 同源去重把上一轮成品物理删除
+        s = json.loads(state_path.read_text(encoding="utf-8"))
+        s["final_post_path"] = "output/Posts/2026/2026-05-28-test.md"
+        state_path.write_text(json.dumps(s, ensure_ascii=False), encoding="utf-8")
+        # 模拟旧产物
+        (self.tmp_dir / "work/x/draft_v1.md").write_text("OLD", encoding="utf-8")
+        (self.tmp_dir / "work/x/review_v1.json").write_text("{}", encoding="utf-8")
+
+        source = self.tmp_dir / "work/x/raw.txt"
+        source.write_text("raw", encoding="utf-8")
+        engine = Engine(self.tmp_dir, self._RaisingClient())  # type: ignore[arg-type]
+        with self.assertRaises(RuntimeError):
+            engine.run_job(stem="x", source_path=source,
+                           mode="quick", routing="/lecture", speaker="我", max_retries=0)
+
+        s2 = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertNotEqual(s2["status"], "FINISHED")
+        self.assertNotIn("final_post_path", s2,
+                         "FINISHED 重提时 final_post_path 必须清掉，"
+                         "否则 Step 8 同源去重会误删上一轮真实成品")
+        self.assertFalse((self.tmp_dir / "work/x/draft_v1.md").exists())
+        self.assertFalse((self.tmp_dir / "work/x/review_v1.json").exists())
+
     def test_reset_also_purges_stale_draft_and_review_files(self) -> None:
         """5/28 长稿 live 验证撞到的 UI bug：用户拒绝草稿后，下一轮跑 paused 时
         前端 fetch /files/draft 拿到的是上一轮残留的 draft_v1.md，被当成

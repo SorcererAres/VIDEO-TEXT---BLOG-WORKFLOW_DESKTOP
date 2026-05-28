@@ -986,35 +986,36 @@ class Engine:
             if finished_cache_valid:
                 print(f"[*] 已完成且缓存命中，直接返回成品: {state['final_post_path']}", flush=True)
                 return final_path
-            state["status"] = "PENDING"
+            # 短路失败时**不**改 status — 留 FINISHED，让下面的统一重置路径
+            # 来清 cache / final_post_path / 旧 draft / chunks 等。直接 = "PENDING"
+            # 会让那条路径漏掉 FINISHED 分支，残留 final_post_path 让 Step 8
+            # 同源去重误删上一轮真实成品（5/28 撞过的 bug）。
 
         if loaded_mode and loaded_mode != mode and state.get("status") != "PENDING":
             state["status"] = "PENDING"
             state["version"] = 1
-        if state.get("status") == "FINISHED":
-            state["status"] = "PENDING"
 
-        # 用户拒绝草稿（POST /approve-draft accept=False）或运行被中止后，
-        # state 会停在 FAILED / CANCELLED。如果不在入口重置，下次提交同 stem
-        # 时所有 if 分支都不匹配，run_job 走到末尾 return None，server 抛
-        # "工作流未产生成品" —— 用户体验是"提交了但啥也没发生"。
-        #
-        # 这里重置 → PENDING + 清 Step 6/7 版本化 cache + checked_results，
-        # 让用户的"再试一次"真正重新跑 Step 6/7；Step 3-5 cache 保留，
-        # 已有的 clean/insights/outline 命中即用，不重复烧钱。
-        if state.get("status") in {"FAILED", "CANCELLED"}:
+        # FINISHED / FAILED / CANCELLED 都视为"上一轮已经收尾"——重新提交同
+        # stem 时全部走 PENDING 重置 + 清旧 Step 6/7 产物。否则：
+        # - FAILED/CANCELLED: 入口所有 if 不匹配，run_job return None，
+        #   server 抛"工作流未产生成品"；
+        # - FINISHED: 上次的 draft_v* 仍留在磁盘，前端 fetch /files/draft
+        #   拿到旧内容渲染，UI tab 把任务硬切到 review 模式。
+        # 5/28 长稿 live 验证撞到的 UI bug 根因都汇总到这一处。
+        if state.get("status") in {"FINISHED", "FAILED", "CANCELLED"}:
             state["status"] = "PENDING"
             state["version"] = 1
             state["checked_results"] = []
             state.pop("best_version", None)
+            # FINISHED 之后用户重新提交时，旧 final_post_path 也不该残留 —— 否则
+            # Step 8 同源去重逻辑会去删掉那个上一轮的成品（即使新一轮还没产出）。
+            state.pop("final_post_path", None)
             state["cache"] = {
                 k: v
                 for k, v in (state.get("cache") or {}).items()
                 if not (k.startswith("REWRITING_v") or k.startswith("CHECKING_v"))
             }
-            # 清磁盘上的旧 draft_v* / review_v* / chunks/rewrite/* —— 否则下轮
-            # paused 时前端会 fetch 到 5/27 那种残留文件，误以为是本轮草稿。
-            # 5/28 长稿 live 验证里撞到的具体 UI bug 根因之一。
+            # 清磁盘上的旧 draft_v* / review_v* / chunks/rewrite/*
             import shutil as _shutil
             stale_work_dir = self.repo_root / "work" / stem
             if stale_work_dir.exists():

@@ -356,21 +356,25 @@ def create_app(repo_root: Path | str | None = None) -> FastAPI:
             job = service.get_job(job_id)
             artifacts = service.get_artifacts(job_id)
             
+            # 还没跑过 Step 6 的中间态（WAITING_USER_OUTLINE 等）就不应该返回 draft/review，
+            # 否则前端会拿到上一轮残留文件，被当成本轮内容渲染 —— 5/28 撞过的 UI bug 根因之一。
+            PRE_REWRITE_STATES = {
+                "PENDING", "CLEANING", "EXTRACTING", "STRUCTURING", "WAITING_USER_OUTLINE",
+            }
             path_str = None
-            if file_key == "draft":
+            if file_key in {"draft", "review_json"}:
                 state_path = service.repo_root / "work" / job.stem / ".state.json"
                 if state_path.exists():
                     with open(state_path, "r", encoding="utf-8") as f:
                         state = json.load(f)
+                    if state.get("status") in PRE_REWRITE_STATES:
+                        raise HTTPException(
+                            status_code=404,
+                            detail=f"本轮工作流尚未进入 Step 6，{file_key} 还不存在",
+                        )
                     version = state.get("best_version", state.get("version", 1))
-                    path_str = f"work/{job.stem}/draft_v{version}.md"
-            elif file_key == "review_json":
-                state_path = service.repo_root / "work" / job.stem / ".state.json"
-                if state_path.exists():
-                    with open(state_path, "r", encoding="utf-8") as f:
-                        state = json.load(f)
-                    version = state.get("best_version", state.get("version", 1))
-                    path_str = f"work/{job.stem}/review_v{version}.json"
+                    ext = "md" if file_key == "draft" else "json"
+                    path_str = f"work/{job.stem}/draft_v{version}.{ext}" if file_key == "draft" else f"work/{job.stem}/review_v{version}.{ext}"
             else:
                 path_str = artifacts.get(f"{file_key}_path") or getattr(job, f"{file_key}_path", None)
 

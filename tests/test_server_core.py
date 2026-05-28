@@ -284,6 +284,42 @@ class TestEngineJobService(unittest.TestCase):
         finally:
             service.shutdown()
 
+    def test_cancel_paused_job_writes_cancelled_to_disk(self) -> None:
+        """5/28 撞到的死锁：用户在 UI 取消 paused 任务，cancel_job 只动内存不写
+        state.json，下次重提同 stem 时引擎读 state=WAITING_USER_OUTLINE，所有
+        重置分支都不命中又卡回 paused。修复：cancel 时把 state.status 写
+        CANCELLED 到磁盘，让 runner 入口的 CANCELLED → PENDING 重置接管。"""
+        work_dir = self.tmp_dir / "work/cancel_paused"
+        work_dir.mkdir(parents=True, exist_ok=True)
+        (work_dir / "raw.txt").write_text("raw", encoding="utf-8")
+        state_path = work_dir / ".state.json"
+        state_path.write_text(
+            json.dumps(
+                {
+                    "stem": "cancel_paused",
+                    "status": "WAITING_USER_OUTLINE",
+                    "mode": "full",
+                    "variables": {"SOURCE": "work/cancel_paused/raw.txt", "SPEAKER": "我",
+                                  "ROUTING": "/lecture", "MODE": "full"},
+                    "version": 1,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        service = EngineJobService(self.tmp_dir)
+        try:
+            job = service.list_jobs()[0]
+            self.assertEqual(job.status, "paused")
+            service.cancel_job(job.id)
+            persisted = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                persisted["status"], "CANCELLED",
+                "cancel 必须把 state.status 写到磁盘，否则下次重提卡在 paused 死循环",
+            )
+        finally:
+            service.shutdown()
+
     def test_paused_state_cleared_after_resume(self) -> None:
         """resume 之后 paused_state 必须清空，避免 UI 还按上个人工节点渲染。"""
         work_dir = self.tmp_dir / "work/resume_clear"
