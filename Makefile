@@ -2,7 +2,7 @@ PYTHON := .venv/bin/python
 PIP := .venv/bin/pip
 FRONTEND_DIR := frontend
 
-.PHONY: install test validate regression frontend-lint frontend-build server dev app app-build
+.PHONY: install test validate regression frontend-lint frontend-build server dev app app-build backend-bin
 
 install:
 	python3 -m venv .venv
@@ -36,3 +36,8 @@ app:
 # 构建可分发的 .app（注意：当前未打包 Python 后端 sidecar，运行仍需独立后端）
 app-build:
 	cd $(FRONTEND_DIR) && PATH="$$HOME/.cargo/bin:$$PATH" npm run tauri build
+
+# Phase 3 sidecar 准备：把 FastAPI 后端冻结成 onedir 可执行。
+# 暂不含 mlx-whisper（需 .metallib datas）；暂未签名（首次访问钥匙串会弹窗）。
+backend-bin:
+	bash scripts/build_backend_bin.sh
