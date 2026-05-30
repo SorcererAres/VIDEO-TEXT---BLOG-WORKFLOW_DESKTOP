@@ -60,33 +60,38 @@
   }
 }
 
+/* 颜色交给 @layer base 的 bg-background/text-foreground（随 .dark/.light token），
+   字体交给 html { font-sans }（SF 优先）。这里只留抗锯齿，避免硬编码暗色把外观锁死。 */
 body {
-  @apply bg-dark-950 text-dark-200 antialiased;
-  font-family: 'Geist Variable', system-ui, -apple-system, sans-serif;
+  @apply antialiased;
 }
 
-/* Custom scrollbars */
+/* Claude 是纸感不是玻璃感：壳内不做 vibrancy 透出，统一暖 matte 实底。
+   侧栏/主区背景交给 token（见 App.tsx 的 bg-sidebar / bg-background）。 */
+
+/* Custom scrollbars —— 暖中性，浅/深通吃 */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
 }
 
 ::-webkit-scrollbar-track {
-  background: rgba(15, 23, 42, 0.2);
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(99, 102, 241, 0.2);
+  background: color-mix(in oklch, var(--foreground) 18%, transparent);
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(99, 102, 241, 0.4);
+  background: color-mix(in oklch, var(--foreground) 30%, transparent);
 }
 
 @theme inline {
   --font-heading: var(--font-sans);
-  --font-sans: 'Geist Variable', sans-serif;
+  /* SF 优先：WKWebView / macOS 上 -apple-system 解析为真 SF Pro；Geist 作非 mac 兜底。 */
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, 'Geist Variable', sans-serif;
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -127,73 +132,76 @@ body {
   --radius-4xl: calc(var(--radius) * 2.6);
 }
 
+/* ───────── Claude 暖纸 + 珊瑚 配色 ─────────
+   浅色＝暖象牙白纸感，深色＝暖炭褐；强调色＝黏土珊瑚（≈#D97757，极克制）。
+   色相统一走暖区（h≈40-85），避免冷灰。 */
 :root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  --background: oklch(0.971 0.008 85);      /* 暖象牙白 ≈ #FAF9F5 */
+  --foreground: oklch(0.285 0.012 60);      /* 暖近黑 */
+  --card: oklch(0.985 0.006 85);            /* 比底略亮的暖白 */
+  --card-foreground: oklch(0.285 0.012 60);
+  --popover: oklch(0.985 0.006 85);
+  --popover-foreground: oklch(0.285 0.012 60);
+  --primary: oklch(0.64 0.12 40);           /* 黏土珊瑚 ≈ #D97757 */
+  --primary-foreground: oklch(0.985 0.006 85);
+  --secondary: oklch(0.95 0.008 85);        /* 暖浅灰 */
+  --secondary-foreground: oklch(0.32 0.012 60);
+  --muted: oklch(0.952 0.008 85);
+  --muted-foreground: oklch(0.52 0.012 65); /* 暖中灰 */
+  --accent: oklch(0.93 0.012 70);           /* 暖 hover 底 */
+  --accent-foreground: oklch(0.3 0.012 60);
+  --destructive: oklch(0.55 0.2 28);
+  --border: oklch(0.9 0.01 80);             /* 极淡暖灰 hairline */
+  --input: oklch(0.9 0.01 80);
+  --ring: oklch(0.64 0.12 40);              /* 珊瑚 focus 环 */
+  --chart-1: oklch(0.64 0.12 40);
+  --chart-2: oklch(0.6 0.08 60);
+  --chart-3: oklch(0.55 0.06 80);
+  --chart-4: oklch(0.5 0.05 100);
+  --chart-5: oklch(0.45 0.04 50);
+  --radius: 0.75rem;                        /* 更圆润 */
+  --sidebar: oklch(0.955 0.009 85);         /* 侧栏比主区略深的暖纸 */
+  --sidebar-foreground: oklch(0.285 0.012 60);
+  --sidebar-primary: oklch(0.64 0.12 40);
+  --sidebar-primary-foreground: oklch(0.985 0.006 85);
+  --sidebar-accent: oklch(0.93 0.012 70);
+  --sidebar-accent-foreground: oklch(0.3 0.012 60);
+  --sidebar-border: oklch(0.9 0.01 80);
+  --sidebar-ring: oklch(0.64 0.12 40);
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  --background: oklch(0.215 0.006 65);       /* 暖炭褐 ≈ #262624 */
+  --foreground: oklch(0.94 0.005 85);        /* 暖白 */
+  --card: oklch(0.255 0.006 65);             /* 略亮暖炭 */
+  --card-foreground: oklch(0.94 0.005 85);
+  --popover: oklch(0.255 0.006 65);
+  --popover-foreground: oklch(0.94 0.005 85);
+  --primary: oklch(0.68 0.12 40);            /* 珊瑚微提亮 */
+  --primary-foreground: oklch(0.2 0.01 60);
+  --secondary: oklch(0.3 0.006 65);
+  --secondary-foreground: oklch(0.94 0.005 85);
+  --muted: oklch(0.3 0.006 65);
+  --muted-foreground: oklch(0.72 0.008 80);
+  --accent: oklch(0.32 0.008 65);
+  --accent-foreground: oklch(0.94 0.005 85);
+  --destructive: oklch(0.68 0.17 25);
+  --border: oklch(0.96 0.01 85 / 12%);       /* 暖白 hairline */
+  --input: oklch(0.96 0.01 85 / 16%);
+  --ring: oklch(0.68 0.12 40);
+  --chart-1: oklch(0.68 0.12 40);
+  --chart-2: oklch(0.66 0.08 60);
+  --chart-3: oklch(0.62 0.06 80);
+  --chart-4: oklch(0.58 0.05 100);
+  --chart-5: oklch(0.54 0.04 50);
+  --sidebar: oklch(0.19 0.006 65);           /* 侧栏比主区略深 */
+  --sidebar-foreground: oklch(0.94 0.005 85);
+  --sidebar-primary: oklch(0.68 0.12 40);
+  --sidebar-primary-foreground: oklch(0.2 0.01 60);
+  --sidebar-accent: oklch(0.32 0.008 65);
+  --sidebar-accent-foreground: oklch(0.94 0.005 85);
+  --sidebar-border: oklch(0.96 0.01 85 / 12%);
+  --sidebar-ring: oklch(0.68 0.12 40);
 }
 
 @layer base {
@@ -205,5 +213,32 @@ body {
   }
   html {
     @apply font-sans;
+    /* 品牌珊瑚强调色：原生 checkbox/radio/select 随之上色，与 Claude 品牌统一
+       （刻意不用系统 AccentColor —— 对齐 Claude 而非纯 HIG）。 */
+    accent-color: var(--primary);
+  }
+
+  /* 键盘可达：仅键盘聚焦时用珊瑚 focus ring，鼠标点击不显示，贴合 macOS 习惯。 */
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  /* —— 尊重 macOS 无障碍系统开关 —— */
+  /* 减弱动态效果：关掉过渡/动画 */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+  /* 降低透明度：关掉毛玻璃，退回不透明背景（vibrancy 透出时用） */
+  @media (prefers-reduced-transparency: reduce) {
+    .vibrancy-surface {
+      background: var(--background) !important;
+      backdrop-filter: none !important;
+    }
   }
 }

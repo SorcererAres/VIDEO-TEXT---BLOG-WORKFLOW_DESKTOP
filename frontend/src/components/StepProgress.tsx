@@ -1,4 +1,4 @@
-import { Check, Loader2, Pause, AlertTriangle, FileText, Sparkles, ListTree, PenLine, Scale, Archive } from "lucide-react"
+import { Check, Loader2, Pause, AlertTriangle, FileText, Sparkles, ListTree, PenLine, Scale, Archive, AudioLines, Mic } from "lucide-react"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import type { ComponentType } from "react"
@@ -13,8 +13,11 @@ interface StepNode {
   icon: ComponentType<{ className?: string }>
 }
 
-// 8 个 stage 的元信息;quick 模式会过滤掉 3/4/5
+// stage 元信息;quick 模式过滤 3/4/5；前三步(audio/asr/draft)仅 video 任务显示
 const STAGE_META: Record<string, { label: string; hint: string; icon: ComponentType<{ className?: string }>; quickOnly?: false }> = {
+  audio: { label: "音频", hint: "前1步 · ffmpeg 提取音频", icon: AudioLines },
+  asr: { label: "转录", hint: "前2步 · 语音转文字(mlx / whisper.cpp)", icon: Mic },
+  draft: { label: "成稿", hint: "前3步 · 生成 raw.txt 转录稿", icon: FileText },
   clean: { label: "清洗", hint: "Step 3 · 清洗 ASR 转录稿", icon: FileText },
   insights: { label: "提炼", hint: "Step 4 · 提炼核心观点", icon: Sparkles },
   outline: { label: "骨架", hint: "Step 5 · 搭建博文骨架", icon: ListTree },
@@ -28,8 +31,9 @@ export type JumpTarget = "console" | "outline" | "review" | "final"
 interface StepProgressProps {
   mode: "full" | "quick"
   jobStatus: string // queued / running / paused / succeeded / failed
-  currentStep: number | null // 来自 inferCurrentStep
+  currentStep: number | null // 来自 inferCurrentStep（0-2=前三步，3-8=LLM）
   pausedAt?: "outline" | "review" | null // 用户审批节点(从 outline_path / draft 推断)
+  hasTranscription?: boolean // video 任务：前置 3 个转录节点
   onJump?: (target: JumpTarget) => void // 点击 step dot 跳到对应 tab
   className?: string
 }
@@ -42,10 +46,11 @@ interface StepProgressProps {
  *   - 暂停节点(等用户审批)用黄色 Pause 图标
  *   - 完成节点 绿勾 + 暗色填充
  */
-export function StepProgress({ mode, jobStatus, currentStep, pausedAt, onJump, className }: StepProgressProps) {
-  const allStages = mode === "full"
+export function StepProgress({ mode, jobStatus, currentStep, pausedAt, hasTranscription, onJump, className }: StepProgressProps) {
+  const llmStages = mode === "full"
     ? ["clean", "insights", "outline", "rewrite", "check", "archive"]
     : ["rewrite", "check", "archive"]
+  const allStages = hasTranscription ? ["audio", "asr", "draft", ...llmStages] : llmStages
 
   const isFinished = jobStatus === "succeeded" || jobStatus === "failed"
   const isPaused = jobStatus === "paused"
@@ -53,6 +58,7 @@ export function StepProgress({ mode, jobStatus, currentStep, pausedAt, onJump, c
 
   // 把 stage id 映射回 Step 编号,判断 done/running/pending
   const stageToStepNum = (id: string) => ({
+    audio: 0, asr: 1, draft: 2,
     clean: 3, insights: 4, outline: 5, rewrite: 6, check: 7, archive: 8,
   })[id]!
 

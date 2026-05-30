@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react"
-import { Check, ChevronsUpDown, FileText, FileAudio, Clock, Search } from "lucide-react"
+import { useEffect, useMemo, useRef, useState } from "react"
+import { Check, ChevronsUpDown, FileText, FileAudio, Film, Clock, Search, Upload, Loader2 } from "lucide-react"
 import {
   Command,
   CommandEmpty,
@@ -16,7 +16,7 @@ import { cn } from "@/lib/utils"
 
 interface SourceItem {
   path: string
-  kind: "transcript" | "text"
+  kind: "transcript" | "text" | "video"
   label: string
   size: number
   mtime: number
@@ -71,6 +71,30 @@ export function SourcePicker({ value, onChange, apiBase, className }: SourcePick
   const [error, setError] = useState<string | null>(null)
   const [manualMode, setManualMode] = useState(false)
   const [recent, setRecent] = useState<string[]>([])
+  const [uploading, setUploading] = useState(false)
+  const fileRef = useRef<HTMLInputElement>(null)
+
+  // 上传素材：原始 body POST /upload，按扩展名落 input/Video|Text；浏览器 / Tauri 通用
+  const handleUpload = async (file: File) => {
+    setUploading(true)
+    setError(null)
+    try {
+      const res = await fetch(apiBase + `/upload?name=${encodeURIComponent(file.name)}`, { method: "POST", body: file })
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}`
+        try { const j = await res.json(); if (typeof j?.detail === "string") detail = j.detail } catch { /* */ }
+        throw new Error(detail)
+      }
+      const data: { path: string } = await res.json()
+      onChange(data.path)
+      pushRecentSource(data.path)
+      setOpen(false)
+    } catch (e) {
+      setError(`上传失败: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setUploading(false)
+    }
+  }
 
   useEffect(() => {
     if (!open) return
@@ -94,6 +118,7 @@ export function SourcePicker({ value, onChange, apiBase, className }: SourcePick
   )
 
   // 把 items 按 kind 分组
+  const videos = items.filter(i => i.kind === "video")
   const transcripts = items.filter(i => i.kind === "transcript")
   const texts = items.filter(i => i.kind === "text")
   const recentItems = recent
@@ -120,6 +145,14 @@ export function SourcePicker({ value, onChange, apiBase, className }: SourcePick
   }
 
   return (
+    <>
+    <input
+      ref={fileRef}
+      type="file"
+      hidden
+      accept=".mp4,.mov,.mkv,.m4v,.webm,.flv,.avi,.txt,.md,.srt,.vtt,video/*"
+      onChange={e => { const f = e.target.files?.[0]; if (f) handleUpload(f); e.target.value = "" }}
+    />
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <Button
@@ -135,7 +168,9 @@ export function SourcePicker({ value, onChange, apiBase, className }: SourcePick
         >
           {value ? (
             <span className="flex items-center gap-2 min-w-0 flex-1">
-              {selectedItem?.kind === "transcript" ? (
+              {selectedItem?.kind === "video" ? (
+                <Film className="size-4 shrink-0 text-primary" />
+              ) : selectedItem?.kind === "transcript" ? (
                 <FileAudio className="size-4 shrink-0 text-primary" />
               ) : (
                 <FileText className="size-4 shrink-0 text-primary" />
@@ -199,9 +234,9 @@ export function SourcePicker({ value, onChange, apiBase, className }: SourcePick
               </>
             )}
 
-            {transcripts.length > 0 && (
-              <CommandGroup heading={`视频转录稿 · ${transcripts.length}`}>
-                {transcripts.map(item => (
+            {videos.length > 0 && (
+              <CommandGroup heading={`待转录视频 · ${videos.length}（选中会先自动转录）`}>
+                {videos.map(item => (
                   <SourceRow
                     key={item.path}
                     item={item}
@@ -213,6 +248,25 @@ export function SourcePicker({ value, onChange, apiBase, className }: SourcePick
                   />
                 ))}
               </CommandGroup>
+            )}
+
+            {transcripts.length > 0 && (
+              <>
+                {videos.length > 0 && <CommandSeparator />}
+                <CommandGroup heading={`视频转录稿 · ${transcripts.length}`}>
+                {transcripts.map(item => (
+                  <SourceRow
+                    key={item.path}
+                    item={item}
+                    selected={value === item.path}
+                    onSelect={() => {
+                      onChange(item.path)
+                      setOpen(false)
+                    }}
+                  />
+                ))}
+                </CommandGroup>
+              </>
             )}
 
             {texts.length > 0 && (
@@ -235,8 +289,19 @@ export function SourcePicker({ value, onChange, apiBase, className }: SourcePick
             )}
           </CommandList>
 
-          {/* 手动输入逃生口 */}
-          <div className="border-t p-2">
+          {/* 上传 + 手动输入 */}
+          <div className="border-t p-2 flex flex-col gap-1">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="w-full justify-start text-xs"
+              disabled={uploading}
+              onClick={() => fileRef.current?.click()}
+            >
+              {uploading ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <Upload data-icon="inline-start" />}
+              {uploading ? "上传中…" : "上传视频 / 文字稿…"}
+            </Button>
             <Button
               type="button"
               variant="ghost"
@@ -253,11 +318,12 @@ export function SourcePicker({ value, onChange, apiBase, className }: SourcePick
         </Command>
       </PopoverContent>
     </Popover>
+    </>
   )
 }
 
 function SourceRow({ item, selected, recent, onSelect }: { item: SourceItem; selected: boolean; recent?: boolean; onSelect: () => void }) {
-  const Icon = item.kind === "transcript" ? FileAudio : FileText
+  const Icon = item.kind === "video" ? Film : item.kind === "transcript" ? FileAudio : FileText
   return (
     <CommandItem onSelect={onSelect} className="gap-2" value={item.path + " " + item.label}>
       {recent ? (

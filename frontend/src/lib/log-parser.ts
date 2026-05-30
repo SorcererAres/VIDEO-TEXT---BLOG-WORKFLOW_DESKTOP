@@ -16,7 +16,7 @@ export type LogEventType =
 export interface ParsedEvent {
   id: number
   type: LogEventType
-  step?: number // 3-8 if present
+  step?: number // 0-2 = 前三步转录；3-8 = LLM 步
   title: string // 给人看的标题
   subtitle?: string // 可选二级说明(如得分)
   raw: string // 原始日志,保留给"详细技术日志"查看
@@ -63,6 +63,21 @@ export function parseLogLine(raw: string): ParsedEvent | null {
   }
   if (/Job completed successfully/i.test(line)) {
     return { id: nextId(), type: "success", title: "全部步骤已通过", raw }
+  }
+
+  // ---- 前三步：视频转录（step 0/1/2，排在 LLM Step 3-8 之前） ----
+  if (/^\[前三步\]\s*开始转录/.test(line)) {
+    return { id: nextId(), type: "system", step: 0, title: "开始转录视频", raw }
+  }
+  if (/^\[1\/3\]/.test(line)) {
+    return { id: nextId(), type: "step", step: 0, title: "提取音频", subtitle: "ffmpeg", raw }
+  }
+  if (/^\[2\/3\]/.test(line)) {
+    const eng = /whisper\.cpp/i.test(line) ? "whisper.cpp" : /mlx/i.test(line) ? "mlx-whisper" : undefined
+    return { id: nextId(), type: "step", step: 1, title: "语音转录", subtitle: eng, raw }
+  }
+  if (/^\[3\/3\]/.test(line) || /^\[前三步\]\s*转录完成/.test(line)) {
+    return { id: nextId(), type: "success", step: 2, title: "转录成稿", raw }
   }
 
   // ---- step 进入 ----

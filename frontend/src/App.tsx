@@ -1,11 +1,13 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
+import { useTheme } from 'next-themes'
+import { invoke } from '@tauri-apps/api/core'
+import { listen, emit } from '@tauri-apps/api/event'
 import {
   Plus,
   CheckCircle2,
   AlertCircle,
   Loader2,
   User,
-  FileText,
   DollarSign,
   Copy,
   Edit,
@@ -21,6 +23,14 @@ import {
   FolderOpen,
   ExternalLink,
   Search,
+  KeyRound,
+  Trash2,
+  Star,
+  PanelLeft,
+  PanelLeftClose,
+  Sparkle,
+  ChevronUp,
+  ChevronDown,
 } from 'lucide-react'
 import { Toaster, toast } from 'sonner'
 import { Button } from '@/components/ui/button'
@@ -29,7 +39,6 @@ import { Badge } from '@/components/ui/badge'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert'
 import { Separator } from '@/components/ui/separator'
-import { Empty, EmptyHeader, EmptyMedia, EmptyTitle, EmptyDescription } from '@/components/ui/empty'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { cn } from '@/lib/utils'
@@ -40,7 +49,26 @@ import { SourcePicker, pushRecentSource } from '@/components/SourcePicker'
 import { ConfirmDialogHost, confirmAction } from '@/components/ConfirmDialog'
 import { inferCurrentStep, parseLogLine, type ParsedEvent } from '@/lib/log-parser'
 import { API_BASE, apiUrl } from '@/lib/api'
-import { readLlmSettings, saveLlmSettings } from '@/lib/settings-store'
+import {
+  PROVIDER_PRESETS,
+  inferProviderId,
+  listProfiles,
+  createProfile,
+  updateProfile,
+  deleteProfile,
+  setDefaultProfile,
+  deleteProfileKey,
+  readLegacyKey,
+  clearLegacyKey,
+  listKnowledgeFiles,
+  readKnowledgeFile,
+  saveKnowledgeFile,
+  type ProviderId,
+  type LlmProfile,
+  type ProfilesSnapshot,
+  type LlmProfilePatch,
+  type KnowledgeGroup,
+} from '@/lib/settings-store'
 
 interface EngineJobRequest {
   source: string
@@ -261,6 +289,9 @@ function formatRelativeOrAbsolute(ts: string | undefined | null): string {
   return `${t.getMonth() + 1}/${t.getDate()}`
 }
 
+// 是否运行在 Tauri 壳内（决定交通灯留白 / vibrancy 等原生壳专属处理）
+const isTauri = typeof window !== "undefined" && ("__TAURI_INTERNALS__" in window || "__TAURI__" in window)
+
 // 常用 LLM 模型 chips —— Settings 用,提交前 sanity check 也用
 const COMMON_MODELS = [
   "deepseek-chat",
@@ -278,6 +309,7 @@ interface TestLLMResult {
   latency_ms?: number
   sample?: string
   error?: string
+  key_source?: string
 }
 
 // 给一个错误字符串归类,推断最可能的根因 + 给用户可读的提示
@@ -323,13 +355,13 @@ export default function App() {
   const [isCreating, setIsCreating] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [logs, setLogs] = useState<string[]>([])
-  const [activeTab, setActiveTab] = useState<"console" | "outline" | "review" | "final">("console")
+  const [activeTab, setActiveTab] = useState<"console" | "outline" | "review" | "final" | "artifacts">("console")
   const [healthStatus, setHealthStatus] = useState<"online" | "offline">("offline")
+  // 可收起的安静侧栏（Claude recents 气质）—— 状态持久化
+  const [sidebarOpen, setSidebarOpen] = useState(() => localStorage.getItem("v2b_sidebar_open") !== "0")
+  useEffect(() => { localStorage.setItem("v2b_sidebar_open", sidebarOpen ? "1" : "0") }, [sidebarOpen])
 
-  // Settings state
-  const [settingsApiKey, setSettingsApiKey] = useState("")
-  const [settingsApiBase, setSettingsApiBase] = useState("")
-  const [settingsModel, setSettingsModel] = useState("")
+  // Settings 表单已自包含（自行从后端 GET /api/llm-config 加载 + 保存），父级不再持有 LLM 配置 state。
 
   // Outline Editing state —— 默认分屏(左编辑右预览),桌面端最高效
   const [outlineText, setOutlineText] = useState("")
@@ -350,6 +382,10 @@ export default function App() {
   const [source, setSource] = useState(() => draftInit?.source ?? "")
   // 记住上次用的 speaker —— 这是个高频字段,默认就用上次的值,只有第一次才回退到"我"
   const [speaker, setSpeaker] = useState(() => draftInit?.speaker ?? (localStorage.getItem("v2b_last_speaker") || "我"))
+  // 演讲人自动识别：提示 + AI 识别中态 + 用户是否手动改过（手动改过就不自动覆盖）
+  const [speakerHint, setSpeakerHint] = useState<{ text: string; tone: "ok" | "warn" } | null>(null)
+  const [detectingSpeaker, setDetectingSpeaker] = useState(false)
+  const speakerTouchedRef = useRef(false)
   const [routing, setRouting] = useState(() => draftInit?.routing ?? "/lecture")
   const [mode, setMode] = useState<"full" | "quick">(() => draftInit?.mode ?? "full")
   const [maxRetries, setMaxRetries] = useState(() => draftInit?.maxRetries ?? 1)
@@ -361,6 +397,11 @@ export default function App() {
   )
   const [isSubmittingJob, setIsSubmittingJob] = useState(false)
   const [draftRestoredTs, setDraftRestoredTs] = useState<number | null>(() => draftInit?.ts ?? null)
+
+  // 建任务时用哪个配置档 —— ""=跟随默认；列表与默认从 /api/llm-profiles 拉取
+  const [profileId, setProfileId] = useState<string>("")
+  const [profileOptions, setProfileOptions] = useState<LlmProfile[]>([])
+  const [defaultProfileId, setDefaultProfileId] = useState<string | null>(null)
 
   // 侧栏任务列表过滤 —— 历史归档一多就难找,加搜索 + 状态 chip
   const [jobQuery, setJobQuery] = useState("")
@@ -375,10 +416,8 @@ export default function App() {
   const sseReconnectTimerRef = useRef<number | null>(null)
   const sseTargetJobRef = useRef<string | null>(null)
 
-  // 强制 dark mode 让 shadcn 的 semantic colors 走深色 token
-  useEffect(() => {
-    document.documentElement.classList.add("dark")
-  }, [])
+  // 外观跟随系统：由 main.tsx 的 next-themes ThemeProvider 接管（浅/深/自动），
+  // 不再强制 .dark。用户可在 Settings 手动覆盖三态。
 
   // CreateForm 草稿自动存档 —— source 非空就节流写入 500ms
   // 没填 source 的"空草稿"不写,避免用户每次开页都看到 banner
@@ -423,11 +462,7 @@ export default function App() {
     checkHealth()
     fetchJobs()
     fetchHistory()
-
-    const storedSettings = readLlmSettings()
-    setSettingsApiKey(storedSettings.apiKey)
-    setSettingsApiBase(storedSettings.apiBase)
-    setSettingsModel(storedSettings.model)
+    fetchProfiles()
 
     let healthId: number | null = null
     let jobsId: number | null = null
@@ -481,7 +516,9 @@ export default function App() {
         target.isContentEditable
       )
 
-      if (isMod && e.key.toLowerCase() === "n" && !inInput) {
+      // Tauri 壳里 Cmd+N / Cmd+, 由原生菜单加速键负责（见 src-tauri/src/lib.rs），
+      // webview 不再重复处理，避免双触发。
+      if (isMod && e.key.toLowerCase() === "n" && !inInput && !isTauri) {
         e.preventDefault()
         if (healthStatus !== "offline") {
           setIsCreating(true)
@@ -491,7 +528,7 @@ export default function App() {
         return
       }
 
-      if (isMod && e.key === ",") {
+      if (isMod && e.key === "," && !isTauri) {
         e.preventDefault()
         setShowSettings(true)
         setIsCreating(false)
@@ -504,6 +541,12 @@ export default function App() {
         const input = document.querySelector<HTMLInputElement>("input[placeholder^='搜索 stem']")
         input?.focus()
         input?.select()
+        return
+      }
+
+      if (isMod && e.key === "\\") {
+        e.preventDefault()
+        setSidebarOpen(v => !v)
         return
       }
 
@@ -521,6 +564,86 @@ export default function App() {
     document.addEventListener("keydown", handler)
     return () => document.removeEventListener("keydown", handler)
   }, [healthStatus, isCreating, showSettings])
+
+  // Tauri 壳：监听原生菜单事件（新建任务）+ 设置窗改了配置档后回灌
+  useEffect(() => {
+    if (!isTauri) return
+    const uns: Array<Promise<() => void>> = []
+    uns.push(listen("menu:new", () => {
+      if (healthStatus !== "offline") {
+        setIsCreating(true); setSelectedJobId(null); setShowSettings(false)
+      }
+    }))
+    uns.push(listen("profiles:changed", () => { fetchProfiles() }))
+    return () => { uns.forEach(p => p.then(f => f()).catch(() => {})) }
+  }, [healthStatus])
+
+  // 演讲人手输：标记"用户改过"，自动识别不再覆盖
+  const handleSpeakerInput = (v: string) => { speakerTouchedRef.current = true; setSpeaker(v) }
+
+  // 选源后自动跑免费启发式识别演讲人；命中且用户没手动改过则回填，否则提示兜底
+  useEffect(() => {
+    speakerTouchedRef.current = false
+    setSpeakerHint(null)
+    if (!source.trim() || healthStatus === "offline") return
+    let cancelled = false
+    fetch(API_BASE + "/api/detect-speaker", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ source, use_llm: false }),
+    })
+      .then(r => (r.ok ? r.json() : null))
+      .then((d: { speaker: string | null; reason?: string } | null) => {
+        if (cancelled || !d) return
+        if (d.speaker && !speakerTouchedRef.current) {
+          setSpeaker(d.speaker)
+          setSpeakerHint({ text: `已自动识别：${d.speaker}（可改）`, tone: "ok" })
+        } else if (!d.speaker) {
+          setSpeakerHint({ text: `${d.reason ? d.reason + "；" : "未自动识别出演讲人，"}已沿用上次，请确认或点「AI 识别」`, tone: "warn" })
+        }
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [source])
+
+  // AI 识别演讲人（用默认/所选配置档，一次很便宜）
+  const detectSpeakerAI = async () => {
+    if (!source.trim() || !requireOnline("识别演讲人")) return
+    setDetectingSpeaker(true)
+    try {
+      const r = await fetch(API_BASE + "/api/detect-speaker", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source, profile_id: profileId || undefined, use_llm: true }),
+      })
+      const d: { speaker: string | null; reason?: string } = await r.json()
+      if (d.speaker) {
+        speakerTouchedRef.current = false
+        setSpeaker(d.speaker)
+        setSpeakerHint({ text: `AI 识别：${d.speaker}（可改）`, tone: "ok" })
+      } else {
+        setSpeakerHint({ text: `${d.reason || "AI 未能识别"}，请手填或沿用「${speaker}」`, tone: "warn" })
+      }
+    } catch (e) {
+      setSpeakerHint({ text: `识别失败：${String(e)}`, tone: "warn" })
+    } finally {
+      setDetectingSpeaker(false)
+    }
+  }
+
+  // 开始新建任务（离线时拦截）
+  const startCreate = () => {
+    if (healthStatus === "offline") { toast.error("后端服务离线", { description: "请先启动后端，再新建任务" }); return }
+    setIsCreating(true); setSelectedJobId(null); setShowSettings(false)
+  }
+
+  // 打开设置：Tauri 壳里开独立窗口（macOS 规范），浏览器里退回主窗口内嵌视图
+  const openSettings = () => {
+    if (isTauri) {
+      invoke("open_settings").catch(() => {})
+    } else {
+      setShowSettings(true); setIsCreating(false); setSelectedJobId(null)
+    }
+  }
 
   // Select job update & SSE trigger
   useEffect(() => {
@@ -609,6 +732,19 @@ export default function App() {
       }
     } catch (e) {
       console.error("Failed to fetch history", e)
+    }
+  }
+
+  // 拉配置档列表 —— 建任务的「配置档」选择器用；SettingsForm 改动后也会回调刷新
+  const fetchProfiles = async () => {
+    try {
+      const snap = await listProfiles()
+      setProfileOptions(snap.profiles)
+      setDefaultProfileId(snap.defaultProfileId)
+      // 选中的档若已被删/停用，回退到「跟随默认」，避免 <select> 值悬空
+      setProfileId(prev => (prev && snap.profiles.some(p => p.id === prev && p.enabled) ? prev : ""))
+    } catch (e) {
+      console.error("Failed to fetch llm profiles", e)
     }
   }
 
@@ -802,8 +938,9 @@ export default function App() {
     if (!source.trim()) return
     if (!requireOnline("提交任务")) return
 
-    // 提交前 sanity check —— 模型名不在白名单时拦下来,防止用户花 5 分钟等一个 typo 报错
-    const finalModelName = (model.trim() || readLlmSettings().model || "").trim()
+    // 提交前 sanity check —— 仅当用户**显式填了** per-job 模型覆盖、且不在白名单时才拦
+    // （留空走配置档的模型，配置档的模型已在 Settings 里验证过，无需再拦）
+    const finalModelName = model.trim()
     if (finalModelName && !(COMMON_MODELS as readonly string[]).includes(finalModelName)) {
       const ok = await confirmAction({
         title: `模型名 "${finalModelName}" 不在常见列表里`,
@@ -832,10 +969,10 @@ export default function App() {
       }
       // §9-C：sectioned 仅在 full 模式有效，quick 时强制回 single 避免后端拒收。
       payload.rewrite_strategy = mode === "full" ? rewriteStrategy : "single"
-      const { apiKey: localApiKey, apiBase: localApiBase, model: localModel } = readLlmSettings()
-      if (localApiKey) payload.api_key = localApiKey
-      if (localApiBase) payload.api_base = localApiBase
-      const finalModel = model.trim() || localModel || ""
+      // 配置档：选了就带 profile_id，否则后端用默认档。api_key / api_base 不由前端发送。
+      if (profileId) payload.profile_id = profileId
+      // model 仅作为本任务对该档的临时覆盖：填了才带，否则用档里的模型。
+      const finalModel = model.trim()
       if (finalModel) payload.model = finalModel
 
       const res = await fetch(API_BASE + "/jobs", {
@@ -953,13 +1090,6 @@ export default function App() {
     }
   }
 
-  const handleSaveSettings = (e: React.FormEvent) => {
-    e.preventDefault()
-    saveLlmSettings({ apiKey: settingsApiKey, apiBase: settingsApiBase, model: settingsModel })
-    setShowSettings(false)
-    toast.success("API 配置已保存")
-  }
-
   const copyText = (text: string) => {
     navigator.clipboard.writeText(text)
     toast.success("已复制到剪贴板")
@@ -1071,9 +1201,11 @@ export default function App() {
 
   return (
     <TooltipProvider delayDuration={200}>
-      <Toaster position="top-right" theme="dark" />
+      <Toaster position="top-right" theme="system" />
       <ConfirmDialogHost />
-      <div className="flex flex-col h-screen bg-background text-foreground overflow-hidden font-sans">
+      <div className="app-root flex flex-col h-screen bg-background text-foreground overflow-hidden font-sans">
+        {/* Tauri 壳：顶部 28px 拖拽条，给左上角交通灯留位（浏览器不渲染） */}
+        {isTauri && <div className="h-7 shrink-0" data-tauri-drag-region />}
         {healthStatus === "offline" && (
           <div className="shrink-0 bg-destructive/15 border-b border-destructive/30 px-4 py-2 text-sm flex items-center gap-2 text-destructive">
             <AlertCircle className="size-4 shrink-0" />
@@ -1085,9 +1217,22 @@ export default function App() {
             </span>
           </div>
         )}
-        <div className="flex flex-1 overflow-hidden">
+        <div className="relative flex flex-1 overflow-hidden">
+        {/* 侧栏收起时：左上角浮出一个安静的展开按钮（避开交通灯，故 top 留白） */}
+        {!sidebarOpen && (
+          <div className={cn("absolute left-2 z-20", isTauri ? "top-9" : "top-2")}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button variant="ghost" size="icon" onClick={() => setSidebarOpen(true)} className="size-8 bg-card/80 border shadow-sm">
+                  <PanelLeft />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="right">展开侧栏 (Cmd/Ctrl + \\)</TooltipContent>
+            </Tooltip>
+          </div>
+        )}
         {/* ─────── Sidebar ─────── */}
-        <aside className="w-80 flex flex-col border-r bg-card/40">
+        <aside className={cn("app-sidebar w-80 flex flex-col border-r bg-sidebar min-h-0 overflow-hidden", !sidebarOpen && "hidden")}>
           {/* Brand + status */}
           <div className="p-4 border-b flex items-center justify-between">
             <div className="flex items-center gap-2">
@@ -1095,22 +1240,17 @@ export default function App() {
                 "size-2.5 rounded-full",
                 healthStatus === "online" ? "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.6)]" : "bg-destructive",
               )} />
-              <h1 className="text-lg font-bold bg-clip-text text-transparent bg-gradient-to-r from-primary to-indigo-300">
+              <h1 className="text-base font-semibold tracking-tight text-foreground">
                 Video2Blog
               </h1>
             </div>
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => { setShowSettings(true); setIsCreating(false); setSelectedJobId(null) }}
-                  className="size-8"
-                >
-                  <Settings />
+                <Button variant="ghost" size="icon" onClick={() => setSidebarOpen(false)} className="size-8">
+                  <PanelLeftClose />
                 </Button>
               </TooltipTrigger>
-              <TooltipContent side="bottom">配置 API Key / Model (Cmd/Ctrl + ,)</TooltipContent>
+              <TooltipContent side="bottom">收起侧栏 (Cmd/Ctrl + \\)</TooltipContent>
             </Tooltip>
           </div>
 
@@ -1119,8 +1259,8 @@ export default function App() {
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
-                  className="w-full"
-                  onClick={() => { setIsCreating(true); setSelectedJobId(null); setShowSettings(false) }}
+                  className="w-full rounded-full"
+                  onClick={startCreate}
                   disabled={healthStatus === "offline"}
                 >
                   <Plus data-icon="inline-start" />
@@ -1182,7 +1322,7 @@ export default function App() {
           </div>
 
           {/* Job list — live + historical 两段,历史按 path 去重避免和 live succeeded 重复 */}
-          <ScrollArea className="flex-1 px-2 pb-2">
+          <ScrollArea className="flex-1 min-h-0 px-2 pb-2">
             <JobList
               liveJobs={jobs}
               historicalJobs={historicalJobs}
@@ -1192,14 +1332,34 @@ export default function App() {
               onSelect={(id) => { setSelectedJobId(id); setIsCreating(false); setShowSettings(false) }}
             />
           </ScrollArea>
+
+          {/* 用户/连接 页脚（Claude 侧栏底部气质，本地工具不伪造身份） */}
+          <button
+            type="button"
+            onClick={openSettings}
+            className="shrink-0 border-t px-2.5 py-2.5 flex items-center gap-2.5 text-left hover:bg-muted/40 transition-colors"
+          >
+            <div className="size-7 shrink-0 rounded-full bg-primary/15 text-primary text-[11px] font-semibold flex items-center justify-center">
+              V2B
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-medium truncate">本地工作台</div>
+              <div className="text-[10px] text-muted-foreground flex items-center gap-1">
+                <span className={cn("size-1.5 rounded-full", healthStatus === "online" ? "bg-emerald-500" : "bg-destructive")} />
+                {healthStatus === "online" ? "已连接 · 127.0.0.1:8765" : "后端离线"}
+              </div>
+            </div>
+            <Settings className="size-4 text-muted-foreground shrink-0" />
+          </button>
         </aside>
 
         {/* ─────── Main area ─────── */}
-        <main className="flex-1 flex flex-col overflow-hidden">
+        <main className="app-main flex-1 flex flex-col overflow-hidden">
           {isCreating ? (
             <CreateForm
               source={source} setSource={setSource}
-              speaker={speaker} setSpeaker={setSpeaker}
+              speaker={speaker} setSpeaker={handleSpeakerInput}
+              onDetectSpeaker={detectSpeakerAI} speakerHint={speakerHint} detectingSpeaker={detectingSpeaker}
               routing={routing} setRouting={setRouting}
               mode={mode} setMode={setMode}
               maxRetries={maxRetries} setMaxRetries={setMaxRetries}
@@ -1207,6 +1367,10 @@ export default function App() {
               force={force} setForce={setForce}
               pauseOnOutline={pauseOnOutline} setPauseOnOutline={setPauseOnOutline}
               rewriteStrategy={rewriteStrategy} setRewriteStrategy={setRewriteStrategy}
+              profileId={profileId} setProfileId={setProfileId}
+              profileOptions={profileOptions}
+              defaultProfileId={defaultProfileId}
+              onOpenSettings={openSettings}
               isSubmitting={isSubmittingJob}
               healthOffline={healthStatus === "offline"}
               draftRestoredTs={draftRestoredTs}
@@ -1215,13 +1379,7 @@ export default function App() {
               onCancel={() => setIsCreating(false)}
             />
           ) : showSettings ? (
-            <SettingsForm
-              apiKey={settingsApiKey} setApiKey={setSettingsApiKey}
-              apiBase={settingsApiBase} setApiBase={setSettingsApiBase}
-              model={settingsModel} setModel={setSettingsModel}
-              onSubmit={handleSaveSettings}
-              onCancel={() => setShowSettings(false)}
-            />
+            <SettingsPanel onProfilesChanged={fetchProfiles} />
           ) : selectedJob ? (
             <JobWorkspace
               job={selectedJob}
@@ -1255,10 +1413,15 @@ export default function App() {
               setDraftViewMode={setDraftViewMode}
               draftEditRestoredTs={draftEditRestoredTs}
               onReloadDraftOriginal={() => selectedJob && loadDraftAndReview(selectedJob.id, true)}
-              onOpenSettings={() => { setShowSettings(true); setIsCreating(false); setSelectedJobId(null) }}
+              onOpenSettings={openSettings}
             />
           ) : (
-            <EmptyState />
+            <HomeView
+              historicalJobs={historicalJobs}
+              onCreate={startCreate}
+              healthOffline={healthStatus === "offline"}
+              defaultProfileName={profileOptions.find(p => p.id === defaultProfileId)?.name ?? null}
+            />
           )}
         </main>
         </div>
@@ -1311,9 +1474,8 @@ function useFailureDiagnosis(job: EngineJob | null): { diagnosis: TestLLMResult 
     setIsDiagnosing(true)
     setDiagnosis(null)
 
-    const apiKey = readLlmSettings().apiKey || undefined
+    // api_key 不再从前端取 —— 后端按优先级链（环境变量 > 钥匙串 / config）自行解析。
     const body = {
-      api_key: apiKey,
       api_base: job.request.api_base,
       model: job.request.model,
     }
@@ -1775,21 +1937,155 @@ function JobRow({
 
 // ═══════════════════ Empty State ═══════════════════
 // 离线提示已由顶部全局 OfflineBar 统一承担,这里只保留产品价值文案。
-function EmptyState() {
+// ═══════════════════ Home（问候 + 创作概览 + 启动器 composer）═══════════════════
+// 对齐 Claude 桌面端首页：右侧问候标题 + Overview 卡 + 底部 composer。
+// 概览数据全部来自本地 historicalJobs（磁盘成品），真实可算，不造假。
+
+function parseScore(s?: string): number | null {
+  if (!s) return null
+  const m = s.match(/(\d+(?:\.\d+)?)\s*\/\s*\d+/)
+  return m ? parseFloat(m[1]) : null
+}
+function dayKey(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
+}
+
+function HomeView({ historicalJobs, onCreate, healthOffline, defaultProfileName }: {
+  historicalJobs: EngineJob[]
+  onCreate: () => void
+  healthOffline: boolean
+  defaultProfileName: string | null
+}) {
+  const stats = useMemo(() => {
+    const posts = historicalJobs.filter(j => j.kind === "historical")
+    const dates = posts.map(p => p.created_at).filter(Boolean)
+    const activeDays = new Set(dates.map(d => d.slice(0, 10))).size
+    const now = Date.now()
+    const last30 = posts.filter(p => {
+      const t = Date.parse(p.created_at)
+      return !isNaN(t) && now - t <= 30 * 864e5
+    }).length
+    const scores = posts.map(p => parseScore(p.pass_score)).filter((n): n is number => n != null)
+    const avgScore = scores.length ? (scores.reduce((a, b) => a + b, 0) / scores.length) : null
+    const drafts = posts.filter(p => p.is_draft).length
+    const routingCount = new Map<string, number>()
+    posts.forEach(p => routingCount.set(p.request.routing, (routingCount.get(p.request.routing) ?? 0) + 1))
+    const topRouting = [...routingCount.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "—"
+    const perDay = new Map<string, number>()
+    posts.forEach(p => { const k = p.created_at.slice(0, 10); if (k) perDay.set(k, (perDay.get(k) ?? 0) + 1) })
+    return { total: posts.length, activeDays, last30, avgScore, drafts, formal: posts.length - drafts, topRouting, perDay }
+  }, [historicalJobs])
+
   return (
-    <div className="flex-1 flex items-center justify-center p-8">
-      <Empty className="max-w-md">
-        <EmptyHeader>
-          <EmptyMedia variant="icon" className="bg-primary/10 text-primary">
-            <Zap />
-          </EmptyMedia>
-          <EmptyTitle>把素材变成你的署名博文</EmptyTitle>
-          <EmptyDescription>
-            选左侧任务查看进度,或点上方<b>「新建改写任务」</b>从一段 raw.txt 或文字稿开始。
-            AI 会按你的合同清洗、提炼、搭骨架、改写,再做六维质检,最后落盘到 <code className="text-xs">output/Posts/</code>。
-          </EmptyDescription>
-        </EmptyHeader>
-      </Empty>
+    <div className="app-main flex-1 flex flex-col min-h-0">
+      <ScrollArea className="flex-1 min-h-0">
+        <div className="max-w-3xl mx-auto px-8 pt-16 pb-8">
+          <h1 className="flex items-center gap-2.5 text-2xl font-semibold tracking-tight mb-8">
+            <Sparkle className="size-6 text-primary" />
+            接下来，写点什么？
+          </h1>
+
+          <div className="rounded-2xl border bg-card/60 p-5">
+            <div className="flex items-center justify-between mb-4">
+              <span className="text-sm font-medium text-muted-foreground">创作概览</span>
+              {defaultProfileName && (
+                <Badge variant="outline" className="text-[10px] font-mono">默认档 · {defaultProfileName}</Badge>
+              )}
+            </div>
+            {stats.total === 0 ? (
+              <p className="text-sm text-muted-foreground py-6 text-center">还没有成品。开始第一篇改写，这里会长出你的创作轨迹。</p>
+            ) : (
+              <>
+                <div className="grid grid-cols-3 gap-2.5">
+                  <StatCell label="成品" value={String(stats.total)} />
+                  <StatCell label="活跃天数" value={String(stats.activeDays)} />
+                  <StatCell label="近 30 天" value={String(stats.last30)} />
+                  <StatCell label="平均质检" value={stats.avgScore != null ? `${stats.avgScore.toFixed(0)}/60` : "—"} />
+                  <StatCell label="常用路由" value={stats.topRouting} mono />
+                  <StatCell label="正式 / 草稿" value={`${stats.formal} / ${stats.drafts}`} />
+                </div>
+                <Heatmap perDay={stats.perDay} />
+                <p className="text-xs text-muted-foreground/70 mt-3">
+                  你已写下 <b className="text-foreground">{stats.total}</b> 篇署名博文，覆盖 {stats.activeDays} 个创作日。
+                </p>
+              </>
+            )}
+          </div>
+        </div>
+      </ScrollArea>
+
+      {/* 底部 composer（启动器式）—— 点击展开 CreateForm */}
+      <div className="shrink-0 border-t bg-background/80 px-8 py-4">
+        <div className="max-w-3xl mx-auto">
+          <button
+            type="button"
+            onClick={onCreate}
+            disabled={healthOffline}
+            className="group w-full rounded-2xl border bg-card hover:border-primary/40 transition-colors p-4 flex items-center gap-3 text-left disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <div className="size-9 shrink-0 rounded-xl bg-primary/10 text-primary flex items-center justify-center group-hover:bg-primary/15 transition-colors">
+              <Plus className="size-5" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="text-sm text-foreground">开始一篇改写…</div>
+              <div className="text-xs text-muted-foreground mt-0.5">
+                选一段转录稿 / 文字稿，AI 清洗·提炼·搭骨架·改写·质检，落盘成署名博文
+              </div>
+            </div>
+            <div className="hidden sm:flex items-center gap-1.5 shrink-0">
+              {defaultProfileName && <Badge variant="outline" className="text-[10px] font-mono">{defaultProfileName}</Badge>}
+              <kbd className="px-1.5 py-0.5 rounded border bg-muted text-[10px] font-mono text-muted-foreground">⌘N</kbd>
+            </div>
+          </button>
+          {healthOffline && (
+            <p className="text-xs text-destructive/80 mt-2 text-center">后端离线，请先 <code className="text-[11px]">make server</code> 启动</p>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function StatCell({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div className="rounded-xl bg-muted/50 px-3 py-2.5">
+      <div className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</div>
+      <div className={cn("text-lg font-semibold mt-0.5 truncate", mono && "font-mono text-base")}>{value}</div>
+    </div>
+  )
+}
+
+// 博文活动热力图 —— 近 10 周每天产出篇数，珊瑚色阶；自绘 CSS grid，不引图表库。
+function Heatmap({ perDay }: { perDay: Map<string, number> }) {
+  const weeks = 10
+  const today = new Date()
+  const cells: { key: string; count: number }[] = []
+  const start = new Date(today)
+  start.setDate(start.getDate() - (weeks * 7 - 1))
+  for (let i = 0; i < weeks * 7; i++) {
+    const d = new Date(start)
+    d.setDate(start.getDate() + i)
+    const k = dayKey(d)
+    cells.push({ key: k, count: perDay.get(k) ?? 0 })
+  }
+  const tone = (c: number) =>
+    c === 0 ? "bg-muted/60"
+    : c === 1 ? "bg-primary/35"
+    : c === 2 ? "bg-primary/60"
+    : "bg-primary/90"
+  return (
+    <div className="mt-4 flex gap-[3px]">
+      {Array.from({ length: weeks }).map((_, w) => (
+        <div key={w} className="flex flex-col gap-[3px]">
+          {cells.slice(w * 7, w * 7 + 7).map(cell => (
+            <div
+              key={cell.key}
+              title={`${cell.key} · ${cell.count} 篇`}
+              className={cn("size-2.5 rounded-[3px]", tone(cell.count))}
+            />
+          ))}
+        </div>
+      ))}
     </div>
   )
 }
@@ -1797,8 +2093,8 @@ function EmptyState() {
 // ═══════════════════ Job Workspace ═══════════════════
 interface JobWorkspaceProps {
   job: EngineJob
-  activeTab: "console" | "outline" | "review" | "final"
-  setActiveTab: (v: "console" | "outline" | "review" | "final") => void
+  activeTab: "console" | "outline" | "review" | "final" | "artifacts"
+  setActiveTab: (v: "console" | "outline" | "review" | "final" | "artifacts") => void
   logs: string[]
   currentStep: number | null
   pausedAt: "outline" | "review" | null
@@ -1928,6 +2224,7 @@ function JobWorkspace(props: JobWorkspaceProps) {
           jobStatus={isHistorical ? "succeeded" : job.status}
           currentStep={isHistorical ? 8 : currentStep}
           pausedAt={pausedAt}
+          hasTranscription={/\.(mp4|mov|m4v|mkv|webm|flv|avi)$/i.test(job.request.source || "")}
           onJump={target => {
             // 历史归档只允许跳 final;非历史可任意跳
             if (isHistorical && target !== "final") return
@@ -1951,7 +2248,7 @@ function JobWorkspace(props: JobWorkspaceProps) {
       </div>
 
       {/* Tabs — 历史归档只暴露"成品及报告"tab(没日志、没暂停产物)*/}
-      <Tabs value={activeTab} onValueChange={v => setActiveTab(v as "console" | "outline" | "review" | "final")} className="flex-1 flex flex-col overflow-hidden">
+      <Tabs value={activeTab} onValueChange={v => setActiveTab(v as "console" | "outline" | "review" | "final" | "artifacts")} className="flex-1 flex flex-col overflow-hidden">
         <div className="px-6 pt-3">
           <TabsList>
             {!isHistorical && (
@@ -1981,6 +2278,12 @@ function JobWorkspace(props: JobWorkspaceProps) {
                 {isHistorical ? "成品归档" : "成品及报告"}
               </TabsTrigger>
             )}
+            {!isHistorical && (
+              <TabsTrigger value="artifacts">
+                <FolderOpen data-icon="inline-start" />
+                过程产物
+              </TabsTrigger>
+            )}
           </TabsList>
         </div>
 
@@ -2000,6 +2303,10 @@ function JobWorkspace(props: JobWorkspaceProps) {
 
           <TabsContent value="final" className="h-full m-0">
             <FinalView job={job} onCopy={props.onCopy} onOpenInOS={props.onOpenInOS} />
+          </TabsContent>
+
+          <TabsContent value="artifacts" className="h-full m-0">
+            <ArtifactsView job={job} onCopy={props.onCopy} onOpenInOS={props.onOpenInOS} />
           </TabsContent>
         </div>
       </Tabs>
@@ -2097,7 +2404,7 @@ function OutlineView({ outlineText, setOutlineText, outlineViewMode, setOutlineV
             />
           ) : (
             <ScrollArea className="h-full">
-              <div className="p-6">
+              <div className="px-6 py-5 max-w-[70ch] mx-auto">
                 <MarkdownView source={outlineText} />
               </div>
             </ScrollArea>
@@ -2205,7 +2512,7 @@ function DraftReviewView({ draftContent, setDraftContent, reviewJson, isSubmitti
               <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
                 Re-Brief 改进建议
               </h4>
-              <ScrollArea className="flex-1">
+              <ScrollArea className="flex-1 min-h-0">
                 <div className="text-xs text-foreground/80 leading-relaxed pr-2 whitespace-pre-wrap">
                   {reviewJson?.rebrief?.trim() || (
                     <span className="text-muted-foreground italic">无具体反馈。可能 LLM 直接给了 PASS,或质检解析失败正在加载详细原因。</span>
@@ -2276,7 +2583,7 @@ function DraftReviewView({ draftContent, setDraftContent, reviewJson, isSubmitti
               />
             ) : (
               <ScrollArea className="h-full">
-                <div className="px-6 py-5">
+                <div className="px-6 py-5 max-w-[70ch] mx-auto">
                   <MarkdownView source={draftContent} />
                 </div>
               </ScrollArea>
@@ -2306,94 +2613,246 @@ function ScoreBar({ dim, score }: { dim: string; score: number }) {
   )
 }
 
-// ═══════════════════ Final View ═══════════════════
+// 去掉 markdown 顶部 YAML frontmatter，只渲染正文（阅读视图）。
+function stripFrontmatter(md: string): string {
+  const m = md.match(/^---\n[\s\S]*?\n---\n?/)
+  return m ? md.slice(m[0].length).replace(/^\s+/, "") : md
+}
+
+// ═══════════════════ Final View（artifact 文档阅读器）═══════════════════
+// 成品博文是主角：居中阅读列渲染整篇文档；元信息（路径/质检/成本）降为次级。
 function FinalView({ job, onCopy, onOpenInOS }: { job: EngineJob; onCopy: (text: string) => void; onOpenInOS: (path: string, mode: "finder" | "editor") => void }) {
   const isHistorical = job.kind === "historical"
   const isDraft = job.is_draft === true || job.status === "draft"
+  const path = job.final_post_path
+  const [content, setContent] = useState<string | null>(null)
+  const [loadErr, setLoadErr] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!path) { setContent(null); return }
+    setContent(null); setLoadErr(null)
+    fetch(apiUrl(`/file?path=${encodeURIComponent(path)}`))
+      .then(async r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json() })
+      .then(d => setContent(stripFrontmatter(d.content ?? "")))
+      .catch(e => setLoadErr(String(e)))
+  }, [path])
 
   return (
     <ScrollArea className="h-full">
-      <div className="flex flex-col gap-6 pr-2">
-        {isDraft ? (
-          <Alert className="border-amber-500/40 bg-amber-500/5">
-            <Award className="text-amber-500" />
-            <AlertTitle>DRAFT 归档</AlertTitle>
-            <AlertDescription>
-              本篇是用户接受的 REVIEW 草稿,以 <code>DRAFT-</code> 前缀落盘,不算正式发布。
-            </AlertDescription>
+      {/* 顶部 meta 条（sticky）—— 状态 + 质检 + 操作 */}
+      <div className="sticky top-0 z-10 bg-background/85 backdrop-blur border-b px-6 py-2.5 flex items-center gap-2 flex-wrap">
+        <Badge
+          variant="outline"
+          className={cn(
+            "text-[10px]",
+            isDraft ? "border-amber-500/40 text-amber-500" : "border-emerald-500/40 text-emerald-500",
+          )}
+        >
+          {isDraft ? "DRAFT 归档" : isHistorical ? "成品归档" : "博文成品"}
+        </Badge>
+        {job.pass_score && <Badge variant="outline" className="text-[10px] font-mono">质检 {job.pass_score}</Badge>}
+        {!isHistorical && job.estimated_cost_usd > 0 && (
+          <Badge variant="outline" className="text-[10px] font-mono">${job.estimated_cost_usd.toFixed(4)}</Badge>
+        )}
+        <div className="flex-1" />
+        <Button size="sm" variant="outline" onClick={() => content && onCopy(content)} disabled={!content}>
+          <Copy data-icon="inline-start" /> 复制全文
+        </Button>
+        {path && (
+          <Button size="sm" variant="ghost" onClick={() => onOpenInOS(path, "finder")} title="在 Finder 显示">
+            <FolderOpen />
+          </Button>
+        )}
+        {path && (
+          <Button size="sm" variant="ghost" onClick={() => onOpenInOS(path, "editor")} title="用默认编辑器打开">
+            <ExternalLink />
+          </Button>
+        )}
+      </div>
+
+      {/* 文档阅读列 —— 成品是主角 */}
+      <div className="px-6 py-8 max-w-[72ch] mx-auto">
+        {loadErr ? (
+          <Alert variant="destructive" className="py-2">
+            <AlertCircle />
+            <AlertTitle className="text-sm">成品载入失败</AlertTitle>
+            <AlertDescription className="text-xs break-all">{loadErr}</AlertDescription>
           </Alert>
+        ) : content == null ? (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground py-10 justify-center">
+            <Loader2 className="animate-spin size-4" /> 正在载入成品…
+          </div>
         ) : (
-          <Alert className="border-emerald-500/40 bg-emerald-500/5">
-            <CheckCircle2 className="text-emerald-500" />
-            <AlertTitle>{isHistorical ? "成品归档" : "博文生成成功"}</AlertTitle>
-            <AlertDescription>
-              {isHistorical
-                ? "这是磁盘上扫到的历史成品,通过 frontmatter 重建。"
-                : "通过 Step 7 质量检测并在 Step 8 完成落盘 + HISTORY 追加 + 风格指纹更新。"}
-            </AlertDescription>
-          </Alert>
+          <MarkdownView source={content} />
         )}
 
-        <div className="grid grid-cols-3 gap-4">
-          <Card className="col-span-2">
-            <CardHeader>
-              <CardTitle className="text-base flex items-center gap-2">
-                <FileText className="size-4 text-primary" />
-                博文成品归档
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="flex flex-col gap-3">
-              <PathRow label="成品路径" path={job.final_post_path} onCopy={onCopy} onOpenInOS={onOpenInOS} />
-              <PathRow label="质检报告" path={job.review_path} onCopy={onCopy} onOpenInOS={onOpenInOS} />
-            </CardContent>
-          </Card>
-
+        {/* 次级详情 —— 路径 / frontmatter / 成本，降权放在文末 */}
+        <Separator className="my-8" />
+        <div className="flex flex-col gap-3">
+          <PathRow label="成品路径" path={job.final_post_path} onCopy={onCopy} onOpenInOS={onOpenInOS} />
+          <PathRow label="质检报告" path={job.review_path} onCopy={onCopy} onOpenInOS={onOpenInOS} />
           {isHistorical ? (
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base flex items-center gap-2">
-                  <Award className="size-4 text-primary" />
-                  Frontmatter 信息
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="flex flex-col gap-2 text-xs">
-                <InfoRow label="发布日期" value={job.created_at} />
-                <InfoRow label="演讲人" value={job.request.speaker} />
-                <InfoRow label="路由" value={job.request.routing} />
-                <InfoRow label="模式" value={job.request.mode === "full" ? "完整流程" : "极速改写"} />
-                <InfoRow label="质检得分" value={job.pass_score} mono />
-              </CardContent>
-            </Card>
+            <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-xs pt-1">
+              <InfoRow label="发布日期" value={job.created_at} />
+              <InfoRow label="演讲人" value={job.request.speaker} />
+              <InfoRow label="路由" value={job.request.routing} />
+              <InfoRow label="质检得分" value={job.pass_score} mono />
+            </div>
           ) : (
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base flex items-center gap-2">
-                  <DollarSign className="size-4 text-primary" />
-                  API 消费
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="flex flex-col gap-3">
-                <div>
-                  <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">预估成本</div>
-                  <div className="text-2xl font-bold font-mono">${job.estimated_cost_usd.toFixed(5)}</div>
-                </div>
-                <Separator />
-                <div className="grid grid-cols-2 gap-2 text-xs">
-                  <div>
-                    <div className="text-muted-foreground mb-0.5">输入 Token</div>
-                    <div className="font-semibold font-mono">{job.input_tokens.toLocaleString()}</div>
-                  </div>
-                  <div>
-                    <div className="text-muted-foreground mb-0.5">输出 Token</div>
-                    <div className="font-semibold font-mono">{job.output_tokens.toLocaleString()}</div>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
+            <div className="grid grid-cols-3 gap-x-6 gap-y-2 text-xs pt-1">
+              <InfoRow label="预估成本" value={`$${job.estimated_cost_usd.toFixed(5)}`} mono />
+              <InfoRow label="输入 Token" value={job.input_tokens.toLocaleString()} mono />
+              <InfoRow label="输出 Token" value={job.output_tokens.toLocaleString()} mono />
+            </div>
           )}
         </div>
       </div>
     </ScrollArea>
+  )
+}
+
+// ═══════════════════ 过程产物面板 ═══════════════════
+// 列 work/<stem>/ 下所有中间产物，点开经 /file 查看；跑的过程中也能刷新看逐步生成。
+interface WorkFile {
+  name: string
+  path: string
+  size: number
+  kind: string
+  mtime: number
+}
+const ARTIFACT_META: Record<string, { label: string; order: number }> = {
+  transcript: { label: "原始转录", order: 0 },
+  subtitle: { label: "字幕", order: 1 },
+  meta: { label: "转录元数据", order: 2 },
+  clean: { label: "清洗稿", order: 3 },
+  insights: { label: "观点提炼", order: 4 },
+  outline: { label: "大纲", order: 5 },
+  draft: { label: "草稿", order: 6 },
+  review: { label: "质检", order: 7 },
+  log: { label: "转录日志", order: 8 },
+  state: { label: "状态机", order: 9 },
+  events: { label: "事件流", order: 10 },
+  other: { label: "其它", order: 11 },
+}
+function artifactBytes(n: number): string {
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  return `${(n / 1024 / 1024).toFixed(1)} MB`
+}
+
+function ArtifactsView({ job, onCopy, onOpenInOS }: { job: EngineJob; onCopy: (text: string) => void; onOpenInOS: (path: string, mode: "finder" | "editor") => void }) {
+  const [files, setFiles] = useState<WorkFile[]>([])
+  const [listErr, setListErr] = useState<string | null>(null)
+  const [selected, setSelected] = useState<string | null>(null)
+  const [content, setContent] = useState<string | null>(null)
+  const [contentErr, setContentErr] = useState<string | null>(null)
+  const stem = job.stem
+
+  const loadList = useMemo(() => () => {
+    setListErr(null)
+    fetch(apiUrl(`/work-files?stem=${encodeURIComponent(stem)}`))
+      .then(async r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json() as Promise<WorkFile[]> })
+      .then(list => {
+        list.sort((a, b) => (ARTIFACT_META[a.kind]?.order ?? 99) - (ARTIFACT_META[b.kind]?.order ?? 99) || a.name.localeCompare(b.name))
+        setFiles(list)
+        setSelected(prev => (prev && list.some(f => f.path === prev) ? prev : list[0]?.path ?? null))
+      })
+      .catch(e => setListErr(String(e)))
+  }, [stem])
+
+  useEffect(() => { loadList() }, [loadList])
+
+  // 运行中自动刷新文件列表（每 5s）——逐步生成的产物即时出现；终态即停。
+  // 只刷列表，不自动重拉正在看的文件内容，避免阅读被打断（要看最新内容点 🔄 或重选）。
+  useEffect(() => {
+    if (job.status !== "running" && job.status !== "queued") return
+    const t = window.setInterval(loadList, 5000)
+    return () => window.clearInterval(t)
+  }, [job.status, loadList])
+
+  // 选中文件 → 读内容
+  useEffect(() => {
+    if (!selected) { setContent(null); return }
+    setContent(null); setContentErr(null)
+    fetch(apiUrl(`/file?path=${encodeURIComponent(selected)}`))
+      .then(async r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json() })
+      .then(d => setContent(d.content ?? ""))
+      .catch(e => setContentErr(String(e)))
+  }, [selected])
+
+  const selFile = files.find(f => f.path === selected)
+  const ext = (selFile?.name.split(".").pop() ?? "").toLowerCase()
+
+  let viewer: React.ReactNode
+  if (contentErr) {
+    viewer = <Alert variant="destructive" className="py-2"><AlertCircle /><AlertTitle className="text-sm">读取失败</AlertTitle><AlertDescription className="text-xs break-all">{contentErr}</AlertDescription></Alert>
+  } else if (content === null) {
+    viewer = <div className="flex items-center gap-2 text-sm text-muted-foreground py-10 justify-center"><Loader2 className="animate-spin size-4" /> 载入中…</div>
+  } else if (ext === "md") {
+    viewer = <div className="max-w-[72ch] mx-auto"><MarkdownView source={content} /></div>
+  } else {
+    let text = content
+    if (ext === "json") { try { text = JSON.stringify(JSON.parse(content), null, 2) } catch { /* 原文 */ } }
+    viewer = <pre className="text-xs font-mono whitespace-pre-wrap break-words leading-relaxed text-foreground/90">{text}</pre>
+  }
+
+  return (
+    <div className="flex h-full gap-3 min-h-0">
+      {/* 左：文件列表 */}
+      <div className="w-56 shrink-0 flex flex-col min-h-0 border rounded-lg bg-card/40">
+        <div className="flex items-center justify-between px-3 py-2 border-b">
+          <span className="text-xs font-medium text-muted-foreground">work/{stem}/</span>
+          <Button type="button" variant="ghost" size="icon-sm" onClick={loadList} title="刷新（运行中可随时看最新产物）" className="size-6">
+            <RotateCw className="size-3.5" />
+          </Button>
+        </div>
+        <ScrollArea className="flex-1 min-h-0">
+          <div className="p-1.5 flex flex-col gap-0.5">
+            {listErr && <div className="text-xs text-destructive p-2">{listErr}</div>}
+            {!listErr && files.length === 0 && <div className="text-xs text-muted-foreground p-3 text-center">还没有产物。任务开始后这里会逐步出现。</div>}
+            {files.map(f => (
+              <button
+                key={f.path}
+                type="button"
+                onClick={() => setSelected(f.path)}
+                className={cn(
+                  "w-full text-left rounded-md px-2 py-1.5 transition-colors",
+                  f.path === selected ? "bg-primary/10 text-primary" : "hover:bg-muted/60",
+                )}
+              >
+                <div className="text-xs font-medium truncate">{ARTIFACT_META[f.kind]?.label ?? f.kind}</div>
+                <div className="flex items-center justify-between gap-2 mt-0.5">
+                  <span className="text-[10px] text-muted-foreground font-mono truncate">{f.name}</span>
+                  <span className="text-[10px] text-muted-foreground/70 shrink-0">{artifactBytes(f.size)}</span>
+                </div>
+              </button>
+            ))}
+          </div>
+        </ScrollArea>
+      </div>
+
+      {/* 右：查看器 */}
+      <div className="flex-1 flex flex-col min-h-0 border rounded-lg bg-card/40">
+        {selFile && (
+          <div className="flex items-center gap-2 px-4 py-2 border-b">
+            <span className="text-sm font-medium">{ARTIFACT_META[selFile.kind]?.label ?? selFile.kind}</span>
+            <code className="text-[11px] text-muted-foreground">{selFile.name}</code>
+            <div className="flex-1" />
+            <Button type="button" variant="ghost" size="sm" disabled={content === null} onClick={() => content && onCopy(content)} title="复制内容">
+              <Copy className="size-3.5" />
+            </Button>
+            <Button type="button" variant="ghost" size="sm" onClick={() => onOpenInOS(selFile.path, "editor")} title="用编辑器打开">
+              <ExternalLink className="size-3.5" />
+            </Button>
+          </div>
+        )}
+        <ScrollArea className="flex-1 min-h-0">
+          <div className="px-5 py-4">
+            {selected ? viewer : <div className="text-sm text-muted-foreground py-10 text-center">从左侧选一个产物查看</div>}
+          </div>
+        </ScrollArea>
+      </div>
+    </div>
   )
 }
 
@@ -2448,6 +2907,9 @@ function PathRow({ label, path, onCopy, onOpenInOS }: { label: string; path?: st
 interface CreateFormProps {
   source: string; setSource: (v: string) => void
   speaker: string; setSpeaker: (v: string) => void
+  onDetectSpeaker: () => void
+  speakerHint: { text: string; tone: "ok" | "warn" } | null
+  detectingSpeaker: boolean
   routing: string; setRouting: (v: string) => void
   mode: "full" | "quick"; setMode: (v: "full" | "quick") => void
   maxRetries: number; setMaxRetries: (v: number) => void
@@ -2455,6 +2917,10 @@ interface CreateFormProps {
   force: boolean; setForce: (v: boolean) => void
   pauseOnOutline: boolean; setPauseOnOutline: (v: boolean) => void
   rewriteStrategy: "single" | "sectioned"; setRewriteStrategy: (v: "single" | "sectioned") => void
+  profileId: string; setProfileId: (v: string) => void
+  profileOptions: LlmProfile[]
+  defaultProfileId: string | null
+  onOpenSettings: () => void
   isSubmitting: boolean
   healthOffline: boolean
   draftRestoredTs: number | null
@@ -2514,7 +2980,7 @@ function CreateForm(props: CreateFormProps) {
               }}
               className="flex flex-col gap-5"
             >
-              <FormField label="输入源" required hint="从已扫到的 work/<stem>/raw.txt 和 input/Text/* 里选一个;或切换手动输入粘任意路径">
+              <FormField label="输入源" required hint="可选 input/Video/ 里的视频(自动先转录)、work/<stem>/raw.txt 转录稿、或 input/Text/* 文字稿;也可手动粘路径">
                 <SourcePicker
                   value={props.source}
                   onChange={props.setSource}
@@ -2523,12 +2989,28 @@ function CreateForm(props: CreateFormProps) {
               </FormField>
 
               <div className="grid grid-cols-2 gap-4">
-                <FormField label="演讲人主体" hint="稿件里的主讲人 / 受访者,可能不是你本人。系统会记住上次输入的名字。">
-                  <input
-                    type="text" value={props.speaker}
-                    onChange={e => props.setSpeaker(e.target.value)}
-                    className="w-full bg-card border rounded-md py-2 px-3 text-sm focus:border-primary outline-none transition-colors"
-                  />
+                <FormField label="演讲人主体">
+                  <div className="flex gap-2">
+                    <input
+                      type="text" value={props.speaker}
+                      onChange={e => props.setSpeaker(e.target.value)}
+                      className="flex-1 min-w-0 bg-card border rounded-md py-2 px-3 text-sm focus:border-primary outline-none transition-colors"
+                    />
+                    <Button
+                      type="button" variant="outline" size="sm" className="shrink-0"
+                      onClick={props.onDetectSpeaker}
+                      disabled={props.detectingSpeaker || !props.source.trim()}
+                      title="用 AI 从源文识别演讲人"
+                    >
+                      {props.detectingSpeaker ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <Sparkle data-icon="inline-start" />}
+                      AI 识别
+                    </Button>
+                  </div>
+                  {props.speakerHint ? (
+                    <span className={cn("text-xs", props.speakerHint.tone === "ok" ? "text-emerald-600" : "text-amber-600")}>{props.speakerHint.text}</span>
+                  ) : (
+                    <span className="text-xs text-muted-foreground">稿件里的主讲人 / 受访者，可能不是你本人。选源后会自动识别，并记住上次输入。</span>
+                  )}
                 </FormField>
                 <FormField label="写作角色路由">
                   <select
@@ -2546,15 +3028,18 @@ function CreateForm(props: CreateFormProps) {
               </div>
 
               <div className="grid grid-cols-2 gap-4">
-                <FormField label="工作流模式">
-                  <select
+                <FormField
+                  label="工作流模式"
+                  hint={props.mode === "full" ? "清洗 + 提炼 + 骨架 + 重写 + 质检" : "直接重写 + 质检，跳过中间步骤"}
+                >
+                  <Segmented
                     value={props.mode}
-                    onChange={e => props.setMode(e.target.value as "full" | "quick")}
-                    className="w-full bg-card border rounded-md py-2 px-3 text-sm focus:border-primary outline-none"
-                  >
-                    <option value="full">完整流程(清洗 + 提炼 + 骨架 + 重写 + 质检)</option>
-                    <option value="quick">极速改写(直接重写 + 质检)</option>
-                  </select>
+                    onChange={(v) => props.setMode(v)}
+                    options={[
+                      { value: "full", label: "完整流程", title: "清洗 + 提炼 + 骨架 + 重写 + 质检" },
+                      { value: "quick", label: "极速改写", title: "直接重写 + 质检" },
+                    ]}
+                  />
                 </FormField>
                 <FormField label="自修正最大重试" hint="默认 1 轮;不需要可设 0">
                   <input
@@ -2565,7 +3050,31 @@ function CreateForm(props: CreateFormProps) {
                 </FormField>
               </div>
 
-              <FormField label="指定模型(选填)" hint="留空则使用全局设置里的模型,如 deepseek-chat / gpt-4o">
+              <FormField label="配置档" hint="用哪套 LLM 配置跑这个任务；留「跟随默认」即用 Settings 里标★的那档。">
+                {props.profileOptions.length === 0 ? (
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <span>还没有任何配置档。</span>
+                    <button type="button" onClick={props.onOpenSettings} className="text-primary hover:underline">去 Settings 添加</button>
+                  </div>
+                ) : (
+                  <select
+                    value={props.profileId}
+                    onChange={e => props.setProfileId(e.target.value)}
+                    className="w-full bg-card border rounded-md py-2 px-3 text-sm focus:border-primary outline-none transition-colors"
+                  >
+                    <option value="">
+                      跟随默认{(() => { const d = props.profileOptions.find(p => p.id === props.defaultProfileId); return d ? `（${d.name}）` : "" })()}
+                    </option>
+                    {props.profileOptions.filter(p => p.enabled).map(p => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}{p.has_key ? "" : " · 未配 Key"}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </FormField>
+
+              <FormField label="指定模型(选填)" hint="留空则用所选配置档里的模型；填了则临时覆盖该档的模型,如 deepseek-chat / gpt-4o">
                 <input
                   type="text" value={props.model}
                   onChange={e => props.setModel(e.target.value)}
@@ -2611,6 +3120,35 @@ function CreateForm(props: CreateFormProps) {
   )
 }
 
+// macOS 风格 segmented control —— 互斥短选项首选（连体、无间隙、整块高亮）
+function Segmented<T extends string>({ value, onChange, options, className }: {
+  value: T
+  onChange: (v: T) => void
+  options: { value: T; label: string; title?: string }[]
+  className?: string
+}) {
+  return (
+    <div className={cn("inline-flex rounded-md border bg-card p-0.5 text-sm", className)}>
+      {options.map(o => (
+        <button
+          key={o.value}
+          type="button"
+          title={o.title}
+          onClick={() => onChange(o.value)}
+          className={cn(
+            "rounded px-3 py-1 transition-colors whitespace-nowrap",
+            value === o.value
+              ? "bg-primary text-primary-foreground shadow-sm"
+              : "text-muted-foreground hover:text-foreground",
+          )}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 function FormField({ label, required, hint, children }: { label: string; required?: boolean; hint?: string; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-1.5">
@@ -2640,242 +3178,852 @@ function Checkbox({ label, hint, checked, onChange }: { label: string; hint?: st
   )
 }
 
-// ═══════════════════ Settings Form ═══════════════════
-interface SettingsFormProps {
-  apiKey: string; setApiKey: (v: string) => void
-  apiBase: string; setApiBase: (v: string) => void
-  model: string; setModel: (v: string) => void
-  onSubmit: (e: React.FormEvent) => void
-  onCancel: () => void
+// ═══════════════════ Settings：LLM 配置档管理器（master-detail）═══════════════════
+const THINKING_LABEL: Record<string, string> = { default: "默认设置", on: "开启", off: "关闭" }
+const MAX_TOKENS_OPTIONS = [512, 1024, 2048, 4096, 8192]
+
+// 小开关（无 shadcn Switch，自己拼一个 role=switch 的按钮）
+function MiniSwitch({ checked, onChange, title }: { checked: boolean; onChange: () => void; title?: string }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      title={title}
+      onClick={(e) => { e.stopPropagation(); onChange() }}
+      className={cn(
+        "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors",
+        checked ? "bg-primary" : "bg-muted-foreground/30",
+      )}
+    >
+      <span className={cn("inline-block size-4 rounded-full bg-white transition-transform", checked ? "translate-x-4" : "translate-x-0.5")} />
+    </button>
+  )
 }
 
-function SettingsForm(props: SettingsFormProps) {
+// 设置窗分区：模型配置 | 写作知识库（共享顶部条 + 外观切换）
+function SettingsPanel({ onProfilesChanged }: { onProfilesChanged?: () => void }) {
+  const [section, setSection] = useState<"models" | "knowledge">("models")
+  return (
+    <div className="flex-1 flex flex-col min-h-0">
+      <div className="px-6 pt-5 pb-3 border-b flex items-center justify-between gap-4">
+        <Segmented
+          value={section}
+          onChange={setSection}
+          options={[{ value: "models", label: "模型配置" }, { value: "knowledge", label: "写作知识库" }]}
+        />
+        <AppearanceSwitch />
+      </div>
+      <div className="flex-1 min-h-0 flex flex-col">
+        {section === "models"
+          ? <SettingsForm onProfilesChanged={onProfilesChanged} embedded />
+          : <KnowledgeEditor />}
+      </div>
+    </div>
+  )
+}
+
+// 写作知识库编辑器（方案 B）：左分组文件列表 + 右 Markdown 编辑/预览/分屏 + 保存即校验
+// STYLE_GUIDE 是纯编号列表，可无损 parse/serialize 成表单（方案 A 首块）
+const STYLE_GUIDE_PATH = "knowledge/STYLE_GUIDE.md"
+function parseStyleGuide(md: string): { preamble: string; rules: string[] } {
+  const lines = md.split("\n")
+  const firstRule = lines.findIndex(l => /^\s*\d+\.\s+/.test(l))
+  if (firstRule === -1) return { preamble: md.replace(/\s+$/, ""), rules: [] }
+  const preamble = lines.slice(0, firstRule).join("\n").replace(/\s+$/, "")
+  const rules: string[] = []
+  for (const l of lines.slice(firstRule)) {
+    const m = l.match(/^\s*\d+\.\s+(.*)$/)
+    if (m) rules.push(m[1].trim())
+  }
+  return { preamble, rules }
+}
+function serializeStyleGuide(preamble: string, rules: string[]): string {
+  const body = rules.map((r, i) => `${i + 1}. ${r}`).join("\n")
+  return (preamble ? preamble + "\n\n" : "") + body + "\n"
+}
+
+function StyleGuideForm({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const { preamble, rules } = useMemo(() => parseStyleGuide(value), [value])
+  const update = (next: string[]) => onChange(serializeStyleGuide(preamble, next))
+  return (
+    <ScrollArea className="h-full min-h-0">
+      <div className="px-6 py-4 max-w-2xl mx-auto flex flex-col gap-2">
+        <p className="text-xs text-muted-foreground mb-1">风格硬规则（优先级高于范文）。逐条编辑 · 增删 · 调序；保存即写回 STYLE_GUIDE.md。</p>
+        {rules.map((r, i) => (
+          <div key={i} className="flex items-center gap-2 group">
+            <span className="text-xs text-muted-foreground font-mono w-5 text-right shrink-0">{i + 1}.</span>
+            <input
+              type="text"
+              value={r}
+              onChange={e => { const n = [...rules]; n[i] = e.target.value; update(n) }}
+              className="flex-1 bg-card border rounded-md py-1.5 px-2.5 text-sm outline-none focus:border-primary"
+            />
+            <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+              <Button type="button" variant="ghost" size="icon-sm" disabled={i === 0} onClick={() => { const n = [...rules];[n[i - 1], n[i]] = [n[i], n[i - 1]]; update(n) }} title="上移"><ChevronUp className="size-3.5" /></Button>
+              <Button type="button" variant="ghost" size="icon-sm" disabled={i === rules.length - 1} onClick={() => { const n = [...rules];[n[i + 1], n[i]] = [n[i], n[i + 1]]; update(n) }} title="下移"><ChevronDown className="size-3.5" /></Button>
+              <Button type="button" variant="ghost" size="icon-sm" onClick={() => update(rules.filter((_, j) => j !== i))} title="删除"><Trash2 className="size-3.5 text-destructive" /></Button>
+            </div>
+          </div>
+        ))}
+        <Button type="button" variant="outline" size="sm" className="self-start mt-1" onClick={() => update([...rules, "新规则"])}><Plus data-icon="inline-start" /> 添加规则</Button>
+      </div>
+    </ScrollArea>
+  )
+}
+
+// 知识库左栏：一个分组的文件项（带 danger 标记）
+function KnowledgeGroupBlock({ group, selected, onSelect }: { group: KnowledgeGroup; selected: string | null; onSelect: (p: string) => void }) {
+  return (
+    <div>
+      <div className="px-2 py-1 text-[10px] uppercase tracking-wider text-muted-foreground/70 font-semibold">{group.group}</div>
+      <div className="flex flex-col gap-0.5">
+        {group.items.map(it => (
+          <button
+            key={it.path}
+            type="button"
+            onClick={() => onSelect(it.path)}
+            disabled={!it.exists}
+            title={it.desc}
+            className={cn(
+              "w-full text-left rounded-md px-2.5 py-1.5 transition-colors",
+              it.path === selected ? "bg-primary/10 text-primary" : "hover:bg-muted/60",
+              !it.exists && "opacity-40 cursor-not-allowed",
+            )}
+          >
+            <div className="text-xs font-medium truncate flex items-center gap-1">
+              {it.danger && <AlertCircle className="size-3 text-amber-500 shrink-0" />}
+              {it.label}
+            </div>
+            <div className="text-[10px] text-muted-foreground truncate">{it.desc}</div>
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function KnowledgeEditor() {
+  const [groups, setGroups] = useState<KnowledgeGroup[]>([])
+  const [listErr, setListErr] = useState<string | null>(null)
+  const [selected, setSelected] = useState<string | null>(null)
+  const [original, setOriginal] = useState("")
+  const [draft, setDraft] = useState("")
+  const [loadErr, setLoadErr] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [view, setView] = useState<"edit" | "preview" | "split" | "form">("split")
+  const [saving, setSaving] = useState(false)
+  const [saveResult, setSaveResult] = useState<{ ok: boolean; errors: string[] } | null>(null)
+  const [showAdvanced, setShowAdvanced] = useState(false)
+
+  useEffect(() => {
+    listKnowledgeFiles()
+      .then(g => { setGroups(g); setSelected(prev => prev ?? g[0]?.items.find(i => i.exists)?.path ?? null) })
+      .catch(e => setListErr(String(e)))
+  }, [])
+
+  useEffect(() => {
+    if (!selected) return
+    setLoading(true); setLoadErr(null); setSaveResult(null)
+    // STYLE_GUIDE 默认进表单视图，其余进分屏
+    setView(selected === STYLE_GUIDE_PATH ? "form" : "split")
+    readKnowledgeFile(selected)
+      .then(c => { setOriginal(c); setDraft(c) })
+      .catch(e => setLoadErr(String(e)))
+      .finally(() => setLoading(false))
+  }, [selected])
+
+  const formCapable = selected === STYLE_GUIDE_PATH
+  const dirty = draft !== original
+  const allItems = groups.flatMap(g => g.items)
+  const selItem = allItems.find(i => i.path === selected)
+
+  const selectFile = async (path: string) => {
+    if (path === selected) return
+    if (dirty) {
+      const ok = await confirmAction({ title: "放弃未保存的更改？", description: "切换文件会丢弃当前编辑。", confirmText: "放弃并切换", cancelText: "留下", variant: "destructive" })
+      if (!ok) return
+    }
+    setSelected(path)
+  }
+
+  const handleSave = async () => {
+    if (!selected) return
+    setSaving(true); setSaveResult(null)
+    try {
+      const r = await saveKnowledgeFile(selected, draft)
+      setOriginal(draft)
+      setSaveResult({ ok: r.ok, errors: r.errors })
+      toast.success(r.ok ? "已保存并通过校验" : "已保存（有校验提醒）")
+    } catch (e) {
+      toast.error("保存失败", { description: String(e) })
+    } finally { setSaving(false) }
+  }
+
+  return (
+    <div className="flex h-full min-h-0">
+      <div className="w-60 shrink-0 border-r flex flex-col min-h-0">
+        <ScrollArea className="flex-1 min-h-0">
+          <div className="p-2 flex flex-col gap-3">
+            {listErr && <div className="text-xs text-destructive p-2">{listErr}</div>}
+            {/* 常用组直出 */}
+            {groups.filter(g => !g.advanced).map(g => (
+              <KnowledgeGroupBlock key={g.group} group={g} selected={selected} onSelect={selectFile} />
+            ))}
+            {/* 高级 · 开发者：默认折叠 + 警告 */}
+            {groups.some(g => g.advanced) && (
+              <div>
+                <button
+                  type="button"
+                  onClick={() => setShowAdvanced(v => !v)}
+                  className="w-full flex items-center gap-1 px-2 py-1 text-[10px] uppercase tracking-wider text-muted-foreground/70 font-semibold hover:text-foreground transition-colors"
+                >
+                  <span className={cn("transition-transform", showAdvanced && "rotate-90")}>▸</span> 高级 · 开发者
+                </button>
+                {showAdvanced && (
+                  <div className="flex flex-col gap-3 mt-1">
+                    <div className="mx-1 rounded-md border border-amber-500/30 bg-amber-500/5 px-2 py-1.5 text-[10px] text-amber-600 leading-snug">
+                      流水线契约与提示词，改错会影响产出甚至断功能。非必要勿动。
+                    </div>
+                    {groups.filter(g => g.advanced).map(g => (
+                      <KnowledgeGroupBlock key={g.group} group={g} selected={selected} onSelect={selectFile} />
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </ScrollArea>
+      </div>
+
+      <div className="flex-1 flex flex-col min-h-0">
+        {!selected ? (
+          <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground">从左侧选一个文件编辑</div>
+        ) : (
+          <>
+            <div className="px-4 py-2 border-b flex items-center gap-2">
+              <span className="text-sm font-medium shrink-0">{selItem?.label}</span>
+              <code className="text-[11px] text-muted-foreground truncate">{selected}</code>
+              <div className="flex-1" />
+              <Segmented
+                value={view}
+                onChange={setView}
+                options={formCapable
+                  ? [{ value: "form", label: "表单" }, { value: "edit", label: "源码" }, { value: "preview", label: "预览" }]
+                  : [{ value: "edit", label: "编辑" }, { value: "preview", label: "预览" }, { value: "split", label: "分屏" }]}
+              />
+            </div>
+            <div className="flex-1 min-h-0">
+              {loadErr ? (
+                <div className="p-6"><Alert variant="destructive" className="py-2"><AlertCircle /><AlertTitle className="text-sm">读取失败</AlertTitle><AlertDescription className="text-xs break-all">{loadErr}</AlertDescription></Alert></div>
+              ) : loading ? (
+                <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground h-full"><Loader2 className="animate-spin size-4" /> 载入中…</div>
+              ) : view === "form" ? (
+                <StyleGuideForm value={draft} onChange={setDraft} />
+              ) : (
+                <div className="h-full flex min-h-0">
+                  {(view === "edit" || view === "split") && (
+                    <textarea
+                      value={draft}
+                      onChange={e => setDraft(e.target.value)}
+                      spellCheck={false}
+                      className={cn("h-full bg-transparent p-4 font-mono text-sm leading-relaxed text-foreground outline-none resize-none", view === "split" ? "w-1/2 border-r" : "w-full")}
+                    />
+                  )}
+                  {(view === "preview" || view === "split") && (
+                    <ScrollArea className={cn("h-full min-h-0", view === "split" ? "w-1/2" : "w-full")}>
+                      <div className="px-5 py-4 max-w-[72ch] mx-auto"><MarkdownView source={draft} /></div>
+                    </ScrollArea>
+                  )}
+                </div>
+              )}
+            </div>
+            <div className="border-t px-4 py-2.5 flex items-center gap-3">
+              {saveResult ? (
+                saveResult.ok
+                  ? <span className="text-xs text-emerald-500 flex items-center gap-1"><CheckCircle2 className="size-3.5" /> 已保存并通过校验</span>
+                  : <span className="text-xs text-amber-500 flex items-center gap-1.5 min-w-0"><AlertCircle className="size-3.5 shrink-0" /><span className="truncate">已保存 · {saveResult.errors.length} 条校验提醒：{saveResult.errors[0]}</span></span>
+              ) : (
+                <span className="text-xs text-muted-foreground truncate">{dirty ? "有未保存的更改" : "改动即刻影响后续任务（合同指纹失效旧缓存）"}</span>
+              )}
+              <div className="flex-1" />
+              <Button type="button" variant="outline" size="sm" onClick={() => setDraft(original)} disabled={!dirty}>撤销</Button>
+              <Button type="button" size="sm" onClick={handleSave} disabled={!dirty || saving}>{saving && <Loader2 className="animate-spin" data-icon="inline-start" />}保存</Button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function SettingsForm({ onProfilesChanged, embedded }: { onCancel?: () => void; onProfilesChanged?: () => void; embedded?: boolean }) {
+  const [snap, setSnap] = useState<ProfilesSnapshot | null>(null)
+  const [isLoading, setIsLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [legacyKey, setLegacyKey] = useState<string | null>(null)
+  const [addMenuOpen, setAddMenuOpen] = useState(false)
+
+  // 右侧详情的可编辑草稿（enabled 由列表行的开关即时持久化，不放这里）
+  const [name, setName] = useState("")
+  const [provider, setProvider] = useState<ProviderId>("deepseek")
+  const [apiBase, setApiBase] = useState("")
+  const [model, setModel] = useState("")
+  const [temperature, setTemperature] = useState(0)
+  const [maxTokens, setMaxTokens] = useState(1024)
+  const [thinking, setThinking] = useState<"default" | "on" | "off">("default")
+  const [keyInput, setKeyInput] = useState("")
+  const [showAdvanced, setShowAdvanced] = useState(false)
+
   const [isTesting, setIsTesting] = useState(false)
   const [testResult, setTestResult] = useState<TestLLMResult | null>(null)
+  const [isSaving, setIsSaving] = useState(false)
 
-  // 当前 localStorage 里的"已保存版本",用于判断有没有未保存改动
-  // 保存动作发生后同步,让 hasUnsavedChanges 能正确反映状态
-  const [savedSnapshot, setSavedSnapshot] = useState(() => readLlmSettings())
-  const hasUnsavedChanges = (
-    props.apiKey.trim() !== savedSnapshot.apiKey.trim() ||
-    props.apiBase.trim() !== savedSnapshot.apiBase.trim() ||
-    props.model.trim() !== savedSnapshot.model.trim()
+  const selected = snap?.profiles.find(p => p.id === selectedId) ?? null
+
+  const applySnapshot = (s: ProfilesSnapshot, preferId?: string | null) => {
+    setSnap(s)
+    onProfilesChanged?.()
+    const target =
+      (preferId && s.profiles.some(p => p.id === preferId) && preferId) ||
+      (selectedId && s.profiles.some(p => p.id === selectedId) && selectedId) ||
+      s.defaultProfileId ||
+      (s.profiles[0]?.id ?? null)
+    setSelectedId(target)
+  }
+
+  // 把某档的值灌进右侧草稿
+  const loadDraft = (p: LlmProfile | null) => {
+    setTestResult(null)
+    setKeyInput("")
+    if (!p) return
+    setName(p.name)
+    setProvider((p.provider as ProviderId) || inferProviderId(p.api_base))
+    setApiBase(p.api_base)
+    setModel(p.model)
+    setTemperature(p.temperature)
+    setMaxTokens(p.max_tokens)
+    setThinking(p.thinking)
+  }
+
+  // 选中档变化 → 重灌草稿。**只**依赖 selectedId：snapshot 刷新（如切换别档开关）不应
+  // 重灌当前正在编辑的草稿，否则会冲掉未保存的改动。
+  useEffect(() => {
+    loadDraft(selected)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId])
+
+  // 首次加载
+  useEffect(() => {
+    setLegacyKey(readLegacyKey())
+    listProfiles()
+      .then(s => applySnapshot(s))
+      .catch(e => setLoadError(String(e)))
+      .finally(() => setIsLoading(false))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const presetModels = PROVIDER_PRESETS[provider].models
+
+  const dirty = !!selected && (
+    !!keyInput.trim() ||
+    name.trim() !== selected.name ||
+    provider !== ((selected.provider as ProviderId) || inferProviderId(selected.api_base)) ||
+    apiBase.trim() !== selected.api_base ||
+    model.trim() !== selected.model ||
+    temperature !== selected.temperature ||
+    maxTokens !== selected.max_tokens ||
+    thinking !== selected.thinking
   )
 
-  // 真正执行一次 LLM ping
+  const selectProfile = async (id: string) => {
+    if (id === selectedId) return
+    if (dirty) {
+      const ok = await confirmAction({
+        title: "放弃未保存的更改？",
+        description: "当前配置档有未保存的改动，切换将丢弃它们。",
+        confirmText: "放弃并切换",
+        cancelText: "留在当前",
+        variant: "destructive",
+      })
+      if (!ok) return
+    }
+    setSelectedId(id)
+  }
+
+  const onPickProvider = (id: ProviderId) => {
+    setProvider(id)
+    const preset = PROVIDER_PRESETS[id]
+    if (id !== "custom") {
+      setApiBase(preset.apiBase)
+      if (!(preset.models as readonly string[]).includes(model.trim())) setModel(preset.models[0])
+    }
+  }
+
+  // 新建档（从预设）
+  const addFromPreset = async (id: ProviderId) => {
+    setAddMenuOpen(false)
+    const preset = PROVIDER_PRESETS[id]
+    const baseName = preset.label
+    const n = (snap?.profiles.filter(p => p.name.startsWith(baseName)).length ?? 0)
+    try {
+      const s = await createProfile({
+        name: n > 0 ? `${baseName} ${n + 1}` : baseName,
+        provider: id,
+        api_base: preset.apiBase,
+        model: preset.models[0] ?? "",
+      })
+      applySnapshot(s, s.created_id)
+    } catch (e) {
+      toast.error("新建失败", { description: String(e) })
+    }
+  }
+
+  const handleSave = async (e?: React.FormEvent) => {
+    e?.preventDefault()
+    if (!selected) return
+    setIsSaving(true)
+    try {
+      const patch: LlmProfilePatch = {
+        name: name.trim() || "未命名",
+        provider, api_base: apiBase.trim(), model: model.trim(),
+        temperature, max_tokens: maxTokens, thinking,
+      }
+      if (keyInput.trim()) patch.api_key = keyInput.trim()
+      const s = await updateProfile(selected.id, patch)
+      applySnapshot(s, selected.id)
+      setKeyInput("")
+      toast.success("已保存", {
+        description: patch.api_key ? "API Key 已存入 macOS 系统钥匙串" : undefined,
+      })
+    } catch (err) {
+      toast.error("保存失败", { description: String(err) })
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  const toggleEnabled = async (p: LlmProfile) => {
+    try {
+      applySnapshot(await updateProfile(p.id, { enabled: !p.enabled }), p.id)
+    } catch (e) {
+      toast.error("操作失败", { description: String(e) })
+    }
+  }
+
+  const makeDefault = async (id: string) => {
+    try { applySnapshot(await setDefaultProfile(id), id) }
+    catch (e) { toast.error("设默认失败", { description: String(e) }) }
+  }
+
+  const removeProfile = async (p: LlmProfile) => {
+    const ok = await confirmAction({
+      title: `删除配置档「${p.name}」？`,
+      description: "将同时从系统钥匙串移除该档的 API Key，此操作不可撤销。",
+      confirmText: "删除",
+      cancelText: "取消",
+      variant: "destructive",
+    })
+    if (!ok) return
+    try {
+      const s = await deleteProfile(p.id)
+      setSelectedId(null)
+      applySnapshot(s)
+      toast.success("已删除配置档")
+    } catch (e) {
+      toast.error("删除失败", { description: String(e) })
+    }
+  }
+
+  const removeKey = async () => {
+    if (!selected) return
+    try {
+      const s = await deleteProfileKey(selected.id)
+      applySnapshot(s, selected.id)
+      toast.success("已清除该档的 Key", s.message ? { description: s.message } : undefined)
+    } catch (e) {
+      toast.error("清除失败", { description: String(e) })
+    }
+  }
+
   const runTest = async () => {
-    setIsTesting(true)
-    setTestResult(null)
+    if (!selected) return
+    setIsTesting(true); setTestResult(null)
     try {
       const res = await fetch(apiUrl("/api/test-llm"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          api_key: props.apiKey.trim() || undefined,
-          api_base: props.apiBase.trim() || undefined,
-          model: props.model.trim() || undefined,
+          profile_id: selected.id,
+          api_key: keyInput.trim() || undefined,
+          api_base: apiBase.trim() || undefined,
+          model: model.trim() || undefined,
         }),
       })
-      // 404 大概率是本地后端未重启 —— 给清晰提示,别让用户以为是 DeepSeek 那边 404
       if (res.status === 404) {
-        setTestResult({
-          ok: false,
-          error: "后端服务版本过旧 · /api/test-llm 端点未注册。\n请重启 scripts/run_engine_server.py 后再试。",
-        })
+        setTestResult({ ok: false, error: "后端服务版本过旧 · /api/test-llm 端点未注册。\n请重启 scripts/run_engine_server.py 后再试。" })
         return
       }
       if (!res.ok) {
-        // 尽量取后端 JSON 里的 error/detail,不然 fallback 到 HTTP <status>
         let detail = `HTTP ${res.status}`
-        try {
-          const data = await res.json()
-          if (typeof data?.error === "string") detail = data.error
-          else if (typeof data?.detail === "string") detail = data.detail
-        } catch { /* 非 JSON 响应 */ }
+        try { const d = await res.json(); if (typeof d?.error === "string") detail = d.error; else if (typeof d?.detail === "string") detail = d.detail } catch { /* */ }
         setTestResult({ ok: false, error: detail })
         return
       }
-      const data: TestLLMResult = await res.json()
-      setTestResult(data)
+      setTestResult(await res.json())
     } catch (e) {
-      // fetch 自己抛 = 完全没连上本地 8765
       setTestResult({ ok: false, error: `无法连接到本地后端 (127.0.0.1:8765): ${String(e)}` })
     } finally {
       setIsTesting(false)
     }
   }
 
-  // 测试连接 —— 仅基于当前输入,不动 localStorage
-  const handleTest = () => runTest()
+  const migrateLegacy = async () => {
+    const legacy = readLegacyKey()
+    if (!legacy) { setLegacyKey(null); return }
+    try {
+      const s = await createProfile({ name: "导入的 Key", provider, api_base: apiBase.trim() || PROVIDER_PRESETS[provider].apiBase, model: model.trim() || PROVIDER_PRESETS[provider].models[0], api_key: legacy })
+      clearLegacyKey(); setLegacyKey(null)
+      applySnapshot(s, s.created_id)
+      toast.success("已迁移到 Keychain", { description: "浏览器里残留的明文 Key 已清除" })
+    } catch (e) {
+      toast.error("迁移失败", { description: String(e) })
+    }
+  }
 
-  // 保存并测试 —— 一气呵成:先落到 localStorage(让任务运行用得到),再 ping 一次
-  const handleSaveAndTest = async () => {
-    saveLlmSettings({ apiKey: props.apiKey, apiBase: props.apiBase, model: props.model })
-    setSavedSnapshot({
-      apiKey: props.apiKey.trim(),
-      apiBase: props.apiBase.trim(),
-      model: props.model.trim(),
-    })
-    toast.success("配置已保存", { description: "正在测试连接…" })
-    await runTest()
+  // 列表行的状态徽章
+  const statusBadge = (p: LlmProfile) => {
+    if (p.provider === "custom" && !p.api_base && !p.has_key) return null
+    if (p.has_key) {
+      return (
+        <Badge variant="outline" className="text-[10px] font-mono">
+          {p.key_source === "env" ? "环境变量" : `已配 ····${p.key_suffix}`}
+        </Badge>
+      )
+    }
+    return <Badge variant="outline" className="text-[10px] border-amber-500/40 text-amber-500">未配 Key</Badge>
   }
 
   return (
-    <div className="flex-1 overflow-y-auto p-8">
-      <div className="max-w-2xl mx-auto">
-        <Card>
-          <CardHeader>
-            <CardTitle>LLM API 全局配置</CardTitle>
-            <CardDescription>本配置仅用于本机浏览器 localStorage,提交任务时会带给 127.0.0.1 后端；更稳妥的长期方案是改用后端环境变量或 Keychain。</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <form
-              onSubmit={e => {
-                // 顺手同步 snapshot,防止父组件保留 SettingsForm 时 hasUnsavedChanges 不复位
-                setSavedSnapshot({
-                  apiKey: props.apiKey.trim(),
-                  apiBase: props.apiBase.trim(),
-                  model: props.model.trim(),
-                })
-                props.onSubmit(e)
-              }}
-              onKeyDown={e => {
-                if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-                  e.preventDefault()
-                  e.currentTarget.requestSubmit()
-                }
-              }}
-              className="flex flex-col gap-5"
-            >
-              {hasUnsavedChanges && (
-                <Alert className="border-amber-500/30 bg-amber-500/5 py-2">
-                  <AlertCircle className="text-amber-500" />
-                  <AlertTitle className="text-sm">当前输入未保存</AlertTitle>
-                  <AlertDescription className="text-xs">
-                    任务运行时读的是 localStorage 里
-                    <b className="text-foreground">上次保存的配置</b>,
-                    现在输入框里的改动还没生效 —— 点下面的"保存配置"或"保存并测试"。
-                  </AlertDescription>
-                </Alert>
+    <div className="flex-1 flex flex-col min-h-0">
+      {/* 顶部标题（embedded=在 SettingsPanel 分区里时，标题栏由外层提供，这里省略） */}
+      {!embedded && (
+        <div className="px-6 pt-6 pb-3 border-b flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-lg font-semibold">LLM API 全局配置</h2>
+            <p className="text-sm text-muted-foreground mt-0.5">
+              配置一个或多个模型服务；任务默认用「默认 ★」档，也可在建任务时按需切换。
+              Key 存入 <b className="text-foreground">macOS 系统钥匙串</b>，不入磁盘/浏览器明文。
+            </p>
+          </div>
+          <AppearanceSwitch />
+        </div>
+      )}
+
+      {isLoading ? (
+        <div className="flex-1 flex items-center justify-center gap-2 text-sm text-muted-foreground">
+          <Loader2 className="animate-spin size-4" /> 正在读取配置档…
+        </div>
+      ) : (
+      <div className="flex-1 flex min-h-0">
+        {/* ── 左：配置档列表 ── */}
+        <div className="w-64 shrink-0 border-r flex flex-col min-h-0">
+          <ScrollArea className="flex-1 min-h-0">
+            <div className="p-2 flex flex-col gap-1">
+              {snap?.profiles.length === 0 && (
+                <div className="text-xs text-muted-foreground p-4 text-center leading-relaxed">
+                  还没有配置档。<br />点下方「添加」从预设新建。
+                </div>
               )}
-              <FormField label="API Key" hint="DeepSeek / Anthropic / OpenAI 的 sk-xxx。不会同步到任何外部服务。">
-                <input
-                  type="password" value={props.apiKey}
-                  onChange={e => props.setApiKey(e.target.value)}
-                  placeholder="sk-..."
-                  className="w-full bg-card border rounded-md py-2 px-3 text-sm font-mono focus:border-primary outline-none transition-colors"
-                />
-              </FormField>
-              <FormField label="API Base URL" hint="OpenAI 兼容端点。DeepSeek: https://api.deepseek.com/v1 · OpenAI: https://api.openai.com/v1">
-                <input
-                  type="text" value={props.apiBase}
-                  onChange={e => props.setApiBase(e.target.value)}
-                  placeholder="https://api.deepseek.com/v1"
-                  className="w-full bg-card border rounded-md py-2 px-3 text-sm font-mono focus:border-primary outline-none transition-colors"
-                />
-              </FormField>
-              <FormField label="默认模型" hint="点下方常用模型一键填入,或手动填任意 OpenAI 兼容 model 名">
-                <input
-                  type="text" value={props.model}
-                  onChange={e => props.setModel(e.target.value)}
-                  placeholder="deepseek-chat"
-                  className="w-full bg-card border rounded-md py-2 px-3 text-sm font-mono focus:border-primary outline-none transition-colors"
-                />
-                <div className="flex items-center gap-1 flex-wrap pt-1">
-                  {COMMON_MODELS.map(m => (
-                    <button
-                      key={m}
-                      type="button"
-                      onClick={() => props.setModel(m)}
-                      className={cn(
-                        "px-2 py-0.5 text-[10px] font-mono rounded-full border transition-colors",
-                        props.model.trim() === m
-                          ? "bg-primary/15 border-primary/40 text-primary"
-                          : "bg-transparent border-border text-muted-foreground hover:text-foreground hover:border-foreground/30",
-                      )}
-                    >
-                      {m}
-                    </button>
+              {snap?.profiles.map(p => (
+                // 用 div[role=button] 而非 <button>：行内含 MiniSwitch（也是 button），
+                // 嵌套 button 是非法 DOM。这里手动补键盘可达性。
+                <div
+                  key={p.id}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => selectProfile(p.id)}
+                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); selectProfile(p.id) } }}
+                  className={cn(
+                    "w-full text-left rounded-lg px-2.5 py-2 border transition-colors flex items-center gap-2 cursor-default outline-none",
+                    p.id === selectedId
+                      ? "bg-primary/10 border-primary/40"
+                      : "bg-transparent border-transparent hover:bg-muted/50",
+                  )}
+                >
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      {snap.defaultProfileId === p.id && <Star className="size-3 fill-primary text-primary shrink-0" />}
+                      <span className={cn("text-sm font-medium truncate", !p.enabled && "text-muted-foreground line-through")}>{p.name}</span>
+                    </div>
+                    <div className="flex items-center gap-1.5 mt-1">
+                      {statusBadge(p)}
+                    </div>
+                  </div>
+                  <MiniSwitch checked={p.enabled} onChange={() => toggleEnabled(p)} title={p.enabled ? "已启用（出现在建任务选择器）" : "已停用"} />
+                </div>
+              ))}
+            </div>
+          </ScrollArea>
+          {/* 增删 */}
+          <div className="border-t p-2 relative">
+            {addMenuOpen && (
+              <div className="absolute bottom-12 left-2 right-2 bg-popover border rounded-lg shadow-lg p-1 flex flex-col gap-0.5 z-10">
+                {(Object.keys(PROVIDER_PRESETS) as ProviderId[]).map(id => (
+                  <button key={id} type="button" onClick={() => addFromPreset(id)}
+                    className="text-left text-sm px-2.5 py-1.5 rounded-md hover:bg-muted transition-colors">
+                    {PROVIDER_PRESETS[id].label}
+                  </button>
+                ))}
+              </div>
+            )}
+            <div className="flex items-center gap-1">
+              <Button type="button" variant="outline" size="sm" className="flex-1" onClick={() => setAddMenuOpen(v => !v)}>
+                <Plus data-icon="inline-start" /> 添加
+              </Button>
+              <Button type="button" variant="outline" size="sm" disabled={!selected} onClick={() => selected && removeProfile(selected)} title="删除选中配置档">
+                <Trash2 />
+              </Button>
+            </div>
+          </div>
+        </div>
+
+        {/* ── 右：详情 ── */}
+        <div className="flex-1 flex flex-col min-h-0">
+          {loadError ? (
+            <div className="p-8"><Alert variant="destructive"><AlertCircle /><AlertTitle>读取配置失败</AlertTitle><AlertDescription className="break-all">{loadError}</AlertDescription></Alert></div>
+          ) : !selected ? (
+            <div className="flex-1 flex items-center justify-center p-8">
+              <div className="text-center max-w-sm">
+                <KeyRound className="size-10 mx-auto text-muted-foreground/40" />
+                <p className="mt-3 text-sm text-muted-foreground">从左侧选择一个配置档，或新建一个。</p>
+                <div className="flex items-center justify-center gap-1.5 mt-4">
+                  {(Object.keys(PROVIDER_PRESETS) as ProviderId[]).map(id => (
+                    <Button key={id} type="button" variant="outline" size="sm" onClick={() => addFromPreset(id)}>
+                      <Plus data-icon="inline-start" /> {PROVIDER_PRESETS[id].label}
+                    </Button>
                   ))}
                 </div>
-              </FormField>
-
-              {/* 测试连接区块 —— 用最小提示 ping 一次,验证 API Key/Base/Model 是否能通 */}
-              <div className="flex flex-col gap-2 -mb-1">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={handleTest}
-                    disabled={isTesting}
-                    title="基于当前输入 ping LLM,不动 localStorage"
-                  >
-                    {isTesting
-                      ? <Loader2 className="animate-spin" data-icon="inline-start" />
-                      : <Zap data-icon="inline-start" />}
-                    {isTesting ? "测试中…" : "测试连接"}
-                  </Button>
-                  {hasUnsavedChanges && (
-                    <Button
-                      type="button"
-                      variant="default"
-                      size="sm"
-                      onClick={handleSaveAndTest}
-                      disabled={isTesting}
-                      title="把当前输入存到 localStorage 后再 ping —— 让任务也能用到新配置"
-                    >
-                      {isTesting
-                        ? <Loader2 className="animate-spin" data-icon="inline-start" />
-                        : <Zap data-icon="inline-start" />}
-                      保存并测试
-                    </Button>
-                  )}
-                  <span className="text-xs text-muted-foreground">
-                    用一句话 ping LLM,验证配置可用。
-                  </span>
-                </div>
-                {testResult && (
-                  testResult.ok ? (
-                    <Alert className="border-emerald-500/40 bg-emerald-500/5 py-2">
-                      <CheckCircle2 className="text-emerald-500" />
-                      <AlertTitle className="text-sm flex items-center gap-2 flex-wrap">
-                        <span>连接成功</span>
-                        {testResult.latency_ms != null && (
-                          <Badge variant="outline" className="text-[10px] font-mono">{testResult.latency_ms}ms</Badge>
-                        )}
-                        {testResult.model && (
-                          <Badge variant="outline" className="text-[10px] font-mono">{testResult.model}</Badge>
-                        )}
-                      </AlertTitle>
-                      {testResult.sample && (
-                        <AlertDescription className="text-xs font-mono break-all">
-                          回包: {testResult.sample}
-                        </AlertDescription>
-                      )}
-                    </Alert>
-                  ) : (
-                    <Alert variant="destructive" className="py-2">
-                      <AlertCircle />
-                      <AlertTitle className="text-sm">连接失败</AlertTitle>
-                      <AlertDescription className="text-xs whitespace-pre-wrap break-all max-h-32 overflow-y-auto font-mono">
-                        {testResult.error || "未知错误"}
-                      </AlertDescription>
-                    </Alert>
-                  )
+              </div>
+            </div>
+          ) : (
+          <form onSubmit={handleSave} onKeyDown={e => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); e.currentTarget.requestSubmit() } }} className="flex-1 flex flex-col min-h-0">
+            <ScrollArea className="flex-1 min-h-0">
+              <div className="p-6 max-w-2xl flex flex-col gap-5">
+                {snap && snap.env_key_present && (
+                  <Alert className="border-amber-500/30 bg-amber-500/5 py-2">
+                    <AlertCircle className="text-amber-500" />
+                    <AlertTitle className="text-sm">环境变量 Key 已生效</AlertTitle>
+                    <AlertDescription className="text-xs">检测到 <code>VIDEO2BLOG_API_KEY</code>，它会<b className="text-foreground">覆盖所有配置档</b>的 Key（优先级最高）。</AlertDescription>
+                  </Alert>
                 )}
+                {snap && !snap.keyring_available && (
+                  <Alert className="border-amber-500/30 bg-amber-500/5 py-2">
+                    <AlertCircle className="text-amber-500" />
+                    <AlertTitle className="text-sm">系统钥匙串不可用</AlertTitle>
+                    <AlertDescription className="text-xs">无法安全存储 Key，请改用环境变量 <code>VIDEO2BLOG_API_KEY</code>。</AlertDescription>
+                  </Alert>
+                )}
+                {legacyKey && (
+                  <Alert className="border-amber-500/30 bg-amber-500/5 py-2">
+                    <AlertCircle className="text-amber-500" />
+                    <AlertTitle className="text-sm flex items-center gap-2 flex-wrap"><span>浏览器里有残留明文 Key</span><Badge variant="outline" className="text-[10px] font-mono">····{legacyKey.slice(-4)}</Badge></AlertTitle>
+                    <AlertDescription className="text-xs flex flex-col gap-2">
+                      早期版本把 Key 明文存在了浏览器。建议导入为配置档（写入钥匙串）并清除明文。
+                      <div className="flex gap-2">
+                        <Button type="button" size="sm" variant="default" onClick={migrateLegacy}><KeyRound data-icon="inline-start" /> 导入并清除</Button>
+                        <Button type="button" size="sm" variant="outline" onClick={() => { clearLegacyKey(); setLegacyKey(null) }}>仅清除明文</Button>
+                      </div>
+                    </AlertDescription>
+                  </Alert>
+                )}
+
+                {/* ① 身份 */}
+                <SectionLabel n="①" title="身份" />
+                <FormField label="配置档名称" hint="给这套配置起个好记的名字，比如「DeepSeek·主力」「GPT-4o·精修」">
+                  <input type="text" value={name} onChange={e => setName(e.target.value)} placeholder="未命名"
+                    className="w-full bg-card border rounded-md py-2 px-3 text-sm focus:border-primary outline-none transition-colors" />
+                </FormField>
+                <FormField label="Provider" hint="选预设自动填 Base URL 与推荐模型；Claude 等走「自定义」+ 自有 OpenAI 兼容网关">
+                  <Segmented
+                    value={provider}
+                    onChange={onPickProvider}
+                    options={(Object.keys(PROVIDER_PRESETS) as ProviderId[]).map(id => ({ value: id, label: PROVIDER_PRESETS[id].label }))}
+                  />
+                </FormField>
+
+                {/* ② 连接 */}
+                <SectionLabel n="②" title="连接" />
+                <FormField label="API Key" hint="存于 macOS 系统钥匙串 · 不入磁盘/浏览器明文 · 不会同步到任何外部服务">
+                  {selected.has_key && !keyInput && (
+                    <div className="flex items-center gap-2 flex-wrap text-xs text-muted-foreground mb-1">
+                      <Badge variant="outline" className="text-[10px] font-mono inline-flex items-center gap-1"><KeyRound className="size-3" /> 已保存 ····{selected.key_suffix}</Badge>
+                      <span>来源：{selected.key_source === "env" ? "环境变量 VIDEO2BLOG_API_KEY" : "系统钥匙串"}</span>
+                    </div>
+                  )}
+                  <input type="password" value={keyInput} onChange={e => setKeyInput(e.target.value)}
+                    placeholder={selected.has_key ? "已保存，留空则不修改；输入则覆盖" : "sk-..."}
+                    className="w-full bg-card border rounded-md py-2 px-3 text-sm font-mono focus:border-primary outline-none transition-colors" />
+                  <div className="flex items-center gap-2 flex-wrap pt-1">
+                    <Button type="button" variant="outline" size="sm" onClick={runTest} disabled={isTesting} title="ping 一次 LLM，验证该档可用（key 留空则用已存的）">
+                      {isTesting ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <Zap data-icon="inline-start" />}
+                      {isTesting ? "测试中…" : "测试连接"}
+                    </Button>
+                    {selected.key_source === "keychain" && !keyInput && (
+                      <button type="button" onClick={removeKey} className="text-xs text-destructive hover:underline inline-flex items-center gap-1">
+                        <Trash2 className="size-3" /> 清除此档的 Key
+                      </button>
+                    )}
+                    {selected.key_source === "env" && (
+                      <span className="text-xs text-muted-foreground">该档当前由环境变量提供，UI 无法删除。</span>
+                    )}
+                  </div>
+                  {testResult && (
+                    <div className="pt-1">
+                      {testResult.ok ? (
+                        <Alert className="border-emerald-500/40 bg-emerald-500/5 py-2">
+                          <CheckCircle2 className="text-emerald-500" />
+                          <AlertTitle className="text-sm flex items-center gap-2 flex-wrap">
+                            <span>连接成功</span>
+                            {testResult.latency_ms != null && <Badge variant="outline" className="text-[10px] font-mono">{testResult.latency_ms}ms</Badge>}
+                            {testResult.model && <Badge variant="outline" className="text-[10px] font-mono">{testResult.model}</Badge>}
+                          </AlertTitle>
+                          {testResult.sample && <AlertDescription className="text-xs font-mono break-all">回包: {testResult.sample}</AlertDescription>}
+                        </Alert>
+                      ) : (
+                        <Alert variant="destructive" className="py-2">
+                          <AlertCircle />
+                          <AlertTitle className="text-sm">连接失败</AlertTitle>
+                          <AlertDescription className="text-xs whitespace-pre-wrap break-all max-h-32 overflow-y-auto font-mono">{testResult.error || "未知错误"}</AlertDescription>
+                        </Alert>
+                      )}
+                    </div>
+                  )}
+                </FormField>
+                <FormField label="API Base URL" hint="OpenAI 兼容端点。DeepSeek: https://api.deepseek.com/v1 · OpenAI: https://api.openai.com/v1">
+                  <input type="text" value={apiBase} onChange={e => { setApiBase(e.target.value); setProvider(inferProviderId(e.target.value)) }}
+                    placeholder="https://api.deepseek.com/v1"
+                    className="w-full bg-card border rounded-md py-2 px-3 text-sm font-mono focus:border-primary outline-none transition-colors" />
+                </FormField>
+
+                {/* ③ 模型 */}
+                <SectionLabel n="③" title="模型" />
+                <FormField label="模型" hint="点下方推荐模型一键填入，或手动填任意 OpenAI 兼容 model 名">
+                  <input type="text" value={model} onChange={e => setModel(e.target.value)} placeholder={presetModels[0] ?? "deepseek-chat"}
+                    className="w-full bg-card border rounded-md py-2 px-3 text-sm font-mono focus:border-primary outline-none transition-colors" />
+                  <div className="flex items-center gap-1 flex-wrap pt-1">
+                    {presetModels.map(m => (
+                      <button key={m} type="button" onClick={() => setModel(m)}
+                        className={cn("px-2 py-0.5 text-[10px] font-mono rounded-full border transition-colors",
+                          model.trim() === m ? "bg-primary/15 border-primary/40 text-primary" : "bg-transparent border-border text-muted-foreground hover:text-foreground hover:border-foreground/30")}>
+                        {m}
+                      </button>
+                    ))}
+                  </div>
+                </FormField>
+
+                {/* ④ 生成参数（折叠） */}
+                <button type="button" onClick={() => setShowAdvanced(v => !v)} className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors self-start">
+                  <span className={cn("transition-transform", showAdvanced && "rotate-90")}>▸</span> 生成参数（温度 / 最大 token / 深度思考）
+                </button>
+                {showAdvanced && (
+                  <div className="flex flex-col gap-5 pl-4 border-l-2 border-border/50">
+                    <FormField label="温度" hint="0 最确定、最保守；越高越随机有创意。翻译/改写类建议 0–0.3。">
+                      <input type="number" step="0.1" min="0" max="2" value={temperature} onChange={e => setTemperature(Number(e.target.value))}
+                        className="w-32 bg-card border rounded-md py-2 px-3 text-sm font-mono focus:border-primary outline-none transition-colors" />
+                    </FormField>
+                    <FormField label="最大输出 token 数" hint="限制单次返回的最大 token 数。">
+                      <select value={maxTokens} onChange={e => setMaxTokens(Number(e.target.value))}
+                        className="w-40 bg-card border rounded-md py-2 px-3 text-sm focus:border-primary outline-none transition-colors">
+                        {MAX_TOKENS_OPTIONS.map(t => <option key={t} value={t}>{t} tokens</option>)}
+                      </select>
+                    </FormField>
+                    <FormField label="深度思考" hint="仅部分模型支持（如同时支持思考/非思考模式的模型）。">
+                      <select value={thinking} onChange={e => setThinking(e.target.value as "default" | "on" | "off")}
+                        className="w-40 bg-card border rounded-md py-2 px-3 text-sm focus:border-primary outline-none transition-colors">
+                        {Object.entries(THINKING_LABEL).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                      </select>
+                    </FormField>
+                  </div>
+                )}
+
+                {/* ⑤ 危险区 */}
+                <Separator />
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  {snap?.defaultProfileId === selected.id ? (
+                    <Badge variant="outline" className="text-xs border-primary/40 text-primary inline-flex items-center gap-1"><Star className="size-3 fill-primary" /> 当前默认档</Badge>
+                  ) : (
+                    <Button type="button" variant="outline" size="sm" onClick={() => makeDefault(selected.id)}><Star data-icon="inline-start" /> 设为默认</Button>
+                  )}
+                  <Button type="button" variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => removeProfile(selected)}>
+                    <Trash2 data-icon="inline-start" /> 删除此配置档
+                  </Button>
+                </div>
               </div>
+            </ScrollArea>
 
-              <Separator />
-
+            {/* sticky 底部 */}
+            <div className="border-t px-6 py-3 flex items-center justify-between gap-3">
+              <span className="text-xs text-muted-foreground">{dirty ? "有未保存的更改" : "已是最新"}</span>
               <div className="flex gap-2">
-                <Button type="submit" className="flex-1" title="保存 (Cmd/Ctrl + Enter)">保存配置</Button>
-                <Button type="button" variant="outline" onClick={props.onCancel} title="取消 (Esc)">取消</Button>
+                <Button type="button" variant="outline" onClick={() => loadDraft(selected)} disabled={!dirty}>撤销</Button>
+                <Button type="submit" disabled={!dirty || isSaving} title="保存 (Cmd/Ctrl + Enter)">
+                  {isSaving && <Loader2 className="animate-spin" data-icon="inline-start" />}保存
+                </Button>
               </div>
-            </form>
-          </CardContent>
-        </Card>
+            </div>
+          </form>
+          )}
+        </div>
       </div>
+      )}
+    </div>
+  )
+}
+
+// 独立「设置」窗口的根组件（Tauri 第二窗口加载 index.html?window=settings 时渲染）。
+// 复用同一个 SettingsForm；关闭=关窗；改了配置档→广播 profiles:changed 让主窗口回灌。
+export function SettingsWindow() {
+  return (
+    <TooltipProvider>
+      <Toaster position="top-right" theme="system" />
+      <ConfirmDialogHost />
+      <div className="app-root flex flex-col h-screen bg-background text-foreground overflow-hidden font-sans">
+        <div className="flex-1 min-h-0 flex">
+          <SettingsPanel
+            onProfilesChanged={() => { emit("profiles:changed").catch(() => {}) }}
+          />
+        </div>
+      </div>
+    </TooltipProvider>
+  )
+}
+
+// 详情分组小标题
+function SectionLabel({ n, title }: { n: string; title: string }) {
+  return (
+    <div className="flex items-center gap-2 text-sm font-semibold text-foreground/90 -mb-1">
+      <span className="text-primary">{n}</span> {title}
+    </div>
+  )
+}
+
+// 外观切换（系统 / 浅色 / 深色）—— 复用 Segmented，跟随 / 覆盖系统 appearance
+function AppearanceSwitch() {
+  const { theme, setTheme } = useTheme()
+  return (
+    <div className="shrink-0">
+      <div className="text-[10px] text-muted-foreground mb-1 text-right">外观</div>
+      <Segmented
+        value={theme ?? "system"}
+        onChange={setTheme}
+        options={[
+          { value: "system", label: "系统" },
+          { value: "light", label: "浅色" },
+          { value: "dark", label: "深色" },
+        ]}
+      />
     </div>
   )
 }
