@@ -16,6 +16,8 @@ dependencies = [
   "PyYAML>=6.0",
   "fastapi>=0.110.0",
   "uvicorn>=0.27.0",
+  # LLM API Key 安全存储：经系统钥匙串（macOS Keychain）读写，避免明文落盘。
+  "keyring>=24",
   # mlx-whisper 仅在 Apple Silicon macOS 上可用；其他平台请改用 whisper.cpp 引擎。
   "mlx-whisper>=0.4.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
 ]

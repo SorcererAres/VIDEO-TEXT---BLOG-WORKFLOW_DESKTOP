@@ -36,11 +36,28 @@ class MockLLMClient:
 @unittest.skipIf(TestClient is None, "fastapi.testclient.TestClient is not installed")
 class TestEngineServerAPI(unittest.TestCase):
     def setUp(self) -> None:
+        import os
+        from video2blog.engine import secrets_store as ss
+
         self.tmp_dir = Path(tempfile.mkdtemp())
         self._write_repo_contracts(self.tmp_dir)
+        # 隔离 LLM 配置：临时 XDG + 假钥匙串，杜绝测试读/改真实环境。
+        self._cfg_dir = Path(tempfile.mkdtemp())
+        self._old_xdg = os.environ.get("XDG_CONFIG_HOME")
+        os.environ["XDG_CONFIG_HOME"] = str(self._cfg_dir)
+        self._ss = ss
+        self._real_keyring = ss._keyring
+        ss._keyring = _FakeKeyring()
 
     def tearDown(self) -> None:
+        import os
         shutil.rmtree(self.tmp_dir)
+        shutil.rmtree(self._cfg_dir, ignore_errors=True)
+        self._ss._keyring = self._real_keyring
+        if self._old_xdg is None:
+            os.environ.pop("XDG_CONFIG_HOME", None)
+        else:
+            os.environ["XDG_CONFIG_HOME"] = self._old_xdg
 
     def test_sources_endpoint_lists_work_and_input_text(self) -> None:
         # 准备真实目录结构
@@ -448,6 +465,86 @@ class TestEngineServerAPI(unittest.TestCase):
         
         service.shutdown()
 
+    def test_knowledge_files_list_and_read(self) -> None:
+        client = TestClient(create_app(self.tmp_dir))
+        groups = client.get("/knowledge-files").json()
+        names = {g["group"] for g in groups}
+        self.assertIn("写作偏好", names)
+        self.assertIn("步骤提示词", names)
+        paths = {it["path"] for g in groups for it in g["items"]}
+        self.assertIn("memory/PREFERENCES.md", paths)
+        self.assertIn(".cursor/skills/video2blog/rewrite-blog/SKILL.md", paths)
+        # 读白名单内文件
+        r = client.get("/knowledge-file", params={"path": "knowledge/STYLE_GUIDE.md"})
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("Mock Style Guide", r.json()["content"])
+
+    def test_knowledge_write_roundtrip_and_validation(self) -> None:
+        client = TestClient(create_app(self.tmp_dir))
+        # 正常写：ok=True
+        r = client.put("/knowledge-file", json={"path": "knowledge/STYLE_GUIDE.md", "content": "1. 新规则\n2. 简体中文"})
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()["ok"])
+        self.assertEqual(client.get("/knowledge-file", params={"path": "knowledge/STYLE_GUIDE.md"}).json()["content"], "1. 新规则\n2. 简体中文")
+        # 含占位符：仍落盘但 ok=False + errors
+        r2 = client.put("/knowledge-file", json={"path": "memory/PREFERENCES.md", "content": "目标字数：____"})
+        self.assertEqual(r2.status_code, 200)
+        self.assertFalse(r2.json()["ok"])
+        self.assertTrue(r2.json()["errors"])
+        self.assertEqual(client.get("/knowledge-file", params={"path": "memory/PREFERENCES.md"}).json()["content"], "目标字数：____")
+
+    def test_knowledge_rejects_non_allowlisted(self) -> None:
+        client = TestClient(create_app(self.tmp_dir))
+        self.assertEqual(client.get("/knowledge-file", params={"path": "video2blog/server.py"}).status_code, 403)
+        self.assertEqual(client.put("/knowledge-file", json={"path": "video2blog/server.py", "content": "x"}).status_code, 403)
+
+    def test_upload_routes_by_extension_and_dedupes(self) -> None:
+        client = TestClient(create_app(self.tmp_dir))
+        # 文字稿 → input/Text
+        r = client.post("/upload", params={"name": "稿子.txt"}, content="你好".encode("utf-8"))
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["path"], "input/Text/稿子.txt")
+        self.assertEqual(r.json()["kind"], "text")
+        self.assertTrue((self.tmp_dir / "input/Text/稿子.txt").exists())
+        # 重名 → -2
+        r2 = client.post("/upload", params={"name": "稿子.txt"}, content="x".encode("utf-8"))
+        self.assertEqual(r2.json()["path"], "input/Text/稿子-2.txt")
+        # 视频 → input/Video
+        rv = client.post("/upload", params={"name": "clip.mp4"}, content=b"\x00\x01")
+        self.assertEqual(rv.json()["path"], "input/Video/clip.mp4")
+        self.assertEqual(rv.json()["kind"], "video")
+        # 上传后能被 /sources 列出
+        paths = {it["path"] for it in client.get("/sources").json()}
+        self.assertIn("input/Text/稿子.txt", paths)
+        self.assertIn("input/Video/clip.mp4", paths)
+        # 不支持类型 / 空文件
+        self.assertEqual(client.post("/upload", params={"name": "x.exe"}, content=b"x").status_code, 400)
+        self.assertEqual(client.post("/upload", params={"name": "e.txt"}, content=b"").status_code, 400)
+        # 路径穿越被 basename 化（不写到 input 之外）
+        rt = client.post("/upload", params={"name": "../evil.txt"}, content=b"x")
+        self.assertEqual(rt.json()["path"], "input/Text/evil.txt")
+
+    def test_detect_speaker_heuristic_and_fallback(self) -> None:
+        (self.tmp_dir / "work/intro").mkdir(parents=True, exist_ok=True)
+        (self.tmp_dir / "work/intro/raw.txt").write_text("大家好，我是梁老师，今天聊学习。", encoding="utf-8")
+        (self.tmp_dir / "work/plain").mkdir(parents=True, exist_ok=True)
+        (self.tmp_dir / "work/plain/raw.txt").write_text("这段没有自我介绍，只是讲内容。", encoding="utf-8")
+        (self.tmp_dir / "input/Video").mkdir(parents=True, exist_ok=True)
+        (self.tmp_dir / "input/Video/c.mp4").write_bytes(b"x")
+        client = TestClient(create_app(self.tmp_dir))
+        # 自我介绍 → 启发式命中
+        r = client.post("/api/detect-speaker", json={"source": "work/intro/raw.txt"})
+        self.assertEqual(r.json()["speaker"], "梁老师")
+        self.assertEqual(r.json()["method"], "heuristic")
+        # 无自我介绍 → null（前端走兜底）
+        self.assertIsNone(client.post("/api/detect-speaker", json={"source": "work/plain/raw.txt"}).json()["speaker"])
+        # 视频源 → null + 原因
+        rv = client.post("/api/detect-speaker", json={"source": "input/Video/c.mp4"}).json()
+        self.assertIsNone(rv["speaker"])
+        self.assertIn("转录", rv["reason"])
+        # 越权源 → 400
+        self.assertEqual(client.post("/api/detect-speaker", json={"source": "../etc/passwd"}).status_code, 400)
+
     def _write_repo_contracts(self, root: Path) -> None:
         (root / "memory").mkdir(parents=True, exist_ok=True)
         (root / "knowledge").mkdir(parents=True, exist_ok=True)
@@ -485,6 +582,101 @@ class TestEngineServerAPI(unittest.TestCase):
             "---\nname: quality-check\n---\n# Check",
             encoding="utf-8",
         )
+
+
+class _FakeKeyring:
+    """内存假钥匙串。"""
+
+    class _Backend:
+        priority = 1.0
+
+    def __init__(self) -> None:
+        self.store: dict[tuple[str, str], str] = {}
+
+    def get_keyring(self):
+        return self._Backend()
+
+    def get_password(self, service, account):
+        return self.store.get((service, account))
+
+    def set_password(self, service, account, password):
+        self.store[(service, account)] = password
+
+    def delete_password(self, service, account):
+        if (service, account) not in self.store:
+            raise RuntimeError("not found")
+        del self.store[(service, account)]
+
+
+@unittest.skipIf(TestClient is None, "fastapi.testclient.TestClient is not installed")
+class TestLlmProfilesAPI(unittest.TestCase):
+    """配置档 CRUD 端点 —— 隔离 XDG_CONFIG_HOME + mock 钥匙串，不碰真实系统。"""
+
+    def setUp(self) -> None:
+        import os
+        from video2blog.engine import secrets_store as ss
+
+        self.tmp = Path(tempfile.mkdtemp())
+        self._old_xdg = os.environ.get("XDG_CONFIG_HOME")
+        os.environ["XDG_CONFIG_HOME"] = str(self.tmp)
+        self.ss = ss
+        self._real_keyring = ss._keyring
+        ss._keyring = _FakeKeyring()
+        self._old_key = os.environ.pop("VIDEO2BLOG_API_KEY", None)
+        self.client = TestClient(create_app(self.tmp))
+
+    def tearDown(self) -> None:
+        import os
+        shutil.rmtree(self.tmp, ignore_errors=True)
+        self.ss._keyring = self._real_keyring
+        if self._old_xdg is None:
+            os.environ.pop("XDG_CONFIG_HOME", None)
+        else:
+            os.environ["XDG_CONFIG_HOME"] = self._old_xdg
+        if self._old_key is not None:
+            os.environ["VIDEO2BLOG_API_KEY"] = self._old_key
+
+    def test_crud_flow_and_no_plaintext(self) -> None:
+        c = self.client
+        self.assertEqual(c.get("/api/llm-profiles").json()["profiles"], [])
+
+        # 建第一档（带 key）→ 自动成默认
+        r = c.post("/api/llm-profiles", json={"name": "DeepSeek", "provider": "deepseek", "model": "deepseek-chat", "api_key": "sk-AAAA1111"})
+        self.assertEqual(r.status_code, 201)
+        pid = r.json()["created_id"]
+        self.assertEqual(r.json()["defaultProfileId"], pid)
+
+        # 建第二档并设默认
+        r2 = c.post("/api/llm-profiles", json={"name": "GPT", "provider": "openai", "model": "gpt-4o", "api_key": "sk-BBBB2222"})
+        pid2 = r2.json()["created_id"]
+        self.assertEqual(c.post(f"/api/llm-profiles/{pid2}/default").json()["defaultProfileId"], pid2)
+
+        snap = c.get("/api/llm-profiles").json()
+        self.assertNotIn("sk-AAAA1111", json.dumps(snap))
+        self.assertNotIn("sk-BBBB2222", json.dumps(snap))
+        suffixes = {p["name"]: p["key_suffix"] for p in snap["profiles"]}
+        self.assertEqual(suffixes, {"DeepSeek": "1111", "GPT": "2222"})
+
+        # PUT 改名（不带 key，key 保留）
+        c.put(f"/api/llm-profiles/{pid}", json={"name": "DS·改名"})
+        names = {p["name"] for p in c.get("/api/llm-profiles").json()["profiles"]}
+        self.assertIn("DS·改名", names)
+        self.assertTrue(next(p for p in c.get("/api/llm-profiles").json()["profiles"] if p["id"] == pid)["has_key"])
+
+        # 删某档 key（仅 key）
+        c.request("DELETE", f"/api/llm-profiles/{pid2}/key")
+        self.assertFalse(next(p for p in c.get("/api/llm-profiles").json()["profiles"] if p["id"] == pid2)["has_key"])
+
+        # 删档 → 默认回退
+        c.request("DELETE", f"/api/llm-profiles/{pid2}")
+        snap = c.get("/api/llm-profiles").json()
+        self.assertEqual(len(snap["profiles"]), 1)
+        self.assertEqual(snap["defaultProfileId"], pid)
+
+    def test_404_on_unknown_profile(self) -> None:
+        self.assertEqual(self.client.put("/api/llm-profiles/nope", json={"name": "x"}).status_code, 404)
+        self.assertEqual(self.client.request("DELETE", "/api/llm-profiles/nope").status_code, 404)
+        self.assertEqual(self.client.post("/api/llm-profiles/nope/default").status_code, 404)
 
 
 if __name__ == "__main__":

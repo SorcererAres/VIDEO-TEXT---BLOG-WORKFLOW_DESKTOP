@@ -5,13 +5,14 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
 try:
-    from fastapi import FastAPI, HTTPException
+    from fastapi import FastAPI, HTTPException, Request
     from fastapi.responses import HTMLResponse, StreamingResponse
     from pydantic import BaseModel, Field
 except ImportError as exc:  # pragma: no cover - exercised when optional deps are absent.
@@ -34,6 +35,10 @@ class JobCreateRequest(BaseModel):
     force: bool = False
     pause_on_outline: bool = True
     api_key: str | None = None
+    profile_id: str | None = Field(
+        default=None,
+        description="使用哪个 LLM 配置档；省略则用默认档（defaultProfileId）",
+    )
     rewrite_strategy: str = Field(
         default="single",
         description="single=一次性整篇（默认）；sectioned=full 模式按 outline 拆节滚动改写，长稿用",
@@ -56,6 +61,34 @@ class TestLLMRequest(BaseModel):
     api_key: str | None = None
     api_base: str | None = None
     model: str | None = None
+    profile_id: str | None = None
+
+
+class DetectSpeakerRequest(BaseModel):
+    """POST /api/detect-speaker 入参：从源文识别演讲人主体。"""
+    source: str
+    profile_id: str | None = None
+    use_llm: bool = False
+
+
+class KnowledgeFileRequest(BaseModel):
+    """PUT /knowledge-file 入参：写回某个合同/知识层文件。"""
+    path: str
+    content: str
+
+
+class LlmProfileRequest(BaseModel):
+    """POST/PUT /api/llm-profiles 入参。非敏感字段落 config 文件；
+    api_key 非空才写系统钥匙串，省略 / null 则保留原 key。"""
+    name: str | None = None
+    provider: str | None = None
+    api_base: str | None = None
+    model: str | None = None
+    temperature: float | None = None
+    max_tokens: int | None = None
+    thinking: str | None = None
+    enabled: bool | None = None
+    api_key: str | None = None
 
 
 def create_app(repo_root: Path | str | None = None) -> FastAPI:
@@ -78,7 +111,9 @@ def create_app(repo_root: Path | str | None = None) -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=configured_origins,
-        allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+        # 允许本机浏览器（localhost/127.0.0.1，任意端口）以及 Tauri 壳的 webview 源：
+        # 开发时 webview = http://localhost:5173；打包后 = tauri://localhost（mac）/ http://tauri.localhost（win）。
+        allow_origin_regex=r"^(https?|tauri)://(localhost|127\.0\.0\.1|tauri\.localhost)(:\d+)?$",
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -95,16 +130,25 @@ def create_app(repo_root: Path | str | None = None) -> FastAPI:
         """测试 LLM 配置是否能联通 —— Settings 页"测试连接"按钮调它。
 
         用最小提示发 1 次请求,2xx 即 ok。不写入任何任务/缓存。
-        - api_key/api_base/model 都是可选,缺什么走环境变量 fallback。
+        - api_key/api_base/model 都是可选,缺什么按优先级链 fallback：request > 环境变量 > 钥匙串/config。
         - 短超时(15s 单次 / 20s 总死线),防止 hang 住用户。
         """
         from video2blog.engine.client import LLMClient
-        secret_candidates = [payload.api_key, os.environ.get("VIDEO2BLOG_API_KEY")]
+        from video2blog.engine.secrets_store import resolve_llm_config
+
+        resolved = resolve_llm_config(
+            payload.profile_id, payload.api_key, payload.api_base, payload.model
+        )
+        secret_candidates = [
+            payload.api_key,
+            os.environ.get("VIDEO2BLOG_API_KEY"),
+            resolved["api_key"],
+        ]
         try:
             client = LLMClient(
-                api_key=payload.api_key,
-                api_base=payload.api_base,
-                model=payload.model,
+                api_key=resolved["api_key"],
+                api_base=resolved["api_base"],
+                model=resolved["model"],
                 max_budget_tokens=100_000,
                 per_request_timeout=15,
                 max_total_seconds=20,
@@ -112,7 +156,7 @@ def create_app(repo_root: Path | str | None = None) -> FastAPI:
             if not client.api_key:
                 return {
                     "ok": False,
-                    "error": "缺失 API Key —— 既没传也没设环境变量 VIDEO2BLOG_API_KEY",
+                    "error": "缺失 API Key —— request / 环境变量 VIDEO2BLOG_API_KEY / 系统钥匙串 都没有",
                 }
             t0 = time.time()
             out = client.call_api(
@@ -127,17 +171,86 @@ def create_app(repo_root: Path | str | None = None) -> FastAPI:
                 "api_base": client.api_base,
                 "latency_ms": latency_ms,
                 "sample": (out or "").strip()[:120],
+                "key_source": resolved["key_source"],
             }
         except Exception as exc:
             return {"ok": False, "error": redact_sensitive_text(str(exc), *secret_candidates)}
+
+    @app.get("/api/llm-profiles")
+    def list_llm_profiles() -> dict[str, Any]:
+        """返回全部配置档的安全快照 + 默认档 + 钥匙串/环境变量状态。
+
+        **绝不返回明文 key** —— 防本地恶意页面经此端点窃取。
+        """
+        from video2blog.engine.secrets_store import public_profiles
+        return public_profiles()
+
+    @app.post("/api/llm-profiles", status_code=201)
+    def create_llm_profile(payload: LlmProfileRequest) -> dict[str, Any]:
+        """新建配置档；非敏感字段落 config，api_key 非空才写钥匙串。返回完整快照集合。"""
+        from video2blog.engine import secrets_store as ss
+        data = {k: v for k, v in payload.model_dump().items() if k != "api_key" and v is not None}
+        profile = ss.create_profile(data)
+        if payload.api_key and payload.api_key.strip():
+            try:
+                ss.set_key(profile["id"], payload.api_key)
+            except RuntimeError as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return {**ss.public_profiles(), "created_id": profile["id"]}
+
+    @app.put("/api/llm-profiles/{profile_id}")
+    def update_llm_profile(profile_id: str, payload: LlmProfileRequest) -> dict[str, Any]:
+        """更新某档非敏感字段；api_key 非空才覆盖钥匙串，省略 / null 则保留原 key。"""
+        from video2blog.engine import secrets_store as ss
+        patch = {k: v for k, v in payload.model_dump().items() if k != "api_key" and v is not None}
+        if ss.update_profile(profile_id, patch) is None:
+            raise HTTPException(status_code=404, detail=f"配置档不存在: {profile_id}")
+        if payload.api_key is not None and payload.api_key.strip():
+            try:
+                ss.set_key(profile_id, payload.api_key)
+            except RuntimeError as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return ss.public_profiles()
+
+    @app.delete("/api/llm-profiles/{profile_id}")
+    def delete_llm_profile(profile_id: str) -> dict[str, Any]:
+        """删档 + 删其钥匙串 key；删的是默认档时自动重选默认。"""
+        from video2blog.engine import secrets_store as ss
+        if not ss.delete_profile(profile_id):
+            raise HTTPException(status_code=404, detail=f"配置档不存在: {profile_id}")
+        return ss.public_profiles()
+
+    @app.post("/api/llm-profiles/{profile_id}/default")
+    def set_default_llm_profile(profile_id: str) -> dict[str, Any]:
+        """把某档设为默认。"""
+        from video2blog.engine import secrets_store as ss
+        if not ss.set_default(profile_id):
+            raise HTTPException(status_code=404, detail=f"配置档不存在: {profile_id}")
+        return ss.public_profiles()
+
+    @app.delete("/api/llm-profiles/{profile_id}/key")
+    def delete_llm_profile_key(profile_id: str) -> dict[str, Any]:
+        """仅清除某档钥匙串中的 key（保留档本身）。"""
+        from video2blog.engine import secrets_store as ss
+        if ss.get_profile(profile_id) is None:
+            raise HTTPException(status_code=404, detail=f"配置档不存在: {profile_id}")
+        ss.delete_key(profile_id)
+        result = ss.public_profiles()
+        if result["env_key_present"]:
+            result["message"] = (
+                "已清除钥匙串中的 Key，但环境变量 VIDEO2BLOG_API_KEY 仍在生效（优先级最高，覆盖所有档），"
+                "如需彻底移除请在 shell / .env 中删除该变量。"
+            )
+        return result
 
     @app.get("/sources")
     def list_sources() -> list[dict[str, Any]]:
         """列出可作为 Job source 的文件。
 
-        扫两类位置：
+        扫三类位置：
           - work/<stem>/raw.txt    → ASR 转录稿(kind=transcript)
           - input/Text/*.{txt,md,srt,vtt} → 用户手放的文字稿(kind=text)
+          - input/Video/*.{mp4,mov,...} → 待转录视频(kind=video，任务会先跑前三步转录)
         每条返回 {path, kind, label, size, mtime} —— 给前端 Combobox 用。
         """
         items: list[dict[str, Any]] = []
@@ -179,9 +292,136 @@ def create_app(repo_root: Path | str | None = None) -> FastAPI:
                 except OSError:
                     continue
 
+        # input/Video/*.{mp4,mov,...} —— 待转录视频，任务会先跑前三步（提取音频/转录/成稿）
+        video_dir = root / "input" / "Video"
+        if video_dir.is_dir():
+            vexts = (".mp4", ".mov", ".m4v", ".mkv", ".webm", ".flv", ".avi")
+            for f in sorted(video_dir.iterdir()):
+                if not f.is_file() or f.suffix.lower() not in vexts or f.name == ".gitkeep":
+                    continue
+                try:
+                    stat = f.stat()
+                    items.append({
+                        "path": str(f.relative_to(root)),
+                        "kind": "video",
+                        "label": f.stem,
+                        "size": stat.st_size,
+                        "mtime": stat.st_mtime,
+                    })
+                except OSError:
+                    continue
+
         # 最近修改的排前面(更可能是用户当前关注的素材)
         items.sort(key=lambda x: x["mtime"], reverse=True)
         return items
+
+    _UPLOAD_VIDEO_EXT = {".mp4", ".mov", ".mkv", ".m4v", ".webm", ".flv", ".avi"}
+    _UPLOAD_TEXT_EXT = {".txt", ".md", ".srt", ".vtt"}
+
+    @app.post("/upload")
+    async def upload_source(name: str, request: Request) -> dict[str, Any]:
+        """上传素材文件（原始 body，无需 multipart 依赖）。
+
+        按扩展名归类：视频 → input/Video/，文字稿 → input/Text/；重名自动加 -N。
+        落盘后即可被 /sources 列出并作为任务 source（视频会先自动转录）。
+        前端用 `<input type=file>` + `fetch(body: file)`，浏览器 / Tauri 通用。
+        """
+        safe = Path(name).name
+        if not safe or safe.startswith("."):
+            raise HTTPException(status_code=400, detail="非法文件名")
+        ext = Path(safe).suffix.lower()
+        if ext in _UPLOAD_VIDEO_EXT:
+            sub, kind = "input/Video", "video"
+        elif ext in _UPLOAD_TEXT_EXT:
+            sub, kind = "input/Text", "text"
+        else:
+            raise HTTPException(status_code=400, detail=f"不支持的类型 {ext or '(无扩展名)'}；请传视频或 .txt/.md/.srt/.vtt")
+
+        dest_dir = root / sub
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / safe
+        if dest.exists():  # 重名去重：foo.mp4 → foo-2.mp4
+            stem, suffix = Path(safe).stem, Path(safe).suffix
+            i = 2
+            while (dest_dir / f"{stem}-{i}{suffix}").exists():
+                i += 1
+            dest = dest_dir / f"{stem}-{i}{suffix}"
+
+        # 流式写临时文件再 os.replace，杜绝写一半留半个文件
+        tmp = dest.with_name(dest.name + ".uploading")
+        written = 0
+        try:
+            with tmp.open("wb") as fh:
+                async for chunk in request.stream():
+                    fh.write(chunk)
+                    written += len(chunk)
+            if written == 0:
+                tmp.unlink(missing_ok=True)
+                raise HTTPException(status_code=400, detail="空文件")
+            os.replace(tmp, dest)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            tmp.unlink(missing_ok=True)
+            raise HTTPException(status_code=500, detail=f"写入失败: {exc}") from exc
+
+        return {"path": str(dest.relative_to(root)), "kind": kind, "name": dest.name, "size": written}
+
+    # 自我介绍启发式（保守：名字限 2-4 汉字或短句柄，且须以标点/空格/结尾收边，
+    # 避免 ASR 无标点长串被贪婪抓成垃圾；抓不准就漏，走兜底，绝不抓错）
+    _NAME_RE = r"([一-龥]{2,4}|[A-Za-z][\w·]{1,14})"
+    _BOUND_RE = r"(?=[，,。.！!？?、；;：:\s）)」』】\"']|$)"
+    _SELF_INTRO_RES = [
+        re.compile(r"大家好[，,、\s]*我(?:是|叫)\s*" + _NAME_RE + _BOUND_RE),
+        re.compile(r"我(?:叫|的名字叫)\s*" + _NAME_RE + _BOUND_RE),
+        re.compile(r"本期(?:的)?嘉宾(?:是|：|:)?\s*" + _NAME_RE + _BOUND_RE),
+    ]
+    _DETECT_VIDEO_EXT = {".mp4", ".mov", ".mkv", ".m4v", ".webm", ".flv", ".avi"}
+
+    @app.post("/api/detect-speaker")
+    def detect_speaker(payload: DetectSpeakerRequest) -> dict[str, Any]:
+        """识别演讲人主体：① 免费启发式（自我介绍句式）② 可选 LLM。识别不出返回 speaker=null，由前端走兜底。"""
+        try:
+            path = service._resolve_source(payload.source)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if path.suffix.lower() in _DETECT_VIDEO_EXT:
+            return {"speaker": None, "method": "none", "reason": "视频尚未转录，转录后才能识别"}
+
+        text = path.read_text(encoding="utf-8", errors="replace")[:4000]
+        for rx in _SELF_INTRO_RES:
+            m = rx.search(text)
+            if m:
+                return {"speaker": m.group(1).strip(), "method": "heuristic"}
+
+        if not payload.use_llm:
+            return {"speaker": None, "method": "none"}
+
+        # AI 识别（用默认/指定配置档）
+        from video2blog.engine.client import LLMClient
+        from video2blog.engine.secrets_store import resolve_llm_config
+        resolved = resolve_llm_config(payload.profile_id)
+        if not resolved["api_key"]:
+            return {"speaker": None, "method": "none", "reason": "未配置 API Key，无法 AI 识别"}
+        try:
+            client = LLMClient(
+                api_key=resolved["api_key"], api_base=resolved["api_base"], model=resolved["model"],
+                max_budget_tokens=20_000, per_request_timeout=20, max_total_seconds=25,
+            )
+            out = client.call_api(
+                system_prompt=(
+                    "你是信息抽取器。从转录稿判断「主讲人/受访者」的称呼或姓名，"
+                    "只输出这个名字本身（如「梁老师」「白墨西」），无法判断就只输出『未知』。不要解释、不要标点。"
+                ),
+                user_prompt=text[:3000],
+                max_retries=1,
+            )
+            name = (out or "").strip().strip("。.，,「」\"' \n")
+            if not name or "未知" in name or len(name) > 20:
+                return {"speaker": None, "method": "llm", "reason": "AI 未能从内容判断"}
+            return {"speaker": name, "method": "llm"}
+        except Exception as exc:
+            return {"speaker": None, "method": "llm", "reason": redact_sensitive_text(str(exc), resolved["api_key"])}
 
     @app.get("/jobs/history")
     def list_history() -> list[dict[str, Any]]:
@@ -524,6 +764,174 @@ def create_app(repo_root: Path | str | None = None) -> FastAPI:
         except subprocess.CalledProcessError as exc:
             raise HTTPException(status_code=500, detail=f"open 命令失败: {exc}")
         return {"ok": True, "path": rel, "mode": mode}
+
+    @app.get("/work-files")
+    def list_work_files(stem: str) -> list[dict[str, Any]]:
+        """列出某任务 work/<stem>/ 下的全部中间过程产物，供「过程产物」面板浏览。
+
+        每条 {name, path, size, mtime, kind}；内容读取走 /file（已限定 work/ 只读）。
+        stem 必须是单段安全名（无路径分隔/.. ），目录须落在 work/ 内，防越权。
+        """
+        if not stem or "/" in stem or "\\" in stem or stem in {".", ".."}:
+            raise HTTPException(status_code=400, detail="非法 stem")
+        work_dir = (root / "work" / stem).resolve()
+        try:
+            work_dir.relative_to((root / "work").resolve())
+        except ValueError:
+            raise HTTPException(status_code=400, detail="stem 越权")
+        if not work_dir.is_dir():
+            return []
+
+        def _kind(name: str) -> str:
+            if name == "raw.txt":
+                return "transcript"
+            if name == "raw.srt":
+                return "subtitle"
+            if name == "meta.json":
+                return "meta"
+            if name == "clean.md":
+                return "clean"
+            if name == "insights.md":
+                return "insights"
+            if name == "outline.md":
+                return "outline"
+            if name.startswith("draft_v") and name.endswith(".md"):
+                return "draft"
+            if name.startswith("review_v") and name.endswith(".json"):
+                return "review"
+            if name == ".state.json":
+                return "state"
+            if name == "events.jsonl":
+                return "events"
+            if name == "raw.log":
+                return "log"
+            return "other"
+
+        items: list[dict[str, Any]] = []
+        for f in work_dir.iterdir():
+            if not f.is_file():
+                continue
+            try:
+                stat = f.stat()
+            except OSError:
+                continue
+            items.append({
+                "name": f.name,
+                "path": str(f.relative_to(root)),
+                "size": stat.st_size,
+                "mtime": stat.st_mtime,
+                "kind": _kind(f.name),
+            })
+        return items
+
+    # ── 合同/知识层可编辑文件白名单（方案 B：在 app 里配置「底层内容」）──
+    # 固定项 + 动态扫 knowledge/Examples/*.md（滤掉 README）。绝不暴露任意仓库文件读写。
+    # 分两层：常用（创作者日常调）/ advanced（开发者：契约+提示词，默认折叠+警告）。
+    # item = (path, label, desc, danger)；danger=代码会解析其输出，改错会断功能。
+    # CONFIG.md 已被「配置档 + 视频转录」覆盖，故移出白名单（不再可读写）。
+    _KNOWLEDGE_GROUPS: list[tuple[str, bool, list[tuple[str, str, str, bool]]]] = [
+        ("写作偏好", False, [("memory/PREFERENCES.md", "写作偏好", "人称/语言/受众/目标字数/禁用套话/格式", False)]),
+        ("风格与范文", False, [("knowledge/STYLE_GUIDE.md", "风格指南", "18 条写作硬规则，优先级高于范文", False)]),
+        ("运行合同 · 路由", True, [("WORKFLOW.md", "运行合同", "模式/各 Step 合同/路由人设；改错影响整条流水线，≤70 行", True)]),
+        ("步骤提示词", True, [
+            (".cursor/skills/video2blog/clean-transcript/SKILL.md", "Step 3 清洗", "清洗 ASR 转录稿", False),
+            (".cursor/skills/video2blog/extract-insights/SKILL.md", "Step 4 提炼", "提炼核心观点", False),
+            (".cursor/skills/video2blog/structure-narrative/SKILL.md", "Step 5 骨架", "搭建博文骨架", False),
+            (".cursor/skills/video2blog/rewrite-blog/SKILL.md", "Step 6 改写", "第一人称撰写博文", False),
+            (".cursor/skills/video2blog/quality-check/SKILL.md", "Step 7 质检", "六维评分；输出格式被代码解析，改错会断功能", True),
+            (".cursor/skills/video2blog/format-output/SKILL.md", "Step 8 落盘", "frontmatter 被代码校验，改错会断功能", True),
+        ]),
+    ]
+
+    def _knowledge_allowed() -> set[str]:
+        allowed = {rel for _g, _adv, items in _KNOWLEDGE_GROUPS for rel, _l, _d, _dg in items}
+        ex_dir = root / "knowledge" / "Examples"
+        if ex_dir.is_dir():
+            for f in ex_dir.glob("*.md"):
+                if f.name.lower() == "readme.md":
+                    continue
+                allowed.add(str(f.relative_to(root)))
+        return allowed
+
+    @app.get("/knowledge-files")
+    def list_knowledge_files() -> list[dict[str, Any]]:
+        """分组列出合同/知识层可编辑文件（带 advanced 分层），供「写作知识库」面板。"""
+        groups: list[dict[str, Any]] = []
+        for group, advanced, items in _KNOWLEDGE_GROUPS:
+            entries = [
+                {"path": rel, "label": label, "desc": desc, "danger": danger, "exists": (root / rel).is_file()}
+                for rel, label, desc, danger in items
+            ]
+            groups.append({"group": group, "advanced": advanced, "items": entries})
+        # 动态范文（滤掉 README）
+        ex_dir = root / "knowledge" / "Examples"
+        if ex_dir.is_dir():
+            ex_items = [
+                {"path": str(f.relative_to(root)), "label": f.stem, "desc": "锚定文风的参考范文", "danger": False, "exists": True}
+                for f in sorted(ex_dir.glob("*.md")) if f.name.lower() != "readme.md"
+            ]
+            if ex_items:
+                groups.append({"group": "参考范文", "advanced": False, "items": ex_items})
+        return groups
+
+    @app.get("/knowledge-file")
+    def read_knowledge_file(path: str) -> dict[str, str]:
+        """读取白名单内的合同/知识层文件。"""
+        if path not in _knowledge_allowed():
+            raise HTTPException(status_code=403, detail="该文件不在可编辑白名单内")
+        target = root / path
+        if not target.is_file():
+            raise HTTPException(status_code=404, detail=f"文件不存在: {path}")
+        return {"content": target.read_text(encoding="utf-8", errors="replace"), "path": path}
+
+    @app.put("/knowledge-file")
+    def write_knowledge_file(payload: KnowledgeFileRequest) -> dict[str, Any]:
+        """写回白名单文件（原子写）+ 轻量校验（占位符 / WORKFLOW 行数）。
+
+        非阻塞：即便有 warning 也已落盘（引擎在任务启动时仍硬校验把关）；返回 {ok, errors}。
+        改后合同指纹自动失效旧缓存（runner 取哈希）。
+        """
+        from video2blog.utils import atomic_write, PLACEHOLDER_RE
+
+        rel = payload.path
+        if rel not in _knowledge_allowed():
+            raise HTTPException(status_code=403, detail="该文件不在可编辑白名单内")
+
+        content = payload.content
+        errors: list[str] = []
+        # 占位符扫描（跳过引用/代码块行，与 Pre-Flight 约定一致）
+        for lineno, line in enumerate(content.splitlines(), start=1):
+            s = line.strip()
+            if s.startswith(">") or s.startswith("```"):
+                continue
+            if PLACEHOLDER_RE.search(line):
+                errors.append(f"未填占位符 第{lineno}行：{s[:60]}")
+        # WORKFLOW.md ≤ 70 行硬约束（与 validate_workflow.check_workflow_docs 一致）
+        if rel == "WORKFLOW.md" and len(content.splitlines()) > 70:
+            errors.append(f"WORKFLOW.md 超过 70 行（当前 {len(content.splitlines())} 行），引擎校验会拒绝")
+
+        atomic_write(root / rel, content)
+        return {"ok": len(errors) == 0, "errors": errors, "path": rel}
+
+    @app.get("/file")
+    def read_repo_file(path: str) -> dict[str, str]:
+        """读取仓库内 output/ 或 work/ 下的文本文件内容（artifact 阅读器用）。
+
+        - 路径必须在 repo_root 之内，且首段限定 output/ 或 work/，防越权读任意文件。
+        - 适用于历史成品（不在内存 job 列表里，无法走 /jobs/{id}/files）。
+        """
+        if not path:
+            raise HTTPException(status_code=400, detail="path 必填")
+        target = (root / path).resolve()
+        try:
+            rel = target.relative_to(root)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="路径必须在仓库根之内")
+        if not rel.parts or rel.parts[0] not in ("output", "work"):
+            raise HTTPException(status_code=403, detail="只允许读取 output/ 或 work/ 下的文件")
+        if not target.is_file():
+            raise HTTPException(status_code=404, detail=f"文件不存在: {path}")
+        return {"content": target.read_text(encoding="utf-8", errors="replace"), "path": path}
 
     @app.get("/jobs/{job_id}/events")
     def stream_events(job_id: str) -> StreamingResponse:

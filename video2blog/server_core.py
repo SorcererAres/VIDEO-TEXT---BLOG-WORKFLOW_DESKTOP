@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import collections
 import contextlib
 import io
 import json
 import os
+import queue
+import subprocess
+import sys
 import threading
+import time
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
@@ -20,6 +25,8 @@ from video2blog.engine import Engine, LLMClient
 VALID_ROUTINGS = {"/default", "/lecture", "/dialogue", "/screencast", "/meeting"}
 VALID_MODES = {"full", "quick"}
 VALID_REWRITE_STRATEGIES = {"single", "sectioned"}
+# 视频源（任务会先跑前三步转录成 raw.txt 再进 Step 3–8）
+VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".mkv", ".webm", ".flv", ".avi"}
 
 
 def redact_sensitive_text(text: str, *secrets: str | None) -> str:
@@ -42,6 +49,8 @@ class EngineJobRequest:
     force: bool = False
     pause_on_outline: bool = True
     api_key: str | None = None
+    # 用哪个 LLM 配置档；None = 默认档（defaultProfileId）。
+    profile_id: str | None = None
     # §9-C：single = 一次性整篇（默认），sectioned = 按 outline 拆节滚动改写。
     # quick 模式或 outline 不可解析时引擎会自动回退 single，不强求按节。
     rewrite_strategy: str = "single"
@@ -136,6 +145,10 @@ class EngineJobService:
             if allow_external_source is not None
             else os.environ.get("VIDEO2BLOG_ALLOW_EXTERNAL_SOURCE", "").strip().lower()
             in {"1", "true", "yes", "on"}
+        )
+        # 转录（前三步）整体 wall-clock 上限，超了中止子进程并明确报错
+        self.transcribe_deadline_seconds = int(
+            os.environ.get("VIDEO2BLOG_TRANSCRIBE_DEADLINE", "3600")
         )
         if restore_jobs:
             self._restore_jobs_from_disk()
@@ -278,7 +291,12 @@ class EngineJobService:
         # client 在 try 里才创建,但 writer 需要在它创建后才能读 token。
         # 用 list 做可变引用让 emit_with_tokens 能后绑定 client。
         client_holder: list[Any] = [None]
-        secret_candidates = [request.api_key, os.environ.get("VIDEO2BLOG_API_KEY")]
+        # 脱敏候选必须覆盖「最终生效的 key」—— 含从钥匙串解析出来的那把，否则 keychain 来源
+        # 的 key 会在日志/错误里漏出（request/env 不一定有值）。resolve_llm_config 本身不抛。
+        from video2blog.engine.secrets_store import resolve_llm_config
+
+        resolved_key = resolve_llm_config(request.profile_id, request.api_key).get("api_key")
+        secret_candidates = [request.api_key, os.environ.get("VIDEO2BLOG_API_KEY"), resolved_key]
 
         def emit_with_tokens(line: str) -> None:
             # 每条日志事件都顺手把 client 累计 token 刷到 job 上,前端轮询 /jobs 即可看到实时进度。
@@ -308,6 +326,13 @@ class EngineJobService:
                 rewrite_strategy=request.rewrite_strategy,
             )
             source_path = self._resolve_source(request.source)
+
+            # 前三步：视频源先转录成 work/<stem>/raw.txt，再无缝接 Step 3–8。
+            # 子进程隔离 + 流式 + 可取消 + 超时 + raw.txt 检查点（process_video 自带跳过）。
+            if source_path.suffix.lower() in VIDEO_EXTS:
+                source_path = self._transcribe(
+                    source_path, emit_with_tokens, check_cancelled, force=request.force
+                )
 
             if request.force:
                 state = engine.load_state(job.stem)
@@ -402,6 +427,85 @@ class EngineJobService:
             runtime.condition.notify_all()
         self._append_event(runtime, event)
 
+    def _transcribe(
+        self,
+        video: Path,
+        emit_line: Callable[[str], None],
+        cancel_check: Callable[[], bool],
+        *,
+        force: bool,
+    ) -> Path:
+        """前三步：子进程跑 video2blog.py 转录视频 → work/<stem>/raw.txt。
+
+        子进程隔离（mlx 是最大不稳定源）；后台线程读 stdout 推队列，主循环每 0.5s
+        轮询，期间检查取消与 wall-clock 超时（即便 mlx 静默也能及时中止，不 hang）。
+        非交互：--no-auto-terminal + --fallback-policy auto；raw.txt 检查点由 process_video 自带。
+        """
+        raw_txt = self.repo_root / "work" / video.stem / "raw.txt"
+        cmd = [
+            sys.executable, "video2blog.py", str(video),
+            "--no-auto-terminal", "--engine", "auto", "--fallback-policy", "auto",
+        ]
+        if force:
+            cmd.append("--force")
+        emit_line(f"[前三步] 开始转录：{video.name}")
+
+        proc = subprocess.Popen(
+            cmd, cwd=str(self.repo_root),
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1,
+        )
+        line_q: "queue.Queue[str | None]" = queue.Queue()
+
+        def _reader() -> None:
+            try:
+                assert proc.stdout is not None
+                for ln in proc.stdout:
+                    line_q.put(ln.rstrip("\n"))
+            finally:
+                line_q.put(None)  # EOF 哨兵
+
+        threading.Thread(target=_reader, daemon=True, name="v2b-asr-reader").start()
+
+        deadline = time.monotonic() + self.transcribe_deadline_seconds
+        tail: "collections.deque[str]" = collections.deque(maxlen=40)
+        cancelled = timed_out = False
+        while True:
+            try:
+                ln = line_q.get(timeout=0.5)
+            except queue.Empty:
+                ln = ""
+            if ln is None:
+                break  # 子进程输出结束
+            if ln:
+                emit_line(ln)
+                tail.append(ln)
+            if cancel_check():
+                cancelled = True
+                proc.terminate()
+                break
+            if time.monotonic() > deadline:
+                timed_out = True
+                proc.terminate()
+                break
+
+        try:
+            rc = proc.wait(timeout=8)
+        except Exception:
+            proc.kill()
+            rc = -9
+
+        if cancelled:
+            raise RuntimeError("转录已取消")
+        if timed_out:
+            raise TimeoutError(f"转录超过 {self.transcribe_deadline_seconds}s 上限，已中止")
+        if rc != 0:
+            raise RuntimeError("转录失败（子进程退出码 %d）\n%s" % (rc, "\n".join(tail)))
+        if not raw_txt.exists():
+            raise RuntimeError("转录结束但未生成 raw.txt\n" + "\n".join(tail))
+        emit_line(f"[前三步] 转录完成 → work/{video.stem}/raw.txt")
+        return raw_txt
+
     def _mark(self, job: EngineJob, status: str) -> None:
         job.status = status
         job.updated_at = self._now()
@@ -414,8 +518,18 @@ class EngineJobService:
         return runtime
 
     def _default_client_factory(self, request: EngineJobRequest) -> LLMClient:
-        api_key = (request.api_key or os.environ.get("VIDEO2BLOG_API_KEY", "")).strip()
-        return LLMClient(api_key=api_key, api_base=request.api_base, model=request.model)
+        # 按优先级链解析：request > 环境变量 > 系统钥匙串。base/model 同理（解析不到时
+        # 传 None，交由 LLMClient 套自身内置默认）。
+        from video2blog.engine.secrets_store import resolve_llm_config
+
+        resolved = resolve_llm_config(
+            request.profile_id, request.api_key, request.api_base, request.model
+        )
+        return LLMClient(
+            api_key=resolved["api_key"],
+            api_base=resolved["api_base"],
+            model=resolved["model"],
+        )
 
     def _validate_request(self, request: EngineJobRequest) -> None:
         if request.mode not in VALID_MODES:
@@ -451,8 +565,11 @@ class EngineJobService:
         return path
 
     def _infer_stem(self, source_path: Path) -> str:
+        # 视频源：用视频文件名作 stem（转录产物落 work/<stem>/raw.txt，与 output_paths 对齐）
+        if source_path.suffix.lower() in VIDEO_EXTS:
+            return source_path.stem
         stem = source_path.parent.name
-        if stem in {"Text", "input", "work", "output"}:
+        if stem in {"Text", "input", "work", "output", "Video"}:
             stem = source_path.stem
         return stem
 

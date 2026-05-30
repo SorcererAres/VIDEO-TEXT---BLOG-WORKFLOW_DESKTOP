@@ -28,13 +28,54 @@ class MockLLMClient:
         return response
 
 
+class _FakeKeyring:
+    """内存假钥匙串：让测试与真实 macOS Keychain / ~/.config 完全隔离。"""
+
+    class _Backend:
+        priority = 1.0
+
+    def __init__(self) -> None:
+        self.store: dict[tuple[str, str], str] = {}
+
+    def get_keyring(self):
+        return self._Backend()
+
+    def get_password(self, service, account):
+        return self.store.get((service, account))
+
+    def set_password(self, service, account, password):
+        self.store[(service, account)] = password
+
+    def delete_password(self, service, account):
+        if (service, account) not in self.store:
+            raise RuntimeError("not found")
+        del self.store[(service, account)]
+
+
 class TestEngineJobService(unittest.TestCase):
     def setUp(self) -> None:
+        import os
+        from video2blog.engine import secrets_store as ss
+
         self.tmp_dir = Path(tempfile.mkdtemp())
         self._write_repo_contracts(self.tmp_dir)
+        # 隔离 LLM 配置：临时 XDG + 假钥匙串，杜绝测试读/改真实环境。
+        self._cfg_dir = Path(tempfile.mkdtemp())
+        self._old_xdg = os.environ.get("XDG_CONFIG_HOME")
+        os.environ["XDG_CONFIG_HOME"] = str(self._cfg_dir)
+        self._ss = ss
+        self._real_keyring = ss._keyring
+        ss._keyring = _FakeKeyring()
 
     def tearDown(self) -> None:
+        import os
         shutil.rmtree(self.tmp_dir)
+        shutil.rmtree(self._cfg_dir, ignore_errors=True)
+        self._ss._keyring = self._real_keyring
+        if self._old_xdg is None:
+            os.environ.pop("XDG_CONFIG_HOME", None)
+        else:
+            os.environ["XDG_CONFIG_HOME"] = self._old_xdg
 
     def test_submit_job_streams_logs_and_records_artifacts(self) -> None:
         source_path = self.tmp_dir / "work/test_stem/raw.txt"
@@ -383,6 +424,74 @@ class TestEngineJobService(unittest.TestCase):
             "---\nname: quality-check\n---\n# Check",
             encoding="utf-8",
         )
+
+
+class _FakePopen:
+    """假 subprocess.Popen：吐预设行、按需创建 raw.txt、返回预设退出码。"""
+
+    def __init__(self, lines, returncode, *, raw_txt: Path | None = None):
+        self._lines = list(lines)
+        self.returncode = returncode
+        if raw_txt is not None:
+            raw_txt.parent.mkdir(parents=True, exist_ok=True)
+            raw_txt.write_text("转录稿正文", encoding="utf-8")
+        self.stdout = iter(self._lines)
+        self._killed = False
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+    def poll(self):
+        return self.returncode
+
+    def terminate(self):
+        self._killed = True
+
+    def kill(self):
+        self._killed = True
+
+
+class TestTranscribeStage(unittest.TestCase):
+    """前三步转录阶段 —— mock subprocess，不跑真 mlx/LLM。"""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.svc = EngineJobService(self.tmp, restore_jobs=False)
+        self.video = self.tmp / "input/Video/foo.mp4"
+        self.video.parent.mkdir(parents=True, exist_ok=True)
+        self.video.write_bytes(b"\x00\x00")
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _patch_popen(self, fake):
+        import video2blog.server_core as sc
+        self._orig = sc.subprocess.Popen
+        sc.subprocess.Popen = lambda *a, **k: fake  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(sc.subprocess, "Popen", self._orig))
+
+    def test_success_streams_and_returns_raw_txt(self) -> None:
+        raw = self.svc.repo_root / "work/foo/raw.txt"  # 用已 resolve 的 repo_root，避开 /tmp→/private/tmp 符号链接
+        self._patch_popen(_FakePopen(["[1/3] ffmpeg → audio.wav", "[2/3] mlx-whisper …", "[3/3] 写 raw.txt"], 0, raw_txt=raw))
+        logs: list[str] = []
+        out = self.svc._transcribe(self.video, logs.append, lambda: False, force=False)
+        self.assertEqual(out, raw)
+        self.assertTrue(any("[2/3]" in m for m in logs))  # 转录日志确实流出
+
+    def test_nonzero_exit_raises(self) -> None:
+        self._patch_popen(_FakePopen(["[1/3] ffmpeg", "boom"], 1))  # 不建 raw.txt
+        with self.assertRaises(RuntimeError):
+            self.svc._transcribe(self.video, lambda _l: None, lambda: False, force=False)
+
+    def test_success_exit_but_no_raw_txt_raises(self) -> None:
+        self._patch_popen(_FakePopen(["[1/3]…"], 0))  # rc=0 但没产 raw.txt
+        with self.assertRaises(RuntimeError):
+            self.svc._transcribe(self.video, lambda _l: None, lambda: False, force=False)
+
+    def test_cancel_raises(self) -> None:
+        self._patch_popen(_FakePopen(["[1/3] ffmpeg", "[2/3] …"], 0, raw_txt=self.tmp / "work/foo/raw.txt"))
+        with self.assertRaises(RuntimeError):
+            self.svc._transcribe(self.video, lambda _l: None, lambda: True, force=False)  # 立即取消
 
 
 if __name__ == "__main__":
