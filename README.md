@@ -164,7 +164,19 @@ make regression      # mock LLM 跑 tests/fixtures/regression/ 金标 fixture
 make frontend-lint   # npm --prefix frontend run lint
 make frontend-build  # npm --prefix frontend run build
 make server          # 启动 FastAPI 本地服务
+make app             # 桌面 App（Tauri 壳）：起后端 + tauri dev
+make app-build       # 构建 .app（暂未打包后端 sidecar，运行仍需独立后端）
 ```
+
+### 桌面 App（Tauri 壳 · macOS 尊重式）
+
+把现有 React 工作台装进 **Tauri 壳**（系统 WKWebView），获得原生窗口：交通灯、统一标题栏、
+vibrancy 毛玻璃侧栏、记住窗口尺寸、跟随系统外观（浅/深/自动）、SF 字体、系统强调色、尊重
+「降低透明度 / 减弱动态效果」等无障碍开关。
+
+- **前置**：Rust 工具链（`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`）。首次编译耗时数分钟。
+- **运行**：`make app`（先确保后端 8765 在跑，再 `tauri dev`）。仍可 `npm run dev` 在浏览器打开做降级开发。
+- **当前不做**：把 Python 后端打包成 sidecar 二进制进独立 `.app`（签名公证），留后续阶段——`make app-build` 出的包运行时仍需独立启动后端。
 
 `make regression` 在隔离临时 repo 里用 mock LLM 跑 `tests/fixtures/regression/<name>/`
 预置的金标 fixture，验证状态机、frontmatter、`VIEWER_RE`、HISTORY 与 fingerprints
@@ -191,6 +203,20 @@ Step 6 默认一次性整篇生成（`single`）。长稿撞窗时切换 section
 本地服务默认只接受 `localhost` / `127.0.0.1` 浏览器来源；任务 source 默认必须位于仓库根目录内。需要额外来源时配置 `VIDEO2BLOG_CORS_ORIGINS`，需要读取仓库外文件时显式设置 `VIDEO2BLOG_ALLOW_EXTERNAL_SOURCE=1`。
 
 CI 使用同一组入口：`make test`、`make validate`、`make frontend-lint`、`make frontend-build`。这些检查不调用真实 LLM，不需要配置 API Key。
+
+## LLM API 配置档（多配置档 · 系统钥匙串）
+
+LLM 配置是**多配置档管理器**：可存多个服务（DeepSeek / OpenAI / 自定义 OpenAI 兼容），各自独立配 Key/模型/参数，可启用·停用，其中一个设为**默认 ★**。API Key **不明文落盘**、不进浏览器，每档一条存进 **macOS 系统钥匙串**（account = `profile:<id>`）。
+
+- **前端 Settings**（推荐）：左侧配置档列表（增删 / 启用开关 / 设默认），右侧详情（身份 / 连接 / 模型 / 生成参数 / 危险区）。选 Provider 预设自动填 Base URL 与推荐模型；粘 Key 保存即写钥匙串；「测试连接」用一句话 ping 验证。
+- **建任务时**可在「配置档」选择器里临时切换用哪档；留「跟随默认」即用默认档。
+- **环境变量**（优先级最高，headless / CI）：`export VIDEO2BLOG_API_KEY=sk-xxx`，会覆盖所有档的 Key；可选 `VIDEO2BLOG_API_BASE` / `VIDEO2BLOG_MODEL`。
+
+解析链：`request > 环境变量 VIDEO2BLOG_API_KEY > 该档钥匙串`；用哪档：`request.profile_id > defaultProfileId`。非敏感项（名称/provider/base/model/参数/启用）存 config 文件 `~/.config/video2blog/config.json`（schema v2，**不含 Key**）。
+
+从旧版单配置升级时会**自动迁移**：旧 config + 旧钥匙串 `api_key` → 一个名为「默认」的配置档（首次启动服务时幂等执行）。
+
+后端对 Key 全程脱敏：任务对象 `to_dict`、SSE 日志、错误信息都替换成 `***`；`GET /api/llm-profiles` 只返回末四位与来源（`keychain` / `env`），绝不回传明文。首次写钥匙串时 macOS 可能弹一次授权框，点「始终允许」即可。
 
 ## 配置与记忆
 
