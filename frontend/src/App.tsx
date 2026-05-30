@@ -223,6 +223,11 @@ export default function App() {
   const sseReconnectTimerRef = useRef<number | null>(null)
   const sseTargetJobRef = useRef<string | null>(null)
 
+  // 状态跃迁通知：记录上一轮每个 job 的「通知意义」复合状态，只在真正发生跃迁时提醒。
+  // 这样切换查看历史/已完成任务时（SSE 重放历史事件、列表状态不变）绝不会误弹。
+  const prevJobStatesRef = useRef<Map<string, string>>(new Map())
+  const jobsNotifyInitRef = useRef(false)
+
   // 外观跟随系统：由 main.tsx 的 next-themes ThemeProvider 接管（浅/深/自动），
   // 不再强制 .dark。用户可在 Settings 手动覆盖三态。
 
@@ -305,6 +310,8 @@ export default function App() {
       stopPolling()
       document.removeEventListener("visibilitychange", handleVisibilityChange)
     }
+    // 只在 mount 时启动轮询；fetchJobs/fetchHistory 等用最新闭包即可，无需进依赖。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   // 全局键盘快捷键 —— 桌面应用必备
@@ -518,12 +525,53 @@ export default function App() {
     }
   }
 
+  // 任务状态提醒。Step2 会在窗口失焦时改走 Tauri 原生通知，前台仍用 toast。
+  const notifyJobEvent = (kind: "info" | "success" | "error", title: string, body: string) => {
+    if (kind === "success") toast.success(title, { description: body })
+    else if (kind === "error") toast.error(title, { description: body })
+    else toast(title, { description: body, icon: <Pause /> })
+  }
+
+  // 一个 job 的「通知意义」复合键：paused 要区分卡在哪个人工节点。
+  const jobNotifyKey = (j: EngineJob) =>
+    j.status === "paused" ? `paused:${j.paused_state ?? ""}` : j.status
+
+  // 对比上一轮 jobs，对发生状态跃迁的任务发提醒。首轮只建立基线、不提醒
+  //（否则启动时会把 restore 出来的旧 paused/succeeded 任务全弹一遍）。
+  // 首次见到的新任务也只记录不弹，只有「已知任务的状态变了」才提醒。
+  const detectStatusTransitions = (newJobs: EngineJob[]) => {
+    const prev = prevJobStatesRef.current
+    const next = new Map<string, string>()
+    for (const j of newJobs) next.set(j.id, jobNotifyKey(j))
+
+    if (jobsNotifyInitRef.current) {
+      for (const j of newJobs) {
+        const before = prev.get(j.id)
+        const after = next.get(j.id)!
+        if (before === undefined || before === after) continue
+        if (after === "paused:WAITING_USER_OUTLINE") {
+          notifyJobEvent("info", "等你审批大纲", `「${j.stem}」Step 5 已生成 outline.md`)
+        } else if (after === "paused:WAITING_USER_REVIEW") {
+          notifyJobEvent("info", "等你审稿", `「${j.stem}」请打开「草稿与质检」`)
+        } else if (after === "succeeded") {
+          notifyJobEvent("success", "博文生成完成", `「${j.stem}」成品已落盘 output/Posts/`)
+        } else if (after === "failed") {
+          notifyJobEvent("error", "任务失败", `「${j.stem}」${j.error ? "：" + j.error.slice(0, 80) : ""}`)
+        }
+      }
+    }
+    prevJobStatesRef.current = next
+    jobsNotifyInitRef.current = true
+  }
+
   const fetchJobs = async () => {
     try {
       const res = await fetch(API_BASE + "/jobs")
       if (res.ok) {
-        const data = await res.json()
-        setJobs(data.reverse())
+        const data: EngineJob[] = await res.json()
+        data.reverse()
+        detectStatusTransitions(data)
+        setJobs(data)
       }
     } catch (e) {
       console.error("Failed to fetch jobs list", e)
@@ -611,18 +659,18 @@ export default function App() {
       setLogs(prev => [...prev, "[*] Backend job execution started..."])
     })
 
+    // 注意：paused/succeeded/failed 这三类「状态提醒」**不在这里弹 toast**。
+    // SSE 一连上后端会重放该任务的历史事件（日志面板需要），重放到历史 paused
+    // 行就会误触发提醒——这正是"切到已完成任务也弹『等你审批』"的根因。
+    // 提醒统一改由 detectStatusTransitions（基于 jobs 列表真实状态跃迁）发出，
+    // 重放不改变列表状态 → 不会误弹。这里只管日志 + 连接生命周期。
     source.addEventListener("paused", (e: MessageEvent) => {
       markEvent()
       try {
         const eventData = JSON.parse(e.data)
         const stateStatus = eventData.data?.state_status || ""
         setLogs(prev => [...prev, `[!] Workflow suspended: Paused at ${stateStatus}`])
-        fetchJobs()
-        if (stateStatus === "WAITING_USER_OUTLINE") {
-          toast("等你审批大纲", { description: "Step 5 已生成 outline.md", icon: <Pause /> })
-        } else if (stateStatus === "WAITING_USER_REVIEW") {
-          toast("等你审稿", { description: "请打开「草稿与质检」", icon: <Pause /> })
-        }
+        fetchJobs() // 拉新列表 → detectStatusTransitions 据真实跃迁发提醒
         setSseStatus("terminal")
         sseTargetJobRef.current = null
         tearDownSse()
@@ -633,7 +681,6 @@ export default function App() {
       markEvent()
       setLogs(prev => [...prev, "[✓] Job completed successfully!"])
       fetchJobs()
-      toast.success("博文生成完成", { description: "成品已落盘到 output/Posts/" })
       setSseStatus("terminal")
       sseTargetJobRef.current = null // 防止队列里残留的 onerror 触发重连
       tearDownSse()
@@ -646,7 +693,6 @@ export default function App() {
         const err = eventData.data?.error || ""
         setLogs(prev => [...prev, `[错误] Job failed: ${err}`])
         fetchJobs()
-        toast.error("任务失败", { description: err })
       } catch (err) { console.error("Err parsing SSE failed event", err) }
       setSseStatus("terminal")
       sseTargetJobRef.current = null
