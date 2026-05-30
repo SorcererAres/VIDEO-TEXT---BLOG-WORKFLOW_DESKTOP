@@ -87,6 +87,7 @@ pub fn run() {
     tauri::Builder::default()
         // 记住窗口位置/尺寸，关闭再开恢复 frame（macOS 习惯）。
         .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![open_settings])
         .setup(|app| {
             if cfg!(debug_assertions) {

@@ -525,11 +525,28 @@ export default function App() {
     }
   }
 
-  // 任务状态提醒。Step2 会在窗口失焦时改走 Tauri 原生通知，前台仍用 toast。
-  const notifyJobEvent = (kind: "info" | "success" | "error", title: string, body: string) => {
+  // 任务状态提醒。前台（窗口聚焦）用轻量 toast 不打扰；Tauri 壳里窗口失焦/后台时
+  // 改走 macOS 系统通知中心（可点击唤回）。非 Tauri（浏览器）一律 toast。
+  const toastJobEvent = (kind: "info" | "success" | "error", title: string, body: string) => {
     if (kind === "success") toast.success(title, { description: body })
     else if (kind === "error") toast.error(title, { description: body })
     else toast(title, { description: body, icon: <Pause /> })
+  }
+  const notifyJobEvent = (kind: "info" | "success" | "error", title: string, body: string) => {
+    const inForeground = typeof document !== "undefined" && document.hasFocus()
+    if (!isTauri || inForeground) { toastJobEvent(kind, title, body); return }
+    // 后台 + Tauri：送系统通知中心；权限未授予 / 出错则回退 toast（回前台仍可见）
+    void (async () => {
+      try {
+        const n = await import("@tauri-apps/plugin-notification")
+        let granted = await n.isPermissionGranted()
+        if (!granted) granted = (await n.requestPermission()) === "granted"
+        if (granted) n.sendNotification({ title, body })
+        else toastJobEvent(kind, title, body)
+      } catch {
+        toastJobEvent(kind, title, body)
+      }
+    })()
   }
 
   // 一个 job 的「通知意义」复合键：paused 要区分卡在哪个人工节点。

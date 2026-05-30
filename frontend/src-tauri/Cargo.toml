@@ -25,3 +25,5 @@ tauri = { version = "2.11.2", features = [] }
 tauri-plugin-log = "2"
 # 记住窗口位置/尺寸（macOS 期望 App 关闭再开恢复窗口 frame）
 tauri-plugin-window-state = "2"
+# 后台时把任务状态提醒送进 macOS 系统通知中心（可点击唤回窗口）
+tauri-plugin-notification = "2"
