@@ -1,12 +1,13 @@
 PYTHON := .venv/bin/python
-PIP := .venv/bin/pip
 FRONTEND_DIR := frontend
 
 .PHONY: install test validate regression frontend-lint frontend-build server dev app app-build backend-bin
 
+# 单一依赖来源 = pyproject.toml（pip install -e . 会注册包 + console script）。
+# 一律走 `$(PYTHON) -m pip`，不用 `.venv/bin/pip`：后者在解释器/venv 错位时会装到别处（踩过坑）。
 install:
 	python3 -m venv .venv
-	$(PIP) install -r requirements.txt
+	$(PYTHON) -m pip install -e .
 
 test:
 	$(PYTHON) -m unittest discover -s tests
