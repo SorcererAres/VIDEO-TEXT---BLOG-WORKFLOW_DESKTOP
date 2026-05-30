@@ -20,7 +20,16 @@ import { ConfirmDialogHost, confirmAction } from '@/components/ConfirmDialog'
 import { CreateForm } from '@/components/CreateForm'
 import { JobList, HomeView, JobWorkspace } from '@/components/jobs'
 import { SettingsPanel } from '@/components/settings'
-import { inferCurrentStep, parseLogLine, type ParsedEvent } from '@/lib/log-parser'
+import {
+  inferCurrentStep,
+  mapProgress,
+  systemEvent,
+  successEvent,
+  errorEvent,
+  pausedEvent,
+  type ParsedEvent,
+  type ProgressData,
+} from '@/lib/log-parser'
 import { API_BASE } from '@/lib/api'
 import {
   listProfiles,
@@ -161,7 +170,10 @@ export default function App() {
   const [selectedJob, setSelectedJob] = useState<EngineJob | null>(null)
   const [isCreating, setIsCreating] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
+  // logs = 原始 print 文本流（「原始日志」视图排查用）；
+  // progressEvents = 结构化叙事（来自后端 progress + job 生命周期事件）。H1 去耦后两者分离。
   const [logs, setLogs] = useState<string[]>([])
+  const [progressEvents, setProgressEvents] = useState<ParsedEvent[]>([])
   const [activeTab, setActiveTab] = useState<"console" | "outline" | "review" | "final" | "artifacts">("console")
   const [healthStatus, setHealthStatus] = useState<"online" | "offline">("offline")
   // 可收起的安静侧栏（Claude recents 气质）—— 状态持久化
@@ -464,6 +476,7 @@ export default function App() {
     if (!selectedJobId) {
       setSelectedJob(null)
       setLogs([])
+      setProgressEvents([])
       sseTargetJobRef.current = null
       tearDownSse()
       setSseStatus("idle")
@@ -482,6 +495,7 @@ export default function App() {
         tearDownSse()
         setSseStatus("idle")
         setLogs([])
+        setProgressEvents([])
         setActiveTab("final")
         return
       }
@@ -638,6 +652,7 @@ export default function App() {
     sseTargetJobRef.current = jobId
     sseAttemptsRef.current = 0
     setLogs([])
+    setProgressEvents([])
     setSseStatus("connecting")
     setLastEventAt(null)
     connectSse(jobId)
@@ -671,9 +686,19 @@ export default function App() {
       } catch (err) { console.error("Err parsing SSE log event", err) }
     })
 
+    // 结构化进度事件（H1）：后端直接给语义字段，前端只做 kind→展示 映射，不再正则反解析。
+    source.addEventListener("progress", (e: MessageEvent) => {
+      markEvent()
+      try {
+        const eventData = JSON.parse(e.data)
+        const data = eventData.data as ProgressData | undefined
+        if (data?.kind) setProgressEvents(prev => [...prev, mapProgress(data)])
+      } catch (err) { console.error("Err parsing SSE progress event", err) }
+    })
+
     source.addEventListener("started", () => {
       markEvent()
-      setLogs(prev => [...prev, "[*] Backend job execution started..."])
+      setProgressEvents(prev => [...prev, systemEvent("任务开始执行")])
     })
 
     // 注意：paused/succeeded/failed 这三类「状态提醒」**不在这里弹 toast**。
@@ -686,7 +711,7 @@ export default function App() {
       try {
         const eventData = JSON.parse(e.data)
         const stateStatus = eventData.data?.state_status || ""
-        setLogs(prev => [...prev, `[!] Workflow suspended: Paused at ${stateStatus}`])
+        setProgressEvents(prev => [...prev, pausedEvent(stateStatus)])
         fetchJobs() // 拉新列表 → detectStatusTransitions 据真实跃迁发提醒
         setSseStatus("terminal")
         sseTargetJobRef.current = null
@@ -696,7 +721,7 @@ export default function App() {
 
     source.addEventListener("succeeded", () => {
       markEvent()
-      setLogs(prev => [...prev, "[✓] Job completed successfully!"])
+      setProgressEvents(prev => [...prev, successEvent("全部步骤已通过")])
       fetchJobs()
       setSseStatus("terminal")
       sseTargetJobRef.current = null // 防止队列里残留的 onerror 触发重连
@@ -708,7 +733,7 @@ export default function App() {
       try {
         const eventData = JSON.parse(e.data)
         const err = eventData.data?.error || ""
-        setLogs(prev => [...prev, `[错误] Job failed: ${err}`])
+        setProgressEvents(prev => [...prev, errorEvent(`任务失败：${err}`)])
         fetchJobs()
       } catch (err) { console.error("Err parsing SSE failed event", err) }
       setSseStatus("terminal")
@@ -945,7 +970,7 @@ export default function App() {
           startSse(selectedJob.id)
           toast.success("已接受为 DRAFT", { description: "进入 Step 8 落盘归档" })
         } else {
-          setLogs(prev => [...prev, "[!] Draft rejected. Workflow aborted by user."])
+          setProgressEvents(prev => [...prev, systemEvent("草稿已拒绝，工作流中止")])
           toast("草稿已拒绝", { description: "工作流已中止" })
         }
         fetchJobs()
@@ -1012,11 +1037,8 @@ export default function App() {
   }
 
   // ----- derived state for visual layer -----
-  const parsedEvents: ParsedEvent[] = useMemo(
-    () => logs.map(parseLogLine).filter((e): e is ParsedEvent => e !== null),
-    [logs],
-  )
-  const currentStep = useMemo(() => inferCurrentStep(parsedEvents), [parsedEvents])
+  // H1 去耦后：叙事直接来自后端结构化 progress 事件（progressEvents），不再正则反解析 logs。
+  const currentStep = useMemo(() => inferCurrentStep(progressEvents), [progressEvents])
   const pausedAt: "outline" | "review" | null = useMemo(() => {
     if (selectedJob?.status !== "paused") return null
     // 首选：用后端给的 paused_state。这是引擎实际状态机的真相，不会被
@@ -1255,6 +1277,7 @@ export default function App() {
               job={selectedJob}
               activeTab={activeTab}
               setActiveTab={setActiveTab}
+              events={progressEvents}
               logs={logs}
               currentStep={currentStep}
               pausedAt={pausedAt}

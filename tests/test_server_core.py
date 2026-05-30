@@ -124,6 +124,21 @@ class TestEngineJobService(unittest.TestCase):
         self.assertIn("started", [event["event"] for event in events])
         self.assertIn("succeeded", [event["event"] for event in events])
         self.assertTrue(any(event["event"] == "log" for event in events))
+
+        # 结构化进度事件（H1）：前端据此渲染叙事 + StepProgress，不再正则反解析 log 文本。
+        progress = [e["data"] for e in events if e["event"] == "progress"]
+        self.assertTrue(progress, "应至少发出一条 progress 事件")
+        kinds = {p.get("kind") for p in progress}
+        self.assertIn("step", kinds)       # Step 6/7 进入
+        self.assertIn("verdict", kinds)    # 质检结论
+        self.assertIn("artifact", kinds)   # Step 8 落盘
+        # quick 模式应覆盖 Step 6 与 Step 7
+        steps = {p.get("step") for p in progress if p.get("kind") == "step"}
+        self.assertIn(6, steps)
+        self.assertIn(7, steps)
+        verdicts = [p for p in progress if p.get("kind") == "verdict"]
+        self.assertEqual(verdicts[0].get("verdict"), "PASS")
+        self.assertEqual(verdicts[0].get("total"), "54/60")
         service.shutdown()
 
     def test_missing_api_key_marks_job_failed(self) -> None:

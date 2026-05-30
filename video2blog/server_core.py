@@ -319,11 +319,17 @@ class EngineJobService:
                         return True
                 return False
 
+            # 引擎的结构化进度事件直接转成 job 事件流（前端按 event=="progress" 消费）。
+            # progress 只携带语义字段（kind/step/verdict…），不含密钥，无需脱敏。
+            def emit_progress_event(event_type: str, data: dict[str, Any]) -> None:
+                self._emit(job.id, event_type, data)
+
             engine = Engine(
                 repo_root=self.repo_root,
                 client=client,
                 cancel_check=check_cancelled,
                 rewrite_strategy=request.rewrite_strategy,
+                emit_event=emit_progress_event,
             )
             source_path = self._resolve_source(request.source)
 
@@ -331,7 +337,11 @@ class EngineJobService:
             # 子进程隔离 + 流式 + 可取消 + 超时 + raw.txt 检查点（process_video 自带跳过）。
             if source_path.suffix.lower() in VIDEO_EXTS:
                 source_path = self._transcribe(
-                    source_path, emit_with_tokens, check_cancelled, force=request.force
+                    source_path,
+                    emit_with_tokens,
+                    check_cancelled,
+                    emit_progress_event,
+                    force=request.force,
                 )
 
             if request.force:
@@ -432,6 +442,7 @@ class EngineJobService:
         video: Path,
         emit_line: Callable[[str], None],
         cancel_check: Callable[[], bool],
+        emit_event: Callable[[str, dict[str, Any]], None] | None = None,
         *,
         force: bool,
     ) -> Path:
@@ -440,7 +451,33 @@ class EngineJobService:
         子进程隔离（mlx 是最大不稳定源）；后台线程读 stdout 推队列，主循环每 0.5s
         轮询，期间检查取消与 wall-clock 超时（即便 mlx 静默也能及时中止，不 hang）。
         非交互：--no-auto-terminal + --fallback-policy auto；raw.txt 检查点由 process_video 自带。
+
+        子进程的 stdout 是给人看的文本（CLI 直跑也读它），不强行改 NDJSON；这里在唯一
+        一处把 [1/3]/[2/3]/[3/3] 标记翻成结构化 transcribe 进度事件，前端不再正则反解析。
         """
+
+        def emit_transcribe(phase: str, **fields: Any) -> None:
+            if emit_event is None:
+                return
+            data: dict[str, Any] = {"kind": "transcribe", "phase": phase}
+            data.update({k: v for k, v in fields.items() if v is not None})
+            try:
+                emit_event("progress", data)
+            except Exception:
+                pass
+
+        def emit_marker(line: str) -> None:
+            """从子进程标记行翻出结构化转录阶段事件（音频提取 / 语音转录）。
+
+            「成稿(done)」不在这里出，而由本方法末尾 wrapper 的确定性完成行统一发，
+            保证无论子进程是否打印 [3/3]，done 恰好出一次。
+            """
+            if line.startswith("[1/3]"):
+                emit_transcribe("audio")
+            elif line.startswith("[2/3]"):
+                engine = "whisper.cpp" if "whisper.cpp" in line else ("mlx-whisper" if "mlx" in line.lower() else None)
+                emit_transcribe("asr", engine=engine)
+
         raw_txt = self.repo_root / "work" / video.stem / "raw.txt"
         cmd = [
             sys.executable, "video2blog.py", str(video),
@@ -449,6 +486,7 @@ class EngineJobService:
         if force:
             cmd.append("--force")
         emit_line(f"[前三步] 开始转录：{video.name}")
+        emit_transcribe("start")
 
         proc = subprocess.Popen(
             cmd, cwd=str(self.repo_root),
@@ -479,6 +517,7 @@ class EngineJobService:
                 break  # 子进程输出结束
             if ln:
                 emit_line(ln)
+                emit_marker(ln)
                 tail.append(ln)
             if cancel_check():
                 cancelled = True
@@ -504,6 +543,7 @@ class EngineJobService:
         if not raw_txt.exists():
             raise RuntimeError("转录结束但未生成 raw.txt\n" + "\n".join(tail))
         emit_line(f"[前三步] 转录完成 → work/{video.stem}/raw.txt")
+        emit_transcribe("done")
         return raw_txt
 
     def _mark(self, job: EngineJob, status: str) -> None:

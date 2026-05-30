@@ -33,6 +33,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { cn } from '@/lib/utils'
 import { StepProgress } from '@/components/StepProgress'
 import { LogConsole } from '@/components/LogConsole'
+import { type ParsedEvent } from '@/lib/log-parser'
 import { MarkdownView } from '@/components/MarkdownView'
 import { formatRelativeTime } from '@/components/CreateForm'
 import { API_BASE, apiUrl } from '@/lib/api'
@@ -712,6 +713,7 @@ interface JobWorkspaceProps {
   job: EngineJob
   activeTab: "console" | "outline" | "review" | "final" | "artifacts"
   setActiveTab: (v: "console" | "outline" | "review" | "final" | "artifacts") => void
+  events: ParsedEvent[]
   logs: string[]
   currentStep: number | null
   pausedAt: "outline" | "review" | null
@@ -744,7 +746,7 @@ interface JobWorkspaceProps {
 }
 
 export function JobWorkspace(props: JobWorkspaceProps) {
-  const { job, activeTab, setActiveTab, logs, currentStep, pausedAt } = props
+  const { job, activeTab, setActiveTab, events, logs, currentStep, pausedAt } = props
   const isHistorical = job.kind === "historical"
   const isFailed = job.status === "failed"
   // SSE 指示器只在"还可能在跑"的任务上显示;历史归档 / 已 succeeded / 已 failed 都不要
@@ -907,7 +909,7 @@ export function JobWorkspace(props: JobWorkspaceProps) {
         <div className="flex-1 overflow-hidden px-6 py-4">
           <TabsContent value="console" className="h-full m-0">
             {/* 历史归档不渲染 LogConsole；这里把 jobStatus 传下去让日志事件按 job 整体态降级历史 step / paused */}
-            <LogConsole logs={logs} jobStatus={isHistorical ? "succeeded" : job.status} className="h-full" />
+            <LogConsole events={events} rawLogs={logs} jobStatus={isHistorical ? "succeeded" : job.status} className="h-full" />
           </TabsContent>
 
           <TabsContent value="outline" className="h-full m-0">

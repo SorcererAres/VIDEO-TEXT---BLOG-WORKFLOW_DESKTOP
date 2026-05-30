@@ -10,20 +10,23 @@ import {
   ChevronRight,
   ChevronDown,
   Terminal,
-  EyeOff,
-  Eye,
+  FileText,
+  ListTree,
   Search,
   Copy,
   X,
 } from "lucide-react"
-import { parseLogLine, type ParsedEvent, type LogEventType } from "@/lib/log-parser"
+import { type ParsedEvent, type LogEventType } from "@/lib/log-parser"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Empty, EmptyHeader, EmptyMedia, EmptyTitle, EmptyDescription } from "@/components/ui/empty"
 import { cn } from "@/lib/utils"
 
 interface LogConsoleProps {
-  logs: string[]
+  /** 结构化叙事事件（来自后端 progress + job 生命周期事件，H1 去耦后不再正则反解析）。 */
+  events: ParsedEvent[]
+  /** 原始 print 文本流，仅供「原始日志」视图逐行排查。 */
+  rawLogs: string[]
   /** 后端 job.status —— 决定 step/paused 事件用 actionable 还是 historical 渲染。
    *  参考 GitHub Actions / Vercel 的设计：只有"当前活跃"事件保留 spinner/橙色，
    *  历史事件降级为 ✓ / 灰色，避免 succeeded 后还显示"等待审批"误导用户。 */
@@ -60,15 +63,14 @@ function deriveActiveFlags(events: ParsedEvent[], jobStatus: string | undefined)
 }
 
 /**
- * 把后端 print 出来的工程师腔日志,渲染成"我在看 AI 工作"的叙事面板。
- *   - 关键事件(step / success / warning / paused / error) 默认显示,带图标
- *   - 中间技术细节(chunk、缓存命中、清理痕迹) 默认折叠在"详细技术日志"开关下
- *   - 完全无意义的(PAGER=cat 这种)在 parseLogLine 里就 drop 掉了
- *   - 智能跟随滚动:用户在底部才自动跟,否则浮动"↓ N 条新事件"按钮
- *   - 顶部搜索过滤 + 一键复制全部
+ * 把后端结构化进度事件渲染成"我在看 AI 工作"的叙事面板。
+ *   - 默认显示结构化叙事（step / success / warning / paused / error）
+ *   - 「原始日志」开关切到逐行 print 文本视图，供工程排查
+ *   - 智能跟随滚动：用户在底部才自动跟，否则浮动"↓ N 条新事件"按钮
+ *   - 顶部搜索过滤 + 一键复制
  */
-export function LogConsole({ logs, jobStatus, className }: LogConsoleProps) {
-  const [showDetails, setShowDetails] = useState(false)
+export function LogConsole({ events, rawLogs, jobStatus, className }: LogConsoleProps) {
+  const [showRaw, setShowRaw] = useState(false)
   const [query, setQuery] = useState("")
   const [showSearch, setShowSearch] = useState(false)
   const [isAtBottom, setIsAtBottom] = useState(true)
@@ -79,33 +81,31 @@ export function LogConsole({ logs, jobStatus, className }: LogConsoleProps) {
   const endRef = useRef<HTMLDivElement>(null)
   const prevVisibleCountRef = useRef(0)
 
-  // 解析所有日志(过滤掉 null 的噪音行)
-  const events = useMemo(
-    () => logs.map(parseLogLine).filter((e): e is ParsedEvent => e !== null),
-    [logs],
-  )
-
-  const detailCount = events.filter(e => e.type === "detail").length
-
-  // 三层过滤:type(detail 开关)→ query
+  // 叙事视图：按 query 过滤结构化事件
   const visibleEvents = useMemo(() => {
     const q = query.trim().toLowerCase()
-    return events.filter(e => {
-      if (!showDetails && e.type === "detail") return false
-      if (!q) return true
-      return (
+    if (!q) return events
+    return events.filter(
+      e =>
         e.title.toLowerCase().includes(q) ||
-        (e.subtitle?.toLowerCase().includes(q) ?? false) ||
-        e.raw.toLowerCase().includes(q)
-      )
-    })
-  }, [events, showDetails, query])
+        (e.subtitle?.toLowerCase().includes(q) ?? false),
+    )
+  }, [events, query])
+
+  // 原始日志视图：按 query 过滤逐行文本
+  const visibleRaw = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    if (!q) return rawLogs
+    return rawLogs.filter(l => l.toLowerCase().includes(q))
+  }, [rawLogs, query])
 
   // 派生每条 visible 事件的"是否当前活跃"标记 —— 历史事件不该再 spinner / amber
   const activeFlags = useMemo(
     () => deriveActiveFlags(visibleEvents, jobStatus),
     [visibleEvents, jobStatus],
   )
+
+  const visibleCount = showRaw ? visibleRaw.length : visibleEvents.length
 
   // 抓 ScrollArea 内部的 viewport,挂 scroll 监听判断"是否在底部"
   useEffect(() => {
@@ -127,15 +127,15 @@ export function LogConsole({ logs, jobStatus, className }: LogConsoleProps) {
 
   // 新事件到来:在底部就跟随,不在底部就累加 pending 提示
   useEffect(() => {
-    const delta = visibleEvents.length - prevVisibleCountRef.current
-    prevVisibleCountRef.current = visibleEvents.length
-    if (delta <= 0) return // 切 showDetails / query 时不算新事件
+    const delta = visibleCount - prevVisibleCountRef.current
+    prevVisibleCountRef.current = visibleCount
+    if (delta <= 0) return // 切视图 / query 时不算新事件
     if (isAtBottom) {
       endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" })
     } else {
       setPendingCount(c => c + delta)
     }
-  }, [visibleEvents.length, isAtBottom])
+  }, [visibleCount, isAtBottom])
 
   const scrollToBottom = () => {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" })
@@ -143,12 +143,14 @@ export function LogConsole({ logs, jobStatus, className }: LogConsoleProps) {
   }
 
   const handleCopyAll = async () => {
-    const text = events
-      .map(e => {
-        const head = e.subtitle ? `${e.title}  ·  ${e.subtitle}` : e.title
-        return `[${e.type.toUpperCase()}] ${head}`
-      })
-      .join("\n")
+    const text = showRaw
+      ? rawLogs.join("\n")
+      : events
+          .map(e => {
+            const head = e.subtitle ? `${e.title}  ·  ${e.subtitle}` : e.title
+            return `[${e.type.toUpperCase()}] ${head}`
+          })
+          .join("\n")
     try {
       await navigator.clipboard.writeText(text)
     } catch {
@@ -156,7 +158,7 @@ export function LogConsole({ logs, jobStatus, className }: LogConsoleProps) {
     }
   }
 
-  if (events.length === 0) {
+  if (events.length === 0 && rawLogs.length === 0) {
     return (
       <div className={cn("flex items-center justify-center h-full", className)}>
         <Empty>
@@ -182,8 +184,9 @@ export function LogConsole({ logs, jobStatus, className }: LogConsoleProps) {
           <Sparkles className="size-4 text-primary shrink-0" />
           <span className="font-medium shrink-0">运行进度</span>
           <span className="text-xs text-muted-foreground truncate">
-            · {visibleEvents.length}/{events.length} 个事件
-            {detailCount > 0 && !showDetails && ` · ${detailCount} 条细节已折叠`}
+            {showRaw
+              ? `· ${visibleRaw.length}/${rawLogs.length} 行原始日志`
+              : `· ${visibleEvents.length}/${events.length} 个事件`}
             {query && ` · 过滤中`}
           </span>
         </div>
@@ -207,18 +210,19 @@ export function LogConsole({ logs, jobStatus, className }: LogConsoleProps) {
             size="sm"
             onClick={handleCopyAll}
             className="h-7 text-xs gap-1.5"
-            title="复制全部日志到剪贴板"
+            title="复制全部到剪贴板"
           >
             <Copy className="size-3.5" />
           </Button>
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => setShowDetails(s => !s)}
+            onClick={() => setShowRaw(s => !s)}
             className="h-7 text-xs gap-1.5"
+            title={showRaw ? "回到叙事视图" : "查看原始 print 日志"}
           >
-            {showDetails ? <EyeOff data-icon="inline-start" /> : <Eye data-icon="inline-start" />}
-            {showDetails ? "隐藏细节" : "显示细节"}
+            {showRaw ? <ListTree data-icon="inline-start" /> : <FileText data-icon="inline-start" />}
+            {showRaw ? "叙事视图" : "原始日志"}
           </Button>
         </div>
       </div>
@@ -232,7 +236,7 @@ export function LogConsole({ logs, jobStatus, className }: LogConsoleProps) {
             type="text"
             value={query}
             onChange={e => setQuery(e.target.value)}
-            placeholder="按标题 / 副标题 / 原始日志过滤…"
+            placeholder={showRaw ? "按原始日志文本过滤…" : "按标题 / 副标题过滤…"}
             className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground/60"
             onKeyDown={e => {
               if (e.key === "Escape") {
@@ -258,18 +262,35 @@ export function LogConsole({ logs, jobStatus, className }: LogConsoleProps) {
       {/* Event stream */}
       <div ref={scrollRootRef} className="relative flex-1 overflow-hidden">
         <ScrollArea className="h-full">
-          <div className="flex flex-col gap-1 px-4 py-3">
-            {visibleEvents.length === 0 ? (
-              <div className="text-sm text-muted-foreground italic text-center py-8">
-                没有匹配「{query}」的事件
-              </div>
-            ) : (
-              visibleEvents.map((ev, idx) => (
-                <EventRow key={ev.id} event={ev} isActive={activeFlags[idx]} />
-              ))
-            )}
-            <div ref={endRef} />
-          </div>
+          {showRaw ? (
+            <div className="flex flex-col px-4 py-3 font-mono text-xs leading-relaxed">
+              {visibleRaw.length === 0 ? (
+                <div className="text-sm text-muted-foreground italic text-center py-8">
+                  {query ? `没有匹配「${query}」的日志` : "暂无原始日志"}
+                </div>
+              ) : (
+                visibleRaw.map((line, idx) => (
+                  <div key={idx} className="whitespace-pre-wrap break-all text-muted-foreground">
+                    {line}
+                  </div>
+                ))
+              )}
+              <div ref={endRef} />
+            </div>
+          ) : (
+            <div className="flex flex-col gap-1 px-4 py-3">
+              {visibleEvents.length === 0 ? (
+                <div className="text-sm text-muted-foreground italic text-center py-8">
+                  没有匹配「{query}」的事件
+                </div>
+              ) : (
+                visibleEvents.map((ev, idx) => (
+                  <EventRow key={ev.id} event={ev} isActive={activeFlags[idx]} />
+                ))
+              )}
+              <div ref={endRef} />
+            </div>
+          )}
         </ScrollArea>
 
         {/* "↓ N 条新事件" 浮动按钮:用户向上滚开时显示 */}
