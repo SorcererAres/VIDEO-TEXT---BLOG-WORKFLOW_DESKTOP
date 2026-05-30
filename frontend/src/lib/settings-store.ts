@@ -42,6 +42,17 @@ export interface ProfilesSnapshot {
   message?: string
 }
 
+// /api/test-llm 的响应结构 —— Settings「测试连接」+ 失败自动归因 banner 都用
+export interface TestLLMResult {
+  ok: boolean
+  model?: string
+  api_base?: string
+  latency_ms?: number
+  sample?: string
+  error?: string
+  key_source?: string
+}
+
 // POST/PUT 入参：仅在用户输入新 key 时带 api_key，省略则后端保留原 key。
 export interface LlmProfilePatch {
   name?: string

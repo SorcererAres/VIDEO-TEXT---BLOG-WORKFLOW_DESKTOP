@@ -2,7 +2,8 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { ThemeProvider } from 'next-themes'
 import './index.css'
-import App, { SettingsWindow } from './App.tsx'
+import App from './App.tsx'
+import { SettingsWindow } from './components/settings'
 
 // 运行在 Tauri 壳内时给 <html> 挂 .tauri，CSS 据此开启 vibrancy 透出与交通灯留白；
 // 浏览器直开则不挂，保持纯色不透明（降级可用）。
