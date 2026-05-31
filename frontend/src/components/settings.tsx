@@ -134,6 +134,56 @@ function StyleGuideForm({ value, onChange }: { value: string; onChange: (v: stri
   )
 }
 
+const PREFERENCES_PATH = "memory/PREFERENCES.md"
+// PREFERENCES 是 prose-under-headings，不是干净 schema。只把最"列表化、高影响"的
+// 「禁用套话」小节做成表单；用定向 splice 仅替换该小节的 bullet，其余字节不动；
+// 找不到该小节就回退（不破坏文件）。其余偏好走源码模式编辑。
+const BANNED_SECTION_RE = /(^##[^\n]*禁用套话[^\n]*\n)([\s\S]*?)(?=^##\s|$(?![\s\S]))/m
+function parseBanned(md: string): string[] | null {
+  const m = md.match(BANNED_SECTION_RE)
+  if (!m) return null
+  return m[2].split("\n").map(l => l.match(/^\s*[-*]\s+(.*)$/)?.[1]?.trim()).filter((x): x is string => !!x)
+}
+function spliceBanned(md: string, bullets: string[]): string {
+  const body = "\n" + bullets.map(b => `- ${b}`).join("\n") + "\n\n"
+  return md.replace(BANNED_SECTION_RE, (_m, heading) => heading + body)
+}
+
+function PreferencesForm({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const bullets = useMemo(() => parseBanned(value), [value])
+  if (bullets === null) {
+    return (
+      <div className="p-6 max-w-2xl mx-auto text-sm text-muted-foreground">
+        没找到「禁用套话」小节。完整写作偏好（语言 / 受众 / 人称 / 长度 / 版式）请切到「源码」模式编辑。
+      </div>
+    )
+  }
+  const update = (next: string[]) => onChange(spliceBanned(value, next))
+  return (
+    <ScrollArea className="h-full min-h-0">
+      <div className="px-6 py-4 max-w-2xl mx-auto flex flex-col gap-2">
+        <p className="text-xs text-muted-foreground mb-1">
+          禁用套话（改写时须删除的口播套话 / 求互动话术）。逐条编辑 · 增删；其余偏好请用「源码」模式改。
+        </p>
+        {bullets.map((b, i) => (
+          <div key={i} className="flex items-center gap-2 group">
+            <span className="text-xs text-muted-foreground font-mono w-5 text-right shrink-0">{i + 1}.</span>
+            <input
+              type="text"
+              value={b}
+              onChange={e => { const n = [...bullets]; n[i] = e.target.value; update(n) }}
+              className="flex-1 bg-card border rounded-md py-1.5 px-2.5 text-sm outline-none focus:border-primary"
+            />
+            <Button type="button" variant="ghost" size="icon-sm" className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0" onClick={() => update(bullets.filter((_, j) => j !== i))} title="删除"><Trash2 className="size-3.5 text-destructive" /></Button>
+          </div>
+        ))}
+        {bullets.length === 0 && <p className="text-xs text-muted-foreground/70 italic">（暂无禁用套话）</p>}
+        <Button type="button" variant="outline" size="sm" className="self-start mt-1" onClick={() => update([...bullets, "新套话"])}><Plus data-icon="inline-start" /> 添加</Button>
+      </div>
+    </ScrollArea>
+  )
+}
+
 // 知识库左栏：一个分组的文件项（带 danger 标记）
 function KnowledgeGroupBlock({ group, selected, onSelect }: { group: KnowledgeGroup; selected: string | null; onSelect: (p: string) => void }) {
   return (
@@ -187,15 +237,15 @@ export function KnowledgeEditor() {
   useEffect(() => {
     if (!selected) return
     setLoading(true); setLoadErr(null); setSaveResult(null)
-    // STYLE_GUIDE 默认进表单视图，其余进分屏
-    setView(selected === STYLE_GUIDE_PATH ? "form" : "split")
+    // STYLE_GUIDE / PREFERENCES 默认进表单视图，其余进分屏
+    setView(selected === STYLE_GUIDE_PATH || selected === PREFERENCES_PATH ? "form" : "split")
     readKnowledgeFile(selected)
       .then(c => { setOriginal(c); setDraft(c) })
       .catch(e => setLoadErr(String(e)))
       .finally(() => setLoading(false))
   }, [selected])
 
-  const formCapable = selected === STYLE_GUIDE_PATH
+  const formCapable = selected === STYLE_GUIDE_PATH || selected === PREFERENCES_PATH
   const dirty = draft !== original
   const allItems = groups.flatMap(g => g.items)
   const selItem = allItems.find(i => i.path === selected)
@@ -281,7 +331,9 @@ export function KnowledgeEditor() {
               ) : loading ? (
                 <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground h-full"><Loader2 className="animate-spin size-4" /> 载入中…</div>
               ) : view === "form" ? (
-                <StyleGuideForm value={draft} onChange={setDraft} />
+                selected === PREFERENCES_PATH
+                  ? <PreferencesForm value={draft} onChange={setDraft} />
+                  : <StyleGuideForm value={draft} onChange={setDraft} />
               ) : (
                 <div className="h-full flex min-h-0">
                   {(view === "edit" || view === "split") && (
