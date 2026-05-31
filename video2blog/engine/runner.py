@@ -570,6 +570,39 @@ class Engine:
             lines.pop()
         return "\n".join(lines).strip()
 
+    def _resolve_rewrite_strategy(
+        self,
+        *,
+        work_dir: Path,
+        mode: str,
+        version: int,
+    ) -> tuple[str, OutlineSections | None, str]:
+        """决定本轮 Step 6 跑 single 还是 sectioned，附带 outline 解析与原文。
+
+        H5：把回退到 single 的 5 条分支收在一处，主循环不再每轮自己判断。
+
+        回退分支：
+        1. 用户没选 sectioned（`self.rewrite_strategy != "sectioned"`）
+        2. quick 模式无 outline
+        3. 自修正轮 (version > 1)：上一轮分节失败，看全局再战
+        4. outline.md 不存在
+        5. outline 骨架不可解析（打提示）
+        """
+        if self.rewrite_strategy != "sectioned" or mode != "full" or version > 1:
+            return "single", None, ""
+
+        outline_path = work_dir / "outline.md"
+        if not outline_path.exists():
+            return "single", None, ""
+
+        outline_text = outline_path.read_text(encoding="utf-8")
+        parsed = parse_outline_sections(outline_text)
+        if not parsed.has_skeleton:
+            print("    -> outline 骨架不可解析，回退一次性整篇改写。", flush=True)
+            return "single", None, ""
+
+        return "sectioned", parsed, outline_text
+
     def _run_rewrite_sectioned(
         self,
         *,
@@ -643,6 +676,32 @@ class Engine:
             merged = f"# {fallback_title}\n\n{merged.lstrip()}"
 
         return merged
+
+    @staticmethod
+    def _select_best_review(checked_results: list[dict[str, Any]]) -> dict[str, Any]:
+        """从所有轮 review 里挑总分最高、且未踩视角红线的那版。
+
+        H6：把原本散在 max_retries 分支里的择优循环收成纯函数。
+        视角违规版本扣 100 分重罚——只有「别无可选」时才会被选上。
+
+        判定优先使用显式 ``viewer_blocked: True`` sentinel；老 state.json 兜底
+        嗅探 rebrief 关键词和 0/60 总分（向后兼容前置版本的产物）。
+        """
+        def score_of(r: dict[str, Any]) -> int:
+            total = r.get("total", "0/60")
+            try:
+                val = int(total.split("/")[0])
+            except (ValueError, AttributeError):
+                val = 0
+            if (
+                r.get("viewer_blocked")
+                or "视角违规" in r.get("rebrief", "")
+                or "0/60" in total
+            ):
+                val -= 100
+            return val
+
+        return max(checked_results, key=score_of)
 
     @staticmethod
     def _first_title_candidate(outline_text: str) -> str:
@@ -891,28 +950,12 @@ class Engine:
                 print(f"[+] [Step 6] 正在生成第 {version} 版博文草稿...", flush=True)
                 self._progress("step", step=6, version=version)
 
-                # §9-C 按节策略仅在 full 模式 + outline 骨架可解析时生效，
-                # 自修正循环 (version>1) 强制回退 single：上轮失败要看全局，不再分节。
-                active_strategy = "single"
-                outline_sections: OutlineSections | None = None
-                outline_text_for_rewrite = ""
-                if (
-                    self.rewrite_strategy == "sectioned"
-                    and mode == "full"
-                    and version == 1
-                ):
-                    outline_path = work_dir / "outline.md"
-                    if outline_path.exists():
-                        outline_text_for_rewrite = outline_path.read_text(encoding="utf-8")
-                        parsed_sections = parse_outline_sections(outline_text_for_rewrite)
-                        if parsed_sections.has_skeleton:
-                            outline_sections = parsed_sections
-                            active_strategy = "sectioned"
-                        else:
-                            print(
-                                "    -> outline 骨架不可解析，回退一次性整篇改写。",
-                                flush=True,
-                            )
+                # §9-C 按节策略：5 条回退分支由 _resolve_rewrite_strategy 一处把守。
+                active_strategy, outline_sections, outline_text_for_rewrite = (
+                    self._resolve_rewrite_strategy(
+                        work_dir=work_dir, mode=mode, version=version,
+                    )
+                )
 
                 # Check idempotence / cache (hash of input + step/version + model + contract + strategy)
                 cache_key = f"REWRITING_v{version}"
@@ -1021,7 +1064,8 @@ class Engine:
                             "风格一致": 0, "完整性": 0, "视角忠实度": 0
                         },
                         "total": "0/60",
-                        "rebrief": f"触发本地视角违规词: '{viewer_match.group(0)}'。请确保使用演讲者第一人称口吻，禁止出现“我看完、读者、编者按”等词汇。"
+                        "rebrief": f"触发本地视角违规词: '{viewer_match.group(0)}'。请确保使用演讲者第一人称口吻，禁止出现“我看完、读者、编者按”等词汇。",
+                        "viewer_blocked": True,
                     }
                 else:
                     # Check Step 7 cache
@@ -1115,53 +1159,32 @@ class Engine:
                 self._progress("verdict", step=7, version=version, verdict=verdict, total=score_str)
 
                 if verdict == "PASS":
-                    state["status"] = "DONE"
                     state["best_version"] = version
-                    self.save_state(stem, state)
+                    state["status"] = "DONE"
                 elif check_result.get("parse_failed"):
                     # Step 7 LLM 输出不合同 → 跳过自修正（避免基于假反馈再烧一轮 token），直接挂人工审
                     print("    -> Step 7 解析失败，跳过自修正，转人工审稿。", flush=True)
                     self._progress("parse_failed", step=7)
                     state["best_version"] = version
                     state["status"] = "WAITING_USER_REVIEW"
-                    self.save_state(stem, state)
+                elif version <= max_retries:
+                    # 再来一轮自修正
+                    print(f"    -> [自修正] 启动自我修正循环，尝试第 {version + 1} 轮重写...", flush=True)
+                    self._progress("self_correct", step=7, round=version + 1)
+                    state["status"] = "REWRITING"
+                    state["version"] = version + 1
                 else:
-                    # Self-correction check
-                    if version <= max_retries:
-                        print(f"    -> [自修正] 启动自我修正循环，尝试第 {version + 1} 轮重写...", flush=True)
-                        self._progress("self_correct", step=7, round=version + 1)
-                        state["status"] = "REWRITING"
-                        state["version"] = version + 1
-                        self.save_state(stem, state)
-                    else:
-                        # Exceeded retries, select the best version
-                        print("    -> 已达到最大重试次数。开始评估并选择最佳版本...", flush=True)
-                        self._progress("max_retries", step=7)
-                        best_ver = 1
-                        best_score = -1
-                        # Parse score string (e.g. "54/60" -> 54)
-                        for r in state["checked_results"]:
-                            tot = r.get("total", "0/60")
-                            try:
-                                val = int(tot.split("/")[0])
-                            except Exception:
-                                val = 0
-                            # Penalize VIEWER_RE violations heavily
-                            if "视角违规" in r.get("rebrief", "") or "0/60" in tot:
-                                val -= 100
-                            if val > best_score:
-                                best_score = val
-                                best_ver = r["version"]
+                    # 重试用完了：择优 + 落 DONE / WAITING_USER_REVIEW
+                    print("    -> 已达到最大重试次数。开始评估并选择最佳版本...", flush=True)
+                    self._progress("max_retries", step=7)
+                    best_result = self._select_best_review(state["checked_results"])
+                    state["best_version"] = best_result["version"]
+                    state["status"] = (
+                        "DONE" if best_result.get("verdict") == "PASS"
+                        else "WAITING_USER_REVIEW"
+                    )
 
-                        state["best_version"] = best_ver
-                        best_result = next(r for r in state["checked_results"] if r["version"] == best_ver)
-                        
-                        if best_result.get("verdict") == "PASS":
-                            state["status"] = "DONE"
-                        else:
-                            state["status"] = "WAITING_USER_REVIEW"
-                        
-                        self.save_state(stem, state)
+                self.save_state(stem, state)
 
         # ----------------------------------------------------
         # WAITING_USER_REVIEW (Human approval checkpoint)
