@@ -70,23 +70,16 @@ function MiniSwitch({ checked, onChange, title }: { checked: boolean; onChange: 
   )
 }
 
-// 设置窗分区：模型配置 | 写作知识库（共享顶部条 + 外观切换）
+// 设置 = 纯模型/Key 配置。写作知识库（文风合同）已归位到「你的声音」场所（IA ⑤）。
 export function SettingsPanel({ onProfilesChanged }: { onProfilesChanged?: () => void }) {
-  const [section, setSection] = useState<"models" | "knowledge">("models")
   return (
     <div className="flex-1 flex flex-col min-h-0">
       <div className="px-6 pt-5 pb-3 border-b flex items-center justify-between gap-4">
-        <Segmented
-          value={section}
-          onChange={setSection}
-          options={[{ value: "models", label: "模型配置" }, { value: "knowledge", label: "写作知识库" }]}
-        />
+        <span className="text-sm font-medium">模型配置</span>
         <AppearanceSwitch />
       </div>
       <div className="flex-1 min-h-0 flex flex-col">
-        {section === "models"
-          ? <SettingsForm onProfilesChanged={onProfilesChanged} embedded />
-          : <KnowledgeEditor />}
+        <SettingsForm onProfilesChanged={onProfilesChanged} embedded />
       </div>
     </div>
   )
@@ -172,7 +165,7 @@ function KnowledgeGroupBlock({ group, selected, onSelect }: { group: KnowledgeGr
   )
 }
 
-function KnowledgeEditor() {
+export function KnowledgeEditor() {
   const [groups, setGroups] = useState<KnowledgeGroup[]>([])
   const [listErr, setListErr] = useState<string | null>(null)
   const [selected, setSelected] = useState<string | null>(null)

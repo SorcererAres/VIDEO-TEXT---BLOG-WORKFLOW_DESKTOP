@@ -1,14 +1,15 @@
 // 顶层"场所"视图：作品集 Library / 你的声音 Voice。
 // ④ 先立骨架（可用但简单），③ 把 Library 做成富作品墙、⑤ 把 Voice 做成文风表单 + 指纹画像。
 
-import { useState, type ReactNode } from "react"
+import { useEffect, useState, type ReactNode } from "react"
 import { Award, BookOpen, FileText, PenLine, Sparkles } from "lucide-react"
 import { Empty, EmptyHeader, EmptyMedia, EmptyTitle, EmptyDescription } from "@/components/ui/empty"
-import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { cn } from "@/lib/utils"
+import { API_BASE } from "@/lib/api"
 import { OverviewPanel } from "@/components/jobs"
+import { KnowledgeEditor } from "@/components/settings"
 import { formatRelativeOrAbsolute, type EngineJob } from "@/lib/job-types"
 
 // ═══════════════════ 作品集 Library ═══════════════════
@@ -139,48 +140,118 @@ export function LibraryView({
 
 // ═══════════════════ 你的声音 Voice ═══════════════════
 
-export function VoiceView({ onOpenSettings }: { onOpenSettings: () => void }) {
+interface FingerprintData {
+  count: number
+  avg_sentence_len: number | null
+  avg_paragraph_len: number | null
+  per_post: { title: string; avg_sentence_len: number | null; created_at: string }[]
+  top_terms: { term: string; posts: number }[]
+}
+
+// 文风画像：从 /fingerprints 聚合的「你的写作风格」。自绘走势条 + 词频，不引图表库。
+function FingerprintPanel() {
+  const [data, setData] = useState<FingerprintData | null>(null)
+  const [failed, setFailed] = useState(false)
+
+  useEffect(() => {
+    let alive = true
+    fetch(API_BASE + "/fingerprints")
+      .then(r => r.json())
+      .then(d => { if (alive) setData(d) })
+      .catch(() => { if (alive) setFailed(true) })
+    return () => { alive = false }
+  }, [])
+
+  if (failed) return null
+  if (!data) return <div className="rounded-xl border bg-card/60 p-4 text-sm text-muted-foreground">载入文风画像…</div>
+  if (data.count === 0) {
+    return (
+      <div className="rounded-xl border border-dashed bg-muted/20 p-4 text-sm text-muted-foreground">
+        还没有成品，写完第一篇后这里会长出你的「文风画像」——句长、段落密度、反复在用的词。
+      </div>
+    )
+  }
+
+  const lens = data.per_post.map(p => p.avg_sentence_len ?? 0)
+  const maxLen = Math.max(1, ...lens)
+
+  // 词频映射成字号（出现篇数越多越大），纯视觉权重。
+  const maxPosts = Math.max(1, ...data.top_terms.map(t => t.posts))
+
   return (
-    <div className="flex-1 overflow-y-auto">
-      <div className="max-w-2xl mx-auto px-8 py-10 flex flex-col gap-6">
+    <div className="rounded-xl border bg-card/60 p-4 flex flex-col gap-4">
+      <div className="flex items-center gap-2 text-sm font-medium">
+        <Sparkles className="size-4 text-primary" />
+        你的文风画像
+        <span className="text-xs font-normal text-muted-foreground">基于 {data.count} 篇成品</span>
+      </div>
+
+      <div className="flex flex-wrap gap-x-8 gap-y-4 items-end">
+        <div className="shrink-0">
+          <div className="text-2xl font-semibold tabular-nums">{data.avg_sentence_len ?? "—"}<span className="text-sm font-normal text-muted-foreground ml-1">字</span></div>
+          <div className="text-[11px] text-muted-foreground mt-0.5">平均句长</div>
+        </div>
+        <div className="shrink-0">
+          <div className="text-2xl font-semibold tabular-nums">{data.avg_paragraph_len ?? "—"}<span className="text-sm font-normal text-muted-foreground ml-1">字</span></div>
+          <div className="text-[11px] text-muted-foreground mt-0.5">平均段长</div>
+        </div>
+
+        {/* 句长走势：每篇一根条，按时间正序 */}
+        <div className="flex-1 min-w-[160px]">
+          <div className="flex items-end gap-[2px] h-10">
+            {lens.map((v, i) => (
+              <div
+                key={i}
+                title={`${data.per_post[i].title}：句均 ${v} 字`}
+                className="flex-1 min-w-[2px] rounded-t-sm bg-primary/35 hover:bg-primary/70 transition-colors"
+                style={{ height: `${Math.max(8, (v / maxLen) * 100)}%` }}
+              />
+            ))}
+          </div>
+          <div className="text-[11px] text-muted-foreground mt-1">句长走势（早 → 近）</div>
+        </div>
+      </div>
+
+      {data.top_terms.length > 0 && (
+        <div>
+          <div className="text-[11px] text-muted-foreground mb-1.5">你反复在用的词</div>
+          <div className="flex flex-wrap gap-x-2.5 gap-y-1 items-baseline">
+            {data.top_terms.map(t => (
+              <span
+                key={t.term}
+                title={`出现在 ${t.posts} 篇里`}
+                className="text-muted-foreground hover:text-foreground transition-colors"
+                style={{ fontSize: `${0.75 + (t.posts / maxPosts) * 0.6}rem`, opacity: 0.5 + (t.posts / maxPosts) * 0.5 }}
+              >
+                {t.term}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+export function VoiceView() {
+  return (
+    <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+      <div className="px-8 pt-8 pb-4 shrink-0 flex flex-col gap-4">
         <div>
           <h1 className="text-xl font-semibold tracking-tight flex items-center gap-2">
             <PenLine className="size-5 text-primary" />
             你的声音
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            文风指南、写作偏好、参考范文，决定改写出来像不像你本人写的。
+            别的工具写出来是「AI 的第三人称摘要」；这里写出来是「你的第一人称署名长文」——
+            靠的就是下面这套可编辑的文风合同，加上你历史成品沉淀出的风格指纹。
           </p>
         </div>
-
-        <div className="rounded-lg border bg-card p-5 flex flex-col gap-3">
-          <div className="flex items-start gap-3">
-            <Sparkles className="size-5 text-primary shrink-0 mt-0.5" />
-            <div className="flex flex-col gap-1">
-              <div className="text-sm font-medium">这是这个工具最核心的差异点</div>
-              <p className="text-sm text-muted-foreground leading-relaxed">
-                别的工具写出来是"AI 的第三人称摘要"；这里写出来是"你的第一人称署名长文"。
-                靠的就是这套可编辑的文风合同 + 你历史成品沉淀出的风格指纹。
-              </p>
-            </div>
-          </div>
-          <div className="pl-8">
-            <Button variant="outline" size="sm" onClick={onOpenSettings}>
-              <PenLine data-icon="inline-start" />
-              编辑写作知识库
-            </Button>
-          </div>
-        </div>
-
-        <div className={cn(
-          "rounded-lg border border-dashed p-5 text-sm text-muted-foreground",
-          "bg-muted/20",
-        )}>
-          <div className="font-medium text-foreground/80 mb-1">即将到来（增量⑤）</div>
-          文风/偏好/范文将在这里直接表单化编辑（不必去设置窗的裸 Markdown）；
-          并把 <code className="text-xs bg-muted px-1 rounded">fingerprints.jsonl</code> 渲染成「你的文风画像」——
-          句长分布、高频词、段落密度，让你一眼看见自己的写作风格。
-        </div>
+        <FingerprintPanel />
+        <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground/60">文风合同 · 直接编辑</div>
+      </div>
+      <div className="flex-1 min-h-0 flex flex-col">
+        <KnowledgeEditor />
       </div>
     </div>
   )

@@ -1363,7 +1363,7 @@ export default function App() {
               onOpenJob={(id) => { setSelectedJobId(id); setIsCreating(false); setShowSettings(false) }}
             />
           ) : place === "voice" ? (
-            <VoiceView onOpenSettings={openSettings} />
+            <VoiceView />
           ) : (
             <HomeView
               historicalJobs={historicalJobs}

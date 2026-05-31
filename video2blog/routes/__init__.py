@@ -22,6 +22,7 @@ from video2blog.routes import (
     knowledge,
     llm_profiles,
     sources,
+    voice,
 )
 
 
@@ -33,4 +34,5 @@ def register_all(app: "FastAPI", service: "EngineJobService", root: Path) -> Non
     jobs.register(app, service, root)
     files.register(app, service, root)
     knowledge.register(app, service, root)
+    voice.register(app, service, root)
     home.register(app, service, root)
