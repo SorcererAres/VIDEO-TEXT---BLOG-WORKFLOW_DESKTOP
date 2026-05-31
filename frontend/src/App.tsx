@@ -1369,6 +1369,8 @@ export default function App() {
               historicalJobs={historicalJobs}
               onCreate={startCreate}
               onOpenLibrary={() => goPlace("library")}
+              onOpenSettings={openSettings}
+              needsKey={!profileOptions.some(p => p.has_key)}
               healthOffline={healthStatus === "offline"}
               defaultProfileName={profileOptions.find(p => p.id === defaultProfileId)?.name ?? null}
             />

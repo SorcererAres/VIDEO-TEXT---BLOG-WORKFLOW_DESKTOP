@@ -609,14 +609,20 @@ export function OverviewPanel({ historicalJobs }: { historicalJobs: EngineJob[] 
   )
 }
 
-export function HomeView({ historicalJobs, onCreate, onOpenLibrary, healthOffline, defaultProfileName }: {
+export function HomeView({ historicalJobs, onCreate, onOpenLibrary, onOpenSettings, needsKey, healthOffline, defaultProfileName }: {
   historicalJobs: EngineJob[]
   onCreate: () => void
   onOpenLibrary: () => void
+  onOpenSettings: () => void
+  needsKey: boolean
   healthOffline: boolean
   defaultProfileName: string | null
 }) {
   const total = historicalJobs.filter(j => j.kind === "historical").length
+  // 首run 引导：没成品且没主动关掉时展示；有成品的老用户自然不出。
+  const [guideDismissed, setGuideDismissed] = useState(() => localStorage.getItem("v2b_onboarded") === "1")
+  const showGuide = total === 0 && !guideDismissed
+  const dismissGuide = () => { localStorage.setItem("v2b_onboarded", "1"); setGuideDismissed(true) }
 
   return (
     <div className="app-main flex-1 flex flex-col min-h-0">
@@ -624,7 +630,7 @@ export function HomeView({ historicalJobs, onCreate, onOpenLibrary, healthOfflin
         <div className="max-w-3xl w-full mx-auto">
           <h1 className="flex items-center gap-2.5 text-2xl font-semibold tracking-tight">
             <Sparkle className="size-6 text-primary" />
-            接下来，写点什么？
+            {showGuide ? "欢迎 —— 把你讲过的，变成你写的" : "接下来，写点什么？"}
           </h1>
           {total > 0 && (
             <button
@@ -634,6 +640,33 @@ export function HomeView({ historicalJobs, onCreate, onOpenLibrary, healthOfflin
             >
               已写下 {total} 篇署名博文 · 去作品集查看 →
             </button>
+          )}
+
+          {showGuide && (
+            <div className="mt-6 rounded-2xl border bg-card/60 p-5 flex flex-col gap-4">
+              <p className="text-sm text-muted-foreground leading-relaxed">
+                把口播视频 / 访谈 / 讲座 / 文字稿，改写成<b className="text-foreground">你本人第一人称署名</b>的可发布博文。和别的工具不一样的地方：
+              </p>
+              <ul className="text-sm flex flex-col gap-1.5">
+                <li className="flex gap-2"><span className="text-primary">·</span>是<b>你的署名长文</b>，不是 AI 的第三人称摘要</li>
+                <li className="flex gap-2"><span className="text-primary">·</span>用<b>你的文风</b>（可在「你的声音」里调）</li>
+                <li className="flex gap-2"><span className="text-primary">·</span><b>全程在你机器上</b>，素材不上传、Key 进系统钥匙串</li>
+                <li className="flex gap-2"><span className="text-primary">·</span>每步可审、可改、可回退，<b>你说了算</b></li>
+              </ul>
+              <div className="flex items-center gap-2 flex-wrap">
+                {needsKey ? (
+                  <>
+                    <Button size="sm" onClick={onOpenSettings}>① 先配一个模型</Button>
+                    <span className="text-xs text-muted-foreground">填好 API Key，就能开始第一篇</span>
+                  </>
+                ) : (
+                  <Button size="sm" onClick={onCreate} disabled={healthOffline}>
+                    <Plus data-icon="inline-start" /> 开始第一篇
+                  </Button>
+                )}
+                <button type="button" onClick={dismissGuide} className="text-xs text-muted-foreground hover:text-foreground transition-colors ml-auto">知道了，不再提示</button>
+              </div>
+            </div>
           )}
         </div>
       </div>
