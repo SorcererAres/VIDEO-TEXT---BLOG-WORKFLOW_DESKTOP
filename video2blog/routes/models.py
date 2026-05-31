@@ -58,6 +58,15 @@ class KnowledgeFileRequest(BaseModel):
     content: str
 
 
+class DispositionRequest(BaseModel):
+    """POST /api/dispositions 入参：标记某篇成品的处置（用户实际是否采纳）。
+
+    value ∈ used（直接用了）/ edited（改了改）/ rewrote（重写了）；null 清除标记。
+    按成品 path 归档到 memory/dispositions.json，作为质量学习闭环的信号。"""
+    path: str
+    value: str | None = None
+
+
 class LlmProfileRequest(BaseModel):
     """POST/PUT /api/llm-profiles 入参。非敏感字段落 config 文件；
     api_key 非空才写系统钥匙串，省略 / null 则保留原 key。"""

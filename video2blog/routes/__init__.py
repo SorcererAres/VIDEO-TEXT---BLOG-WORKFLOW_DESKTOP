@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from video2blog.server_core import EngineJobService
 
 from video2blog.routes import (
+    feedback,
     files,
     health,
     home,
@@ -35,4 +36,5 @@ def register_all(app: "FastAPI", service: "EngineJobService", root: Path) -> Non
     files.register(app, service, root)
     knowledge.register(app, service, root)
     voice.register(app, service, root)
+    feedback.register(app, service, root)
     home.register(app, service, root)

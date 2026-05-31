@@ -1244,6 +1244,13 @@ function stripFrontmatter(md: string): string {
   return m ? md.slice(m[0].length).replace(/^\s+/, "") : md
 }
 
+// 成品处置（质量学习闭环信号）：读完标一下实际采纳程度，只存本地。
+const DISPOSITIONS: { key: string; label: string }[] = [
+  { key: "used", label: "👍 直接用了" },
+  { key: "edited", label: "✍️ 改了改" },
+  { key: "rewrote", label: "🔁 重写了" },
+]
+
 // ═══════════════════ Final View（artifact 文档阅读器）═══════════════════
 // 成品博文是主角：居中阅读列渲染整篇文档；元信息（路径/质检/成本）降为次级。
 function FinalView({ job, onCopy, onOpenInOS }: { job: EngineJob; onCopy: (text: string) => void; onOpenInOS: (path: string, mode: "finder" | "editor") => void }) {
@@ -1252,6 +1259,7 @@ function FinalView({ job, onCopy, onOpenInOS }: { job: EngineJob; onCopy: (text:
   const path = job.final_post_path
   const [content, setContent] = useState<string | null>(null)
   const [loadErr, setLoadErr] = useState<string | null>(null)
+  const [disposition, setDisposition] = useState<string | null>(null)
 
   useEffect(() => {
     if (!path) { setContent(null); return }
@@ -1261,6 +1269,27 @@ function FinalView({ job, onCopy, onOpenInOS }: { job: EngineJob; onCopy: (text:
       .then(d => setContent(stripFrontmatter(d.content ?? "")))
       .catch(e => setLoadErr(String(e)))
   }, [path])
+
+  // 载入该成品已有的处置标记（按 path 查全量 map）
+  useEffect(() => {
+    if (!path) { setDisposition(null); return }
+    fetch(apiUrl("/api/dispositions"))
+      .then(r => (r.ok ? r.json() : {}))
+      .then((map: Record<string, { value?: string } | undefined>) => setDisposition(map?.[path]?.value ?? null))
+      .catch(() => setDisposition(null))
+  }, [path])
+
+  // 点击切换处置（再点同一个=取消）；乐观更新 + POST 落盘。
+  const setDispo = (key: string) => {
+    if (!path) return
+    const next = disposition === key ? null : key
+    setDisposition(next)
+    fetch(apiUrl("/api/dispositions"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, value: next }),
+    }).catch(() => { /* 本地信号，失败不打断阅读 */ })
+  }
 
   return (
     <ScrollArea className="h-full">
@@ -1309,6 +1338,30 @@ function FinalView({ job, onCopy, onOpenInOS }: { job: EngineJob; onCopy: (text:
           </div>
         ) : (
           <MarkdownView source={content} />
+        )}
+
+        {/* 处置反馈 —— 读完标一下实际采纳，沉淀质量学习信号（只存本地） */}
+        {path && content != null && (
+          <div className="mt-10 flex flex-col gap-2">
+            <div className="text-xs text-muted-foreground">这篇用得怎么样？只存本地，帮工具校准质检。</div>
+            <div className="flex gap-2 flex-wrap">
+              {DISPOSITIONS.map(({ key, label }) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setDispo(key)}
+                  className={cn(
+                    "px-3 py-1.5 text-sm rounded-full border transition-colors",
+                    disposition === key
+                      ? "bg-primary/15 border-primary/40 text-primary font-medium"
+                      : "border-border text-muted-foreground hover:text-foreground hover:border-foreground/30",
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
         )}
 
         {/* 次级详情 —— 路径 / frontmatter / 成本，降权放在文末 */}

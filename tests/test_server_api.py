@@ -90,6 +90,22 @@ class TestEngineServerAPI(unittest.TestCase):
         self.assertEqual(terms["问题"], 2)
         self.assertEqual(terms["工程"], 1)
 
+    def test_dispositions_roundtrip(self) -> None:
+        client = TestClient(create_app(self.tmp_dir))
+        p = "output/Posts/2026/x.md"
+        self.assertEqual(client.get("/api/dispositions").json(), {})  # 初始空
+        # 设标记
+        r = client.post("/api/dispositions", json={"path": p, "value": "edited"})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()[p]["value"], "edited")
+        # 落盘可读回
+        self.assertEqual(client.get("/api/dispositions").json()[p]["value"], "edited")
+        # 非法 value 拒绝
+        self.assertEqual(client.post("/api/dispositions", json={"path": p, "value": "nope"}).status_code, 400)
+        # 清除
+        cleared = client.post("/api/dispositions", json={"path": p, "value": None}).json()
+        self.assertNotIn(p, cleared)
+
     def test_sources_endpoint_lists_work_and_input_text(self) -> None:
         # 准备真实目录结构
         (self.tmp_dir / "work/foo").mkdir(parents=True, exist_ok=True)
