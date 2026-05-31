@@ -149,36 +149,80 @@ function spliceBanned(md: string, bullets: string[]): string {
   return md.replace(BANNED_SECTION_RE, (_m, heading) => heading + body)
 }
 
+// 语言/人称/长度/版式 各取该小节的「**加粗关键值**」做字段。定向 splice 只替换那段加粗值，
+// 周围 prose 与全文其余字节不动；找不到的字段不渲染（结构改动走源码模式）。
+const PREF_FIELDS: { key: string; label: string }[] = [
+  { key: "正文语言", label: "正文语言" },
+  { key: "叙述人称", label: "叙述人称（文章里的「我」）" },
+  { key: "目标字数", label: "目标字数" },
+  { key: "输出格式", label: "输出格式" },
+]
+const prefFieldRE = (k: string) => new RegExp(`(${k}[：:]\\s*\\*\\*)([^*]+?)(\\*\\*)`)
+function getPrefField(md: string, key: string): string | null {
+  const m = md.match(prefFieldRE(key))
+  return m ? m[2].trim() : null
+}
+function setPrefField(md: string, key: string, val: string): string {
+  return md.replace(prefFieldRE(key), (_m, a, _b, c) => a + val + c)
+}
+
 function PreferencesForm({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   const bullets = useMemo(() => parseBanned(value), [value])
-  if (bullets === null) {
+  const fields = PREF_FIELDS
+    .map(f => ({ ...f, val: getPrefField(value, f.key) }))
+    .filter((f): f is { key: string; label: string; val: string } => f.val !== null)
+  const updateBanned = (next: string[]) => onChange(spliceBanned(value, next))
+
+  if (fields.length === 0 && bullets === null) {
     return (
       <div className="p-6 max-w-2xl mx-auto text-sm text-muted-foreground">
-        没找到「禁用套话」小节。完整写作偏好（语言 / 受众 / 人称 / 长度 / 版式）请切到「源码」模式编辑。
+        没识别到可表单化的字段（语言 / 人称 / 长度 / 版式 / 禁用套话）。请切「源码」模式编辑。
       </div>
     )
   }
-  const update = (next: string[]) => onChange(spliceBanned(value, next))
+
   return (
     <ScrollArea className="h-full min-h-0">
-      <div className="px-6 py-4 max-w-2xl mx-auto flex flex-col gap-2">
-        <p className="text-xs text-muted-foreground mb-1">
-          禁用套话（改写时须删除的口播套话 / 求互动话术）。逐条编辑 · 增删；其余偏好请用「源码」模式改。
-        </p>
-        {bullets.map((b, i) => (
-          <div key={i} className="flex items-center gap-2 group">
-            <span className="text-xs text-muted-foreground font-mono w-5 text-right shrink-0">{i + 1}.</span>
-            <input
-              type="text"
-              value={b}
-              onChange={e => { const n = [...bullets]; n[i] = e.target.value; update(n) }}
-              className="flex-1 bg-card border rounded-md py-1.5 px-2.5 text-sm outline-none focus:border-primary"
-            />
-            <Button type="button" variant="ghost" size="icon-sm" className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0" onClick={() => update(bullets.filter((_, j) => j !== i))} title="删除"><Trash2 className="size-3.5 text-destructive" /></Button>
+      <div className="px-6 py-4 max-w-2xl mx-auto flex flex-col gap-5">
+        {fields.length > 0 && (
+          <div className="flex flex-col gap-2.5">
+            {fields.map(f => (
+              <label key={f.key} className="flex flex-col gap-1">
+                <span className="text-xs text-muted-foreground">{f.label}</span>
+                <input
+                  type="text"
+                  value={f.val}
+                  onChange={e => onChange(setPrefField(value, f.key, e.target.value))}
+                  className="bg-card border rounded-md py-1.5 px-2.5 text-sm outline-none focus:border-primary"
+                />
+              </label>
+            ))}
           </div>
-        ))}
-        {bullets.length === 0 && <p className="text-xs text-muted-foreground/70 italic">（暂无禁用套话）</p>}
-        <Button type="button" variant="outline" size="sm" className="self-start mt-1" onClick={() => update([...bullets, "新套话"])}><Plus data-icon="inline-start" /> 添加</Button>
+        )}
+
+        {bullets !== null && (
+          <div className="flex flex-col gap-2">
+            <div className="text-xs text-muted-foreground">禁用套话（改写时须删除的口播套话 / 求互动话术）。逐条编辑 · 增删。</div>
+            {bullets.map((b, i) => (
+              <div key={i} className="flex items-center gap-2 group">
+                <span className="text-xs text-muted-foreground font-mono w-5 text-right shrink-0">{i + 1}.</span>
+                <input
+                  type="text"
+                  value={b}
+                  onChange={e => { const n = [...bullets]; n[i] = e.target.value; updateBanned(n) }}
+                  className="flex-1 bg-card border rounded-md py-1.5 px-2.5 text-sm outline-none focus:border-primary"
+                />
+                <Button type="button" variant="ghost" size="icon-sm" className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0" onClick={() => updateBanned(bullets.filter((_, j) => j !== i))} title="删除"><Trash2 className="size-3.5 text-destructive" /></Button>
+              </div>
+            ))}
+            {bullets.length === 0 && <p className="text-xs text-muted-foreground/70 italic">（暂无禁用套话）</p>}
+            <Button type="button" variant="outline" size="sm" className="self-start mt-1" onClick={() => updateBanned([...bullets, "新套话"])}><Plus data-icon="inline-start" /> 添加</Button>
+          </div>
+        )}
+
+        <p className="text-[11px] text-muted-foreground/70 border-t pt-3">
+          更细的偏好（受众 / 语气 / 视角约束 / 版式细节 / 专有名词）请切「源码」模式编辑。
+        </p>
       </div>
     </ScrollArea>
   )
