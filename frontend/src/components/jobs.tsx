@@ -568,12 +568,8 @@ function dayKey(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
 }
 
-export function HomeView({ historicalJobs, onCreate, healthOffline, defaultProfileName }: {
-  historicalJobs: EngineJob[]
-  onCreate: () => void
-  healthOffline: boolean
-  defaultProfileName: string | null
-}) {
+// 创作概览（统计 + 热力图）—— IA ③ 后从首页归位到「作品集」。data 全来自本地成品，真实可算。
+export function OverviewPanel({ historicalJobs }: { historicalJobs: EngineJob[] }) {
   const stats = useMemo(() => {
     const posts = historicalJobs.filter(j => j.kind === "historical")
     const dates = posts.map(p => p.created_at).filter(Boolean)
@@ -594,43 +590,53 @@ export function HomeView({ historicalJobs, onCreate, healthOffline, defaultProfi
     return { total: posts.length, activeDays, last30, avgScore, drafts, formal: posts.length - drafts, topRouting, perDay }
   }, [historicalJobs])
 
+  if (stats.total === 0) return null
+  return (
+    <div className="rounded-2xl border bg-card/60 p-5">
+      <div className="grid grid-cols-3 sm:grid-cols-6 gap-2.5">
+        <StatCell label="成品" value={String(stats.total)} />
+        <StatCell label="活跃天数" value={String(stats.activeDays)} />
+        <StatCell label="近 30 天" value={String(stats.last30)} />
+        <StatCell label="平均质检" value={stats.avgScore != null ? `${stats.avgScore.toFixed(0)}/60` : "—"} />
+        <StatCell label="常用路由" value={stats.topRouting} mono />
+        <StatCell label="正式 / 草稿" value={`${stats.formal} / ${stats.drafts}`} />
+      </div>
+      <Heatmap perDay={stats.perDay} />
+      <p className="text-xs text-muted-foreground/70 mt-3">
+        你已写下 <b className="text-foreground">{stats.total}</b> 篇署名博文，覆盖 {stats.activeDays} 个创作日。
+      </p>
+    </div>
+  )
+}
+
+export function HomeView({ historicalJobs, onCreate, onOpenLibrary, healthOffline, defaultProfileName }: {
+  historicalJobs: EngineJob[]
+  onCreate: () => void
+  onOpenLibrary: () => void
+  healthOffline: boolean
+  defaultProfileName: string | null
+}) {
+  const total = historicalJobs.filter(j => j.kind === "historical").length
+
   return (
     <div className="app-main flex-1 flex flex-col min-h-0">
-      <ScrollArea className="flex-1 min-h-0">
-        <div className="max-w-3xl mx-auto px-8 pt-16 pb-8">
-          <h1 className="flex items-center gap-2.5 text-2xl font-semibold tracking-tight mb-8">
+      <div className="flex-1 min-h-0 flex flex-col justify-center px-8">
+        <div className="max-w-3xl w-full mx-auto">
+          <h1 className="flex items-center gap-2.5 text-2xl font-semibold tracking-tight">
             <Sparkle className="size-6 text-primary" />
             接下来，写点什么？
           </h1>
-
-          <div className="rounded-2xl border bg-card/60 p-5">
-            <div className="flex items-center justify-between mb-4">
-              <span className="text-sm font-medium text-muted-foreground">创作概览</span>
-              {defaultProfileName && (
-                <Badge variant="outline" className="text-[10px] font-mono">默认档 · {defaultProfileName}</Badge>
-              )}
-            </div>
-            {stats.total === 0 ? (
-              <p className="text-sm text-muted-foreground py-6 text-center">还没有成品。开始第一篇改写，这里会长出你的创作轨迹。</p>
-            ) : (
-              <>
-                <div className="grid grid-cols-3 gap-2.5">
-                  <StatCell label="成品" value={String(stats.total)} />
-                  <StatCell label="活跃天数" value={String(stats.activeDays)} />
-                  <StatCell label="近 30 天" value={String(stats.last30)} />
-                  <StatCell label="平均质检" value={stats.avgScore != null ? `${stats.avgScore.toFixed(0)}/60` : "—"} />
-                  <StatCell label="常用路由" value={stats.topRouting} mono />
-                  <StatCell label="正式 / 草稿" value={`${stats.formal} / ${stats.drafts}`} />
-                </div>
-                <Heatmap perDay={stats.perDay} />
-                <p className="text-xs text-muted-foreground/70 mt-3">
-                  你已写下 <b className="text-foreground">{stats.total}</b> 篇署名博文，覆盖 {stats.activeDays} 个创作日。
-                </p>
-              </>
-            )}
-          </div>
+          {total > 0 && (
+            <button
+              type="button"
+              onClick={onOpenLibrary}
+              className="mt-3 text-sm text-muted-foreground hover:text-primary transition-colors"
+            >
+              已写下 {total} 篇署名博文 · 去作品集查看 →
+            </button>
+          )}
         </div>
-      </ScrollArea>
+      </div>
 
       {/* 底部 composer（启动器式）—— 点击展开 CreateForm */}
       <div className="shrink-0 border-t bg-background/80 px-8 py-4">

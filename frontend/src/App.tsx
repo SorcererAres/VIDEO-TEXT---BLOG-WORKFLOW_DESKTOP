@@ -1368,6 +1368,7 @@ export default function App() {
             <HomeView
               historicalJobs={historicalJobs}
               onCreate={startCreate}
+              onOpenLibrary={() => goPlace("library")}
               healthOffline={healthStatus === "offline"}
               defaultProfileName={profileOptions.find(p => p.id === defaultProfileId)?.name ?? null}
             />

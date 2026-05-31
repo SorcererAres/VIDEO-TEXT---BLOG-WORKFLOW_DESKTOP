@@ -1,15 +1,42 @@
 // 顶层"场所"视图：作品集 Library / 你的声音 Voice。
 // ④ 先立骨架（可用但简单），③ 把 Library 做成富作品墙、⑤ 把 Voice 做成文风表单 + 指纹画像。
 
+import { useState, type ReactNode } from "react"
 import { Award, BookOpen, FileText, PenLine, Sparkles } from "lucide-react"
 import { Empty, EmptyHeader, EmptyMedia, EmptyTitle, EmptyDescription } from "@/components/ui/empty"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { cn } from "@/lib/utils"
+import { OverviewPanel } from "@/components/jobs"
 import { formatRelativeOrAbsolute, type EngineJob } from "@/lib/job-types"
 
 // ═══════════════════ 作品集 Library ═══════════════════
+
+function libScore(j: EngineJob): number {
+  const m = (j.pass_score || "").match(/(\d+(?:\.\d+)?)/)
+  return m ? parseFloat(m[1]) : -1
+}
+function libTime(j: EngineJob): number {
+  return new Date((j.created_at || "").replace(" ", "T")).getTime() || 0
+}
+
+function FilterChip({ active, onClick, children }: { active: boolean; onClick: () => void; children: ReactNode }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "px-2.5 py-0.5 text-xs rounded-full border transition-colors",
+        active
+          ? "bg-primary/15 border-primary/40 text-primary"
+          : "border-border text-muted-foreground hover:text-foreground hover:border-foreground/30",
+      )}
+    >
+      {children}
+    </button>
+  )
+}
 
 export function LibraryView({
   historicalJobs,
@@ -18,26 +45,51 @@ export function LibraryView({
   historicalJobs: EngineJob[]
   onOpenJob: (id: string) => void
 }) {
-  const posts = [...historicalJobs].sort((a, b) => {
-    const ta = new Date((a.created_at || "").replace(" ", "T")).getTime() || 0
-    const tb = new Date((b.created_at || "").replace(" ", "T")).getTime() || 0
-    return tb - ta
-  })
+  const [filter, setFilter] = useState<"all" | "formal" | "draft">("all")
+  const [sort, setSort] = useState<"new" | "old" | "score">("new")
+
+  const all = historicalJobs.filter(j => j.kind === "historical")
+  const posts = all
+    .filter(j => (filter === "all" ? true : filter === "draft" ? j.is_draft : !j.is_draft))
+    .sort((a, b) =>
+      sort === "new" ? libTime(b) - libTime(a)
+      : sort === "old" ? libTime(a) - libTime(b)
+      : libScore(b) - libScore(a),
+    )
 
   return (
     <div className="flex-1 overflow-hidden flex flex-col">
-      <div className="px-8 pt-8 pb-4 shrink-0">
-        <h1 className="text-xl font-semibold tracking-tight flex items-center gap-2">
-          <BookOpen className="size-5 text-primary" />
-          作品集
-        </h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          你攒下的全部成品 · 共 {posts.length} 篇。点开任意一篇重读。
-          <span className="text-muted-foreground/60"> （筛选 / 排序 / 质检概览将在增量③ 补上）</span>
-        </p>
+      <div className="px-8 pt-8 pb-4 shrink-0 flex flex-col gap-4">
+        <div>
+          <h1 className="text-xl font-semibold tracking-tight flex items-center gap-2">
+            <BookOpen className="size-5 text-primary" />
+            作品集
+          </h1>
+          <p className="text-sm text-muted-foreground mt-1">
+            你攒下的全部成品 · 共 {all.length} 篇。点开任意一篇重读。
+          </p>
+        </div>
+
+        <OverviewPanel historicalJobs={historicalJobs} />
+
+        {all.length > 0 && (
+          <div className="flex items-center gap-3 flex-wrap">
+            <div className="flex items-center gap-1">
+              {([["all", "全部"], ["formal", "正式"], ["draft", "草稿"]] as const).map(([k, l]) => (
+                <FilterChip key={k} active={filter === k} onClick={() => setFilter(k)}>{l}</FilterChip>
+              ))}
+            </div>
+            <div className="h-4 w-px bg-border" />
+            <div className="flex items-center gap-1">
+              {([["new", "最新"], ["old", "最早"], ["score", "质检高→低"]] as const).map(([k, l]) => (
+                <FilterChip key={k} active={sort === k} onClick={() => setSort(k)}>{l}</FilterChip>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
-      {posts.length === 0 ? (
+      {all.length === 0 ? (
         <div className="flex-1 flex items-center justify-center">
           <Empty>
             <EmptyHeader>
@@ -46,6 +98,10 @@ export function LibraryView({
               <EmptyDescription>开始第一篇改写，这里会长出你的创作轨迹。</EmptyDescription>
             </EmptyHeader>
           </Empty>
+        </div>
+      ) : posts.length === 0 ? (
+        <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground">
+          没有符合「{filter === "draft" ? "草稿" : "正式"}」的成品
         </div>
       ) : (
         <ScrollArea className="flex-1 min-h-0">
