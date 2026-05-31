@@ -2,7 +2,7 @@
 // ④ 先立骨架（可用但简单），③ 把 Library 做成富作品墙、⑤ 把 Voice 做成文风表单 + 指纹画像。
 
 import { useEffect, useState, type ReactNode } from "react"
-import { Award, BookOpen, FileText, PenLine, Sparkles } from "lucide-react"
+import { Award, BookOpen, FileText, Gauge, PenLine, Sparkles } from "lucide-react"
 import { Empty, EmptyHeader, EmptyMedia, EmptyTitle, EmptyDescription } from "@/components/ui/empty"
 import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -39,6 +39,89 @@ function FilterChip({ active, onClick, children }: { active: boolean; onClick: (
   )
 }
 
+// 质检校准：用 P7 处置（直接用/改了/重写）当 ground truth，反查 Step 7 自评分是否过于自信。
+// 纯前端 join：dispositions(/api/dispositions) × historicalJobs.pass_score，按处置分桶算质检均值。
+const CALIB_ROWS: { key: string; label: string; tone: string }[] = [
+  { key: "used", label: "👍 直接用了", tone: "bg-emerald-500" },
+  { key: "edited", label: "✍️ 改了改", tone: "bg-amber-500" },
+  { key: "rewrote", label: "🔁 重写了", tone: "bg-rose-500" },
+]
+
+function CalibrationPanel({ historicalJobs }: { historicalJobs: EngineJob[] }) {
+  const [dispo, setDispo] = useState<Record<string, { value?: string } | undefined> | null>(null)
+  useEffect(() => {
+    let alive = true
+    fetch(API_BASE + "/api/dispositions")
+      .then(r => (r.ok ? r.json() : {}))
+      .then(d => { if (alive) setDispo(d) })
+      .catch(() => { if (alive) setDispo({}) })
+    return () => { alive = false }
+  }, [])
+
+  if (!dispo) return null
+
+  const posts = historicalJobs.filter(j => j.kind === "historical")
+  const buckets: Record<string, { n: number; scores: number[] }> = {
+    used: { n: 0, scores: [] }, edited: { n: 0, scores: [] }, rewrote: { n: 0, scores: [] },
+  }
+  for (const job of posts) {
+    const v = job.final_post_path ? dispo[job.final_post_path]?.value : undefined
+    if (!v || !(v in buckets)) continue
+    buckets[v].n += 1
+    const s = libScore(job)
+    if (s >= 0) buckets[v].scores.push(s)
+  }
+  const marked = buckets.used.n + buckets.edited.n + buckets.rewrote.n
+  const avg = (b: { scores: number[] }) => (b.scores.length ? b.scores.reduce((a, c) => a + c, 0) / b.scores.length : null)
+  const u = avg(buckets.used), r = avg(buckets.rewrote)
+
+  let insight: string
+  if (u != null && r != null) {
+    insight = r >= u - 1
+      ? "⚠ 自评分偏乐观：重写稿的质检分并不低于直接采用稿 —— Step 7 可能过度自信，值得收紧阈值或加约束。"
+      : "✓ 质检自评分与真实采纳大体一致：越被直接采用的稿子，质检分越高。"
+  } else {
+    insight = "标记更多篇（尤其『重写了』），这里就能判断质检自评分是否过于自信。"
+  }
+  if (marked > 0 && marked < 5) insight += "（样本还少，仅供参考）"
+
+  return (
+    <div className="rounded-xl border bg-card/60 p-4 flex flex-col gap-3">
+      <div className="flex items-center gap-2 text-sm font-medium">
+        <Gauge className="size-4 text-primary" />
+        质检校准
+        <span className="text-xs font-normal text-muted-foreground">自评分 vs 真实采纳 · 已标记 {marked}/{posts.length}</span>
+      </div>
+      {marked === 0 ? (
+        <p className="text-xs text-muted-foreground leading-relaxed">
+          在成品页读完标「直接用了 / 改了改 / 重写了」，这里会显示 Step 7 质检自评分在每一类里的均值——
+          用你的真实采纳反查质检是否「自我感觉良好」。
+        </p>
+      ) : (
+        <>
+          <div className="flex flex-col gap-1.5">
+            {CALIB_ROWS.map(({ key, label, tone }) => {
+              const b = buckets[key]
+              const a = avg(b)
+              return (
+                <div key={key} className="flex items-center gap-3 text-sm">
+                  <span className="w-24 shrink-0">{label}</span>
+                  <span className="w-10 text-xs text-muted-foreground tabular-nums shrink-0">{b.n} 篇</span>
+                  <div className="flex-1 h-2 rounded-full bg-muted overflow-hidden">
+                    {a != null && <div className={cn("h-full rounded-full", tone)} style={{ width: `${(a / 60) * 100}%` }} />}
+                  </div>
+                  <span className="w-14 text-right text-xs tabular-nums shrink-0">{a != null ? `${a.toFixed(0)}/60` : "—"}</span>
+                </div>
+              )
+            })}
+          </div>
+          <p className="text-xs text-muted-foreground leading-relaxed">{insight}</p>
+        </>
+      )}
+    </div>
+  )
+}
+
 export function LibraryView({
   historicalJobs,
   onOpenJob,
@@ -72,6 +155,8 @@ export function LibraryView({
         </div>
 
         <OverviewPanel historicalJobs={historicalJobs} />
+
+        {all.length > 0 && <CalibrationPanel historicalJobs={historicalJobs} />}
 
         {all.length > 0 && (
           <div className="flex items-center gap-3 flex-wrap">
