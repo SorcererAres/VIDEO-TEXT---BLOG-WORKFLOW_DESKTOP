@@ -59,6 +59,53 @@ class TestEngineServerAPI(unittest.TestCase):
         else:
             os.environ["XDG_CONFIG_HOME"] = self._old_xdg
 
+    def test_fingerprints_aggregates_voice_profile(self) -> None:
+        client = TestClient(create_app(self.tmp_dir))
+        # 空/缺文件 → count 0，不报错
+        empty = client.get("/fingerprints").json()
+        self.assertEqual(empty["count"], 0)
+        self.assertIsNone(empty["avg_sentence_len"])
+
+        mem = self.tmp_dir / "memory"
+        mem.mkdir(parents=True, exist_ok=True)
+        (mem / "fingerprints.jsonl").write_text(
+            "\n".join([
+                json.dumps({"title": "A", "avg_sentence_len": 30, "avg_paragraph_len": 80,
+                            "created_at": "2026-05-01T00:00:00+00:00", "top_terms": ["AI", "问题", "学习"]}),
+                json.dumps({"title": "B", "avg_sentence_len": 40, "avg_paragraph_len": 100,
+                            "created_at": "2026-05-02T00:00:00+00:00", "top_terms": ["AI", "问题", "工程"]}),
+                "",  # 空行应被跳过
+                "{坏行}",  # 坏 JSON 应被跳过，不拖垮聚合
+            ]),
+            encoding="utf-8",
+        )
+        d = client.get("/fingerprints").json()
+        self.assertEqual(d["count"], 2)
+        self.assertEqual(d["avg_sentence_len"], 35.0)
+        self.assertEqual(d["avg_paragraph_len"], 90.0)
+        self.assertEqual(len(d["per_post"]), 2)
+        self.assertEqual(d["per_post"][0]["title"], "A")  # 按 created_at 正序
+        terms = {t["term"]: t["posts"] for t in d["top_terms"]}
+        self.assertEqual(terms["AI"], 2)       # 两篇都有
+        self.assertEqual(terms["问题"], 2)
+        self.assertEqual(terms["工程"], 1)
+
+    def test_dispositions_roundtrip(self) -> None:
+        client = TestClient(create_app(self.tmp_dir))
+        p = "output/Posts/2026/x.md"
+        self.assertEqual(client.get("/api/dispositions").json(), {})  # 初始空
+        # 设标记
+        r = client.post("/api/dispositions", json={"path": p, "value": "edited"})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()[p]["value"], "edited")
+        # 落盘可读回
+        self.assertEqual(client.get("/api/dispositions").json()[p]["value"], "edited")
+        # 非法 value 拒绝
+        self.assertEqual(client.post("/api/dispositions", json={"path": p, "value": "nope"}).status_code, 400)
+        # 清除
+        cleared = client.post("/api/dispositions", json={"path": p, "value": None}).json()
+        self.assertNotIn(p, cleared)
+
     def test_sources_endpoint_lists_work_and_input_text(self) -> None:
         # 准备真实目录结构
         (self.tmp_dir / "work/foo").mkdir(parents=True, exist_ok=True)

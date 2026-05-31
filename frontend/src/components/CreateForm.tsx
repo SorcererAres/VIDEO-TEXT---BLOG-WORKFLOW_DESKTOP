@@ -1,4 +1,5 @@
-import { Loader2, Plus, RotateCw, Sparkle, X } from 'lucide-react'
+import { useState } from 'react'
+import { ChevronRight, Loader2, Plus, RotateCw, Sparkle, X } from 'lucide-react'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -8,6 +9,16 @@ import { API_BASE } from '@/lib/api'
 import { SourcePicker } from '@/components/SourcePicker'
 import { Checkbox, FormField, Segmented } from '@/components/form-primitives'
 import type { LlmProfile } from '@/lib/settings-store'
+
+// 写作视角（路由）翻成场景人话：决定文章里的「我」是谁。ID 保留给底层/合同，
+// UI 不再以 /lecture 这种黑话打头。顺序与频次对齐（讲课/分享最常见）。
+const ROUTING_OPTIONS: { value: string; label: string }[] = [
+  { value: "/lecture", label: "我在讲课 / 分享 · lecture" },
+  { value: "/dialogue", label: "我是受访嘉宾（对谈输出观点的一方）· dialogue" },
+  { value: "/screencast", label: "我在录屏讲解 · screencast" },
+  { value: "/meeting", label: "我在主持 / 做决策 · meeting" },
+  { value: "/default", label: "不确定，让 AI 判断 · default" },
+]
 
 // ═══════════════════ Create Form ═══════════════════
 export interface CreateFormProps {
@@ -47,6 +58,17 @@ export function formatRelativeTime(ts: number): string {
 }
 
 export function CreateForm(props: CreateFormProps) {
+  // 渐进式披露：日常只填 源/演讲人/视角/模式；其余引擎旋钮收进"高级选项"折叠区。
+  // 若任务带了非默认的高级值（恢复草稿 / 重跑回填），默认展开，避免用户看不见已生效的设置。
+  const hasNonDefaultAdvanced =
+    props.maxRetries !== 1 ||
+    props.force ||
+    props.rewriteStrategy !== "single" ||
+    !!props.profileId ||
+    !!props.model.trim() ||
+    (props.mode === "full" && !props.pauseOnOutline)
+  const [showAdvanced, setShowAdvanced] = useState(hasNonDefaultAdvanced)
+
   return (
     <div className="flex-1 overflow-y-auto p-8">
       <div className="max-w-2xl mx-auto flex flex-col gap-4">
@@ -119,43 +141,52 @@ export function CreateForm(props: CreateFormProps) {
                     <span className="text-xs text-muted-foreground">稿件里的主讲人 / 受访者，可能不是你本人。选源后会自动识别，并记住上次输入。</span>
                   )}
                 </FormField>
-                <FormField label="写作角色路由">
+                <FormField label="写作视角" hint="决定文章里的「我」是谁">
                   <select
                     value={props.routing}
                     onChange={e => props.setRouting(e.target.value)}
                     className="w-full bg-card border rounded-md py-2 px-3 text-sm focus:border-primary outline-none"
                   >
-                    <option value="/lecture">/lecture · 讲座分享</option>
-                    <option value="/dialogue">/dialogue · 嘉宾对谈</option>
-                    <option value="/screencast">/screencast · 录屏讲解</option>
-                    <option value="/meeting">/meeting · 决策纪要</option>
-                    <option value="/default">/default · 默认声音</option>
+                    {ROUTING_OPTIONS.map(opt => (
+                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                    ))}
                   </select>
                 </FormField>
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
-                <FormField
-                  label="工作流模式"
-                  hint={props.mode === "full" ? "清洗 + 提炼 + 骨架 + 重写 + 质检" : "直接重写 + 质检，跳过中间步骤"}
-                >
-                  <Segmented
-                    value={props.mode}
-                    onChange={(v) => props.setMode(v)}
-                    options={[
-                      { value: "full", label: "完整流程", title: "清洗 + 提炼 + 骨架 + 重写 + 质检" },
-                      { value: "quick", label: "极速改写", title: "直接重写 + 质检" },
-                    ]}
-                  />
-                </FormField>
-                <FormField label="自修正最大重试" hint="默认 1 轮;不需要可设 0">
-                  <input
-                    type="number" min={0} max={3} value={props.maxRetries}
-                    onChange={e => props.setMaxRetries(parseInt(e.target.value) || 0)}
-                    className="w-full bg-card border rounded-md py-2 px-3 text-sm focus:border-primary outline-none"
-                  />
-                </FormField>
-              </div>
+              <FormField
+                label="工作流模式"
+                hint={props.mode === "full" ? "清洗 + 提炼 + 骨架 + 重写 + 质检" : "直接重写 + 质检，跳过中间步骤"}
+              >
+                <Segmented
+                  value={props.mode}
+                  onChange={(v) => props.setMode(v)}
+                  options={[
+                    { value: "full", label: "完整流程", title: "清洗 + 提炼 + 骨架 + 重写 + 质检" },
+                    { value: "quick", label: "极速改写", title: "直接重写 + 质检" },
+                  ]}
+                />
+              </FormField>
+
+              {/* 高级选项：日常不必碰的引擎旋钮，默认折叠 */}
+              <button
+                type="button"
+                onClick={() => setShowAdvanced(s => !s)}
+                className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors self-start"
+              >
+                <ChevronRight className={cn("size-4 transition-transform", showAdvanced && "rotate-90")} />
+                高级选项{showAdvanced ? "" : "（重试 / 配置档 / 模型 / 缓存 / 审批…）"}
+              </button>
+
+              {showAdvanced && (
+              <div className="flex flex-col gap-5 border-l-2 border-border/60 pl-4">
+              <FormField label="自修正最大重试" hint="默认 1 轮;不需要可设 0">
+                <input
+                  type="number" min={0} max={3} value={props.maxRetries}
+                  onChange={e => props.setMaxRetries(parseInt(e.target.value) || 0)}
+                  className="w-full bg-card border rounded-md py-2 px-3 text-sm focus:border-primary outline-none"
+                />
+              </FormField>
 
               <FormField label="配置档" hint="用哪套 LLM 配置跑这个任务；留「跟随默认」即用 Settings 里标★的那档。">
                 {props.profileOptions.length === 0 ? (
@@ -204,6 +235,8 @@ export function CreateForm(props: CreateFormProps) {
                   />
                 )}
               </div>
+              </div>
+              )}
 
               <Separator />
 

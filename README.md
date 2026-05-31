@@ -21,13 +21,11 @@
 
 ```bash
 brew install ffmpeg
-python3 -m venv .venv
-source .venv/bin/activate
-python3 -m pip install -r requirements.txt
+make install   # 建 .venv 并 pip install -e .（依赖来源唯一：pyproject.toml）
 ```
 
-默认开发环境使用 `.venv`；`.venv-codex` 仅作为历史兼容环境保留。
-开发、测试和本地服务建议统一走 `make`，它会固定使用 `.venv/bin/python`，避免系统 Python 缺少 FastAPI/uvicorn 等依赖造成误报。
+开发、测试和本地服务统一走 `make`，它固定使用 `.venv/bin/python`，避免系统 Python 缺少 FastAPI/uvicorn 等依赖造成误报。
+依赖只在 `pyproject.toml` 维护；`requirements.txt` 仅作镜像，供不便 `pip install -e .` 的场景使用。
 
 视频入口：
 

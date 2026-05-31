@@ -29,6 +29,12 @@ except ImportError:
     upsert_jsonl = None
 
 
+def _label_step_num(step_label: str) -> int | None:
+    """从 "Step 5" 这类标签里抽出步骤号，供结构化进度事件用；抽不出返回 None。"""
+    m = re.search(r"Step\s+(\d+)", step_label)
+    return int(m.group(1)) if m else None
+
+
 def clean_title(title: str) -> str:
     """清洗标题用于文件名：保留中文，去掉文件系统不安全字符与常见标点（与既有成品命名惯例对齐）。"""
     # 在原有不安全字符基础上补齐中英文标点（顿号、逗号、句号、感叹/问号、省略号、破折号、间隔号等）。
@@ -338,6 +344,7 @@ class Engine:
         chunk_context_chars: int | None = None,
         cancel_check: Callable[[], bool] | None = None,
         rewrite_strategy: str | None = None,
+        emit_event: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> None:
         self.repo_root = Path(repo_root).resolve()
         self.client = client
@@ -345,6 +352,8 @@ class Engine:
         self.chunk_char_limit = chunk_char_limit or int(os.environ.get("VIDEO2BLOG_CHUNK_CHAR_LIMIT", "30000"))
         self.chunk_context_chars = chunk_context_chars or int(os.environ.get("VIDEO2BLOG_CHUNK_CONTEXT_CHARS", "1200"))
         self.cancel_check = cancel_check
+        # 结构化进度事件回调（外壳层注入）。CLI / 无回调时为 None，引擎静默退化为纯 print。
+        self._emit_event = emit_event
         strategy = (rewrite_strategy or os.environ.get("VIDEO2BLOG_REWRITE_STRATEGY", "single")).strip().lower()
         if strategy not in VALID_REWRITE_STRATEGIES:
             raise ValueError(
@@ -355,6 +364,23 @@ class Engine:
     def _check_cancelled(self) -> None:
         if self.cancel_check and self.cancel_check():
             raise RuntimeError("任务被用户手动中断")
+
+    def _progress(self, kind: str, **fields: Any) -> None:
+        """发一条结构化进度事件给外壳层（server → SSE → 前端叙事）。
+
+        设计要点：每个 _progress 都紧挨着一条人类可读的 print —— print 给人看
+        （CLI / 原始日志面板），_progress 给机器用（前端结构化叙事 + StepProgress）。
+        语义字段（kind/step/verdict…）由后端拥有，展示文案（"撰写博文草稿"）由前端拥有。
+        无回调（CLI 直跑）时静默退化；事件本身尽力而为，绝不让外壳层异常拖垮主流程。
+        """
+        if self._emit_event is None:
+            return
+        payload: dict[str, Any] = {"kind": kind}
+        payload.update({k: v for k, v in fields.items() if v is not None})
+        try:
+            self._emit_event("progress", payload)
+        except Exception:
+            pass
 
     def calculate_contract_fingerprint(self) -> str:
         """Calculates a fingerprint (sha256 hash) of all contract documents and skills."""
@@ -428,6 +454,7 @@ class Engine:
         """Runs one deterministic content-producing LLM step with disk cache."""
         self._check_cancelled()
         print(f"[+] [{step_label}] 正在生成 {output_path.name}...", flush=True)
+        self._progress("step", step=_label_step_num(step_label))
         cache_key = status_name
         cached_meta = state.get("cache", {}).get(cache_key)
         current_cache_meta = {
@@ -532,6 +559,7 @@ class Engine:
             )
 
         print(f"[+] [Step 3] 输入较长，启动分块清洗 ({len(chunks)} chunks)...", flush=True)
+        self._progress("step", step=3, chunks=len(chunks))
         cache_key = "CLEANING"
         current_cache_meta = {
             "input_hash": self._hash_text(input_text),
@@ -653,6 +681,7 @@ class Engine:
             )
 
         print(f"[+] [Step 4] 清洗稿较长，启动分块提炼 ({len(chunks)} chunks)...", flush=True)
+        self._progress("step", step=4, chunks=len(chunks))
         cache_key = "EXTRACTING"
         current_cache_meta = {
             "input_hash": self._hash_text(input_fingerprint_text),
@@ -1047,6 +1076,7 @@ class Engine:
         work_dir.mkdir(parents=True, exist_ok=True)
 
         print(f"[*] 开始执行工作流 Job: {stem} (模式: {mode})", flush=True)
+        self._progress("job_start", mode=mode)
 
         if state["status"] == "PENDING":
             state["status"] = "CLEANING" if mode == "full" else "REWRITING"
@@ -1141,6 +1171,7 @@ class Engine:
 
             if state["status"] == "REWRITING":
                 print(f"[+] [Step 6] 正在生成第 {version} 版博文草稿...", flush=True)
+                self._progress("step", step=6, version=version)
 
                 # §9-C 按节策略仅在 full 模式 + outline 骨架可解析时生效，
                 # 自修正循环 (version>1) 强制回退 single：上轮失败要看全局，不再分节。
@@ -1256,12 +1287,14 @@ class Engine:
 
             if state["status"] == "CHECKING":
                 print(f"[+] [Step 7] 正在对第 {version} 版草稿进行质检校验...", flush=True)
+                self._progress("step", step=7, version=version)
                 draft_content = draft_path.read_text(encoding="utf-8")
 
                 # Local free check first: VIEWER_RE scan
                 viewer_match = VIEWER_RE.search(draft_content)
                 if viewer_match:
                     print(f"    -> [拦截] 触发本地视角违规词: '{viewer_match.group(0)}' (零成本拦截，不调用大模型评分)", flush=True)
+                    self._progress("viewer_blocked", word=viewer_match.group(0))
                     check_result = {
                         "version": version,
                         "verdict": "REVIEW",
@@ -1361,6 +1394,7 @@ class Engine:
                 verdict = check_result.get("verdict", "REVIEW")
                 score_str = check_result.get("total", "0/60")
                 print(f"    -> 质检结论: {verdict} (得分: {score_str})", flush=True)
+                self._progress("verdict", step=7, version=version, verdict=verdict, total=score_str)
 
                 if verdict == "PASS":
                     state["status"] = "DONE"
@@ -1369,6 +1403,7 @@ class Engine:
                 elif check_result.get("parse_failed"):
                     # Step 7 LLM 输出不合同 → 跳过自修正（避免基于假反馈再烧一轮 token），直接挂人工审
                     print("    -> Step 7 解析失败，跳过自修正，转人工审稿。", flush=True)
+                    self._progress("parse_failed", step=7)
                     state["best_version"] = version
                     state["status"] = "WAITING_USER_REVIEW"
                     self.save_state(stem, state)
@@ -1376,12 +1411,14 @@ class Engine:
                     # Self-correction check
                     if version <= max_retries:
                         print(f"    -> [自修正] 启动自我修正循环，尝试第 {version + 1} 轮重写...", flush=True)
+                        self._progress("self_correct", step=7, round=version + 1)
                         state["status"] = "REWRITING"
                         state["version"] = version + 1
                         self.save_state(stem, state)
                     else:
                         # Exceeded retries, select the best version
                         print("    -> 已达到最大重试次数。开始评估并选择最佳版本...", flush=True)
+                        self._progress("max_retries", step=7)
                         best_ver = 1
                         best_score = -1
                         # Parse score string (e.g. "54/60" -> 54)
@@ -1514,6 +1551,7 @@ class Engine:
             # Atomic save
             atomic_write(post_path, final_content)
             print(f"[✓] 博文已输出到成品目录: {post_path.relative_to(self.repo_root)}", flush=True)
+            self._progress("artifact", step=8, what="post", path=str(post_path.relative_to(self.repo_root)))
 
             # Write Review report (re-using the raw markdown quality-check output from LLM)
             reviews_dir.mkdir(parents=True, exist_ok=True)
@@ -1541,6 +1579,7 @@ class Engine:
                 )
             atomic_write(review_md_path, raw_review_md)
             print(f"[✓] 质检报告已保存: {review_md_path.relative_to(self.repo_root)}", flush=True)
+            self._progress("artifact", step=8, what="review", path=str(review_md_path.relative_to(self.repo_root)))
 
             # Update HISTORY.md（按成品路径去重，并清掉被同源替换掉的旧记录）
             self._update_history(post_path, title, mode, state["status"], final_body, speaker, replaced_rel)
@@ -1638,6 +1677,7 @@ class Engine:
         
         atomic_write(history_path, history_content)
         print(f"[✓] 已更新历史索引 memory/HISTORY.md", flush=True)
+        self._progress("artifact", step=8, what="history")
 
     def _update_fingerprint(self, post_path: Path) -> None:
         """Updates the style fingerprints JSONL for the generated post."""
@@ -1653,5 +1693,6 @@ class Engine:
             record = fingerprint(post_path, self.repo_root)
             upsert_jsonl(out_jsonl, record)
             print("[✓] 已生成并更新风格指纹 memory/fingerprints.jsonl", flush=True)
+            self._progress("artifact", step=8, what="fingerprint")
         except Exception as e:
             print(f"[!] 风格指纹更新失败: {e}", flush=True)

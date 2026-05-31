@@ -9,6 +9,9 @@ import {
   Search,
   PanelLeft,
   PanelLeftClose,
+  Sparkles,
+  BookOpen,
+  PenLine,
 } from 'lucide-react'
 import { Toaster, toast } from 'sonner'
 import { Button } from '@/components/ui/button'
@@ -19,8 +22,18 @@ import { pushRecentSource } from '@/components/SourcePicker'
 import { ConfirmDialogHost, confirmAction } from '@/components/ConfirmDialog'
 import { CreateForm } from '@/components/CreateForm'
 import { JobList, HomeView, JobWorkspace } from '@/components/jobs'
+import { LibraryView, VoiceView } from '@/components/places'
 import { SettingsPanel } from '@/components/settings'
-import { inferCurrentStep, parseLogLine, type ParsedEvent } from '@/lib/log-parser'
+import {
+  inferCurrentStep,
+  mapProgress,
+  systemEvent,
+  successEvent,
+  errorEvent,
+  pausedEvent,
+  type ParsedEvent,
+  type ProgressData,
+} from '@/lib/log-parser'
 import { API_BASE } from '@/lib/api'
 import {
   listProfiles,
@@ -161,7 +174,12 @@ export default function App() {
   const [selectedJob, setSelectedJob] = useState<EngineJob | null>(null)
   const [isCreating, setIsCreating] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
+  // 顶层"场所"（IA ④）：无 job/新建/设置时，主区按 place 展示。workshop=选中 job，settings=showSettings。
+  const [place, setPlace] = useState<"start" | "library" | "voice">("start")
+  // logs = 原始 print 文本流（「原始日志」视图排查用）；
+  // progressEvents = 结构化叙事（来自后端 progress + job 生命周期事件）。H1 去耦后两者分离。
   const [logs, setLogs] = useState<string[]>([])
+  const [progressEvents, setProgressEvents] = useState<ParsedEvent[]>([])
   const [activeTab, setActiveTab] = useState<"console" | "outline" | "review" | "final" | "artifacts">("console")
   const [healthStatus, setHealthStatus] = useState<"online" | "offline">("offline")
   // 可收起的安静侧栏（Claude recents 气质）—— 状态持久化
@@ -464,6 +482,7 @@ export default function App() {
     if (!selectedJobId) {
       setSelectedJob(null)
       setLogs([])
+      setProgressEvents([])
       sseTargetJobRef.current = null
       tearDownSse()
       setSseStatus("idle")
@@ -482,6 +501,7 @@ export default function App() {
         tearDownSse()
         setSseStatus("idle")
         setLogs([])
+        setProgressEvents([])
         setActiveTab("final")
         return
       }
@@ -505,7 +525,11 @@ export default function App() {
             }
           })
       } else if (job.status === "succeeded") {
-        if (activeTab === "outline" || activeTab === "review") {
+        // 成品前置：跑完那一刻（running→succeeded）或新选中一个已完成任务时，默认落到成品阅读视图。
+        // 但不在后续每次 jobs 刷新时强切 —— 否则用户手点"运行日志"看一眼又被拽回成品。
+        const isFreshSelect = job.id !== selectedJob?.id
+        const justFinished = job.id === selectedJob?.id && prevStatus !== "succeeded"
+        if (isFreshSelect || justFinished || activeTab === "outline" || activeTab === "review") {
           setActiveTab("final")
         }
       }
@@ -638,6 +662,7 @@ export default function App() {
     sseTargetJobRef.current = jobId
     sseAttemptsRef.current = 0
     setLogs([])
+    setProgressEvents([])
     setSseStatus("connecting")
     setLastEventAt(null)
     connectSse(jobId)
@@ -671,9 +696,19 @@ export default function App() {
       } catch (err) { console.error("Err parsing SSE log event", err) }
     })
 
+    // 结构化进度事件（H1）：后端直接给语义字段，前端只做 kind→展示 映射，不再正则反解析。
+    source.addEventListener("progress", (e: MessageEvent) => {
+      markEvent()
+      try {
+        const eventData = JSON.parse(e.data)
+        const data = eventData.data as ProgressData | undefined
+        if (data?.kind) setProgressEvents(prev => [...prev, mapProgress(data)])
+      } catch (err) { console.error("Err parsing SSE progress event", err) }
+    })
+
     source.addEventListener("started", () => {
       markEvent()
-      setLogs(prev => [...prev, "[*] Backend job execution started..."])
+      setProgressEvents(prev => [...prev, systemEvent("任务开始执行")])
     })
 
     // 注意：paused/succeeded/failed 这三类「状态提醒」**不在这里弹 toast**。
@@ -686,7 +721,7 @@ export default function App() {
       try {
         const eventData = JSON.parse(e.data)
         const stateStatus = eventData.data?.state_status || ""
-        setLogs(prev => [...prev, `[!] Workflow suspended: Paused at ${stateStatus}`])
+        setProgressEvents(prev => [...prev, pausedEvent(stateStatus)])
         fetchJobs() // 拉新列表 → detectStatusTransitions 据真实跃迁发提醒
         setSseStatus("terminal")
         sseTargetJobRef.current = null
@@ -696,7 +731,7 @@ export default function App() {
 
     source.addEventListener("succeeded", () => {
       markEvent()
-      setLogs(prev => [...prev, "[✓] Job completed successfully!"])
+      setProgressEvents(prev => [...prev, successEvent("全部步骤已通过")])
       fetchJobs()
       setSseStatus("terminal")
       sseTargetJobRef.current = null // 防止队列里残留的 onerror 触发重连
@@ -708,7 +743,7 @@ export default function App() {
       try {
         const eventData = JSON.parse(e.data)
         const err = eventData.data?.error || ""
-        setLogs(prev => [...prev, `[错误] Job failed: ${err}`])
+        setProgressEvents(prev => [...prev, errorEvent(`任务失败：${err}`)])
         fetchJobs()
       } catch (err) { console.error("Err parsing SSE failed event", err) }
       setSseStatus("terminal")
@@ -945,7 +980,7 @@ export default function App() {
           startSse(selectedJob.id)
           toast.success("已接受为 DRAFT", { description: "进入 Step 8 落盘归档" })
         } else {
-          setLogs(prev => [...prev, "[!] Draft rejected. Workflow aborted by user."])
+          setProgressEvents(prev => [...prev, systemEvent("草稿已拒绝，工作流中止")])
           toast("草稿已拒绝", { description: "工作流已中止" })
         }
         fetchJobs()
@@ -1012,11 +1047,8 @@ export default function App() {
   }
 
   // ----- derived state for visual layer -----
-  const parsedEvents: ParsedEvent[] = useMemo(
-    () => logs.map(parseLogLine).filter((e): e is ParsedEvent => e !== null),
-    [logs],
-  )
-  const currentStep = useMemo(() => inferCurrentStep(parsedEvents), [parsedEvents])
+  // H1 去耦后：叙事直接来自后端结构化 progress 事件（progressEvents），不再正则反解析 logs。
+  const currentStep = useMemo(() => inferCurrentStep(progressEvents), [progressEvents])
   const pausedAt: "outline" | "review" | null = useMemo(() => {
     if (selectedJob?.status !== "paused") return null
     // 首选：用后端给的 paused_state。这是引擎实际状态机的真相，不会被
@@ -1068,6 +1100,17 @@ export default function App() {
     clearCreateDraft()
     setDraftRestoredTs(null)
   }
+
+  // 切到某个顶层场所：清掉 job/新建/设置，让主区落到该 place。
+  const goPlace = (p: "start" | "library" | "voice") => {
+    setPlace(p)
+    setSelectedJobId(null)
+    setIsCreating(false)
+    setShowSettings(false)
+  }
+  // 当前主区在显示什么 —— 驱动侧栏导航高亮。job/新建/设置 优先于 place。
+  const currentView: "create" | "settings" | "workshop" | "start" | "library" | "voice" =
+    isCreating ? "create" : showSettings ? "settings" : selectedJob ? "workshop" : place
 
   return (
     <TooltipProvider delayDuration={200}>
@@ -1141,6 +1184,34 @@ export default function App() {
                 {healthStatus === "offline" ? "后端离线时无法提交新任务" : "新建改写任务 (Cmd/Ctrl + N)"}
               </TooltipContent>
             </Tooltip>
+          </div>
+
+          {/* 顶层场所导航（IA ④）：开始 / 作品集 / 你的声音。下方 recents 是「工作台」入口（选 job 即进）。 */}
+          <nav className="px-3 pb-2 flex flex-col gap-0.5">
+            {([
+              ["start", "开始", Sparkles],
+              ["library", "作品集", BookOpen],
+              ["voice", "你的声音", PenLine],
+            ] as const).map(([key, label, Icon]) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => goPlace(key)}
+                className={cn(
+                  "flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm transition-colors text-left",
+                  currentView === key
+                    ? "bg-primary/12 text-primary font-medium"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted/50",
+                )}
+              >
+                <Icon className="size-4 shrink-0" />
+                {label}
+              </button>
+            ))}
+          </nav>
+
+          <div className="px-3 pb-1.5">
+            <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/60 px-1">最近</div>
           </div>
 
           {/* 搜索 + 状态 chip —— 历史归档多了用来快速定位 */}
@@ -1255,6 +1326,7 @@ export default function App() {
               job={selectedJob}
               activeTab={activeTab}
               setActiveTab={setActiveTab}
+              events={progressEvents}
               logs={logs}
               currentStep={currentStep}
               pausedAt={pausedAt}
@@ -1285,10 +1357,20 @@ export default function App() {
               onReloadDraftOriginal={() => selectedJob && loadDraftAndReview(selectedJob.id, true)}
               onOpenSettings={openSettings}
             />
+          ) : place === "library" ? (
+            <LibraryView
+              historicalJobs={historicalJobs}
+              onOpenJob={(id) => { setSelectedJobId(id); setIsCreating(false); setShowSettings(false) }}
+            />
+          ) : place === "voice" ? (
+            <VoiceView />
           ) : (
             <HomeView
               historicalJobs={historicalJobs}
               onCreate={startCreate}
+              onOpenLibrary={() => goPlace("library")}
+              onOpenSettings={openSettings}
+              needsKey={!profileOptions.some(p => p.has_key)}
               healthOffline={healthStatus === "offline"}
               defaultProfileName={profileOptions.find(p => p.id === defaultProfileId)?.name ?? null}
             />

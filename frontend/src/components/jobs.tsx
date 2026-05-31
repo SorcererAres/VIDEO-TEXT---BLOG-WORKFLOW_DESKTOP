@@ -33,6 +33,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { cn } from '@/lib/utils'
 import { StepProgress } from '@/components/StepProgress'
 import { LogConsole } from '@/components/LogConsole'
+import { type ParsedEvent } from '@/lib/log-parser'
 import { MarkdownView } from '@/components/MarkdownView'
 import { formatRelativeTime } from '@/components/CreateForm'
 import { API_BASE, apiUrl } from '@/lib/api'
@@ -567,12 +568,8 @@ function dayKey(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
 }
 
-export function HomeView({ historicalJobs, onCreate, healthOffline, defaultProfileName }: {
-  historicalJobs: EngineJob[]
-  onCreate: () => void
-  healthOffline: boolean
-  defaultProfileName: string | null
-}) {
+// 创作概览（统计 + 热力图）—— IA ③ 后从首页归位到「作品集」。data 全来自本地成品，真实可算。
+export function OverviewPanel({ historicalJobs }: { historicalJobs: EngineJob[] }) {
   const stats = useMemo(() => {
     const posts = historicalJobs.filter(j => j.kind === "historical")
     const dates = posts.map(p => p.created_at).filter(Boolean)
@@ -593,43 +590,86 @@ export function HomeView({ historicalJobs, onCreate, healthOffline, defaultProfi
     return { total: posts.length, activeDays, last30, avgScore, drafts, formal: posts.length - drafts, topRouting, perDay }
   }, [historicalJobs])
 
+  if (stats.total === 0) return null
+  return (
+    <div className="rounded-2xl border bg-card/60 p-5">
+      <div className="grid grid-cols-3 sm:grid-cols-6 gap-2.5">
+        <StatCell label="成品" value={String(stats.total)} />
+        <StatCell label="活跃天数" value={String(stats.activeDays)} />
+        <StatCell label="近 30 天" value={String(stats.last30)} />
+        <StatCell label="平均质检" value={stats.avgScore != null ? `${stats.avgScore.toFixed(0)}/60` : "—"} />
+        <StatCell label="常用路由" value={stats.topRouting} mono />
+        <StatCell label="正式 / 草稿" value={`${stats.formal} / ${stats.drafts}`} />
+      </div>
+      <Heatmap perDay={stats.perDay} />
+      <p className="text-xs text-muted-foreground/70 mt-3">
+        你已写下 <b className="text-foreground">{stats.total}</b> 篇署名博文，覆盖 {stats.activeDays} 个创作日。
+      </p>
+    </div>
+  )
+}
+
+export function HomeView({ historicalJobs, onCreate, onOpenLibrary, onOpenSettings, needsKey, healthOffline, defaultProfileName }: {
+  historicalJobs: EngineJob[]
+  onCreate: () => void
+  onOpenLibrary: () => void
+  onOpenSettings: () => void
+  needsKey: boolean
+  healthOffline: boolean
+  defaultProfileName: string | null
+}) {
+  const total = historicalJobs.filter(j => j.kind === "historical").length
+  // 首run 引导：没成品且没主动关掉时展示；有成品的老用户自然不出。
+  const [guideDismissed, setGuideDismissed] = useState(() => localStorage.getItem("v2b_onboarded") === "1")
+  const showGuide = total === 0 && !guideDismissed
+  const dismissGuide = () => { localStorage.setItem("v2b_onboarded", "1"); setGuideDismissed(true) }
+
   return (
     <div className="app-main flex-1 flex flex-col min-h-0">
-      <ScrollArea className="flex-1 min-h-0">
-        <div className="max-w-3xl mx-auto px-8 pt-16 pb-8">
-          <h1 className="flex items-center gap-2.5 text-2xl font-semibold tracking-tight mb-8">
+      <div className="flex-1 min-h-0 flex flex-col justify-center px-8">
+        <div className="max-w-3xl w-full mx-auto">
+          <h1 className="flex items-center gap-2.5 text-2xl font-semibold tracking-tight">
             <Sparkle className="size-6 text-primary" />
-            接下来，写点什么？
+            {showGuide ? "欢迎 —— 把你讲过的，变成你写的" : "接下来，写点什么？"}
           </h1>
+          {total > 0 && (
+            <button
+              type="button"
+              onClick={onOpenLibrary}
+              className="mt-3 text-sm text-muted-foreground hover:text-primary transition-colors"
+            >
+              已写下 {total} 篇署名博文 · 去作品集查看 →
+            </button>
+          )}
 
-          <div className="rounded-2xl border bg-card/60 p-5">
-            <div className="flex items-center justify-between mb-4">
-              <span className="text-sm font-medium text-muted-foreground">创作概览</span>
-              {defaultProfileName && (
-                <Badge variant="outline" className="text-[10px] font-mono">默认档 · {defaultProfileName}</Badge>
-              )}
+          {showGuide && (
+            <div className="mt-6 rounded-2xl border bg-card/60 p-5 flex flex-col gap-4">
+              <p className="text-sm text-muted-foreground leading-relaxed">
+                把口播视频 / 访谈 / 讲座 / 文字稿，改写成<b className="text-foreground">你本人第一人称署名</b>的可发布博文。和别的工具不一样的地方：
+              </p>
+              <ul className="text-sm flex flex-col gap-1.5">
+                <li className="flex gap-2"><span className="text-primary">·</span>是<b>你的署名长文</b>，不是 AI 的第三人称摘要</li>
+                <li className="flex gap-2"><span className="text-primary">·</span>用<b>你的文风</b>（可在「你的声音」里调）</li>
+                <li className="flex gap-2"><span className="text-primary">·</span><b>全程在你机器上</b>，素材不上传、Key 进系统钥匙串</li>
+                <li className="flex gap-2"><span className="text-primary">·</span>每步可审、可改、可回退，<b>你说了算</b></li>
+              </ul>
+              <div className="flex items-center gap-2 flex-wrap">
+                {needsKey ? (
+                  <>
+                    <Button size="sm" onClick={onOpenSettings}>① 先配一个模型</Button>
+                    <span className="text-xs text-muted-foreground">填好 API Key，就能开始第一篇</span>
+                  </>
+                ) : (
+                  <Button size="sm" onClick={onCreate} disabled={healthOffline}>
+                    <Plus data-icon="inline-start" /> 开始第一篇
+                  </Button>
+                )}
+                <button type="button" onClick={dismissGuide} className="text-xs text-muted-foreground hover:text-foreground transition-colors ml-auto">知道了，不再提示</button>
+              </div>
             </div>
-            {stats.total === 0 ? (
-              <p className="text-sm text-muted-foreground py-6 text-center">还没有成品。开始第一篇改写，这里会长出你的创作轨迹。</p>
-            ) : (
-              <>
-                <div className="grid grid-cols-3 gap-2.5">
-                  <StatCell label="成品" value={String(stats.total)} />
-                  <StatCell label="活跃天数" value={String(stats.activeDays)} />
-                  <StatCell label="近 30 天" value={String(stats.last30)} />
-                  <StatCell label="平均质检" value={stats.avgScore != null ? `${stats.avgScore.toFixed(0)}/60` : "—"} />
-                  <StatCell label="常用路由" value={stats.topRouting} mono />
-                  <StatCell label="正式 / 草稿" value={`${stats.formal} / ${stats.drafts}`} />
-                </div>
-                <Heatmap perDay={stats.perDay} />
-                <p className="text-xs text-muted-foreground/70 mt-3">
-                  你已写下 <b className="text-foreground">{stats.total}</b> 篇署名博文，覆盖 {stats.activeDays} 个创作日。
-                </p>
-              </>
-            )}
-          </div>
+          )}
         </div>
-      </ScrollArea>
+      </div>
 
       {/* 底部 composer（启动器式）—— 点击展开 CreateForm */}
       <div className="shrink-0 border-t bg-background/80 px-8 py-4">
@@ -712,6 +752,7 @@ interface JobWorkspaceProps {
   job: EngineJob
   activeTab: "console" | "outline" | "review" | "final" | "artifacts"
   setActiveTab: (v: "console" | "outline" | "review" | "final" | "artifacts") => void
+  events: ParsedEvent[]
   logs: string[]
   currentStep: number | null
   pausedAt: "outline" | "review" | null
@@ -744,7 +785,7 @@ interface JobWorkspaceProps {
 }
 
 export function JobWorkspace(props: JobWorkspaceProps) {
-  const { job, activeTab, setActiveTab, logs, currentStep, pausedAt } = props
+  const { job, activeTab, setActiveTab, events, logs, currentStep, pausedAt } = props
   const isHistorical = job.kind === "historical"
   const isFailed = job.status === "failed"
   // SSE 指示器只在"还可能在跑"的任务上显示;历史归档 / 已 succeeded / 已 failed 都不要
@@ -867,16 +908,10 @@ export function JobWorkspace(props: JobWorkspaceProps) {
       {/* Tabs — 历史归档只暴露"成品及报告"tab(没日志、没暂停产物)*/}
       <Tabs value={activeTab} onValueChange={v => setActiveTab(v as "console" | "outline" | "review" | "final" | "artifacts")} className="flex-1 flex flex-col overflow-hidden">
         <div className="px-6 pt-3">
+          {/* tab 顺序 = 当前最该看的排第一：成品前置 + 人工节点醒目化。
+              暂停时审批 tab 居首（轮到你了）；完成时成品居首；过程（日志/产物）降到其后。
+              用 paused_state 而非看磁盘内容 —— 旧 draft_v* 残留时启发式会让用户卡在错误审批界面（5/28 撞过两次）。 */}
           <TabsList>
-            {!isHistorical && (
-              <TabsTrigger value="console">
-                <Layers data-icon="inline-start" />
-                运行日志
-              </TabsTrigger>
-            )}
-            {/* tab 切换器用 paused_state 而非看磁盘内容 —— 旧 draft_v* 残留时
-                outlineText/draftContent 启发式会让 outline tab 不出现、review
-                tab 出现，把用户卡在错误的审批界面无法继续。5/28 撞过两次。 */}
             {!isHistorical && job.status === "paused" && job.paused_state === "WAITING_USER_OUTLINE" && (
               <TabsTrigger value="outline">
                 <ListTree data-icon="inline-start" />
@@ -896,6 +931,12 @@ export function JobWorkspace(props: JobWorkspaceProps) {
               </TabsTrigger>
             )}
             {!isHistorical && (
+              <TabsTrigger value="console">
+                <Layers data-icon="inline-start" />
+                运行日志
+              </TabsTrigger>
+            )}
+            {!isHistorical && (
               <TabsTrigger value="artifacts">
                 <FolderOpen data-icon="inline-start" />
                 过程产物
@@ -907,7 +948,7 @@ export function JobWorkspace(props: JobWorkspaceProps) {
         <div className="flex-1 overflow-hidden px-6 py-4">
           <TabsContent value="console" className="h-full m-0">
             {/* 历史归档不渲染 LogConsole；这里把 jobStatus 传下去让日志事件按 job 整体态降级历史 step / paused */}
-            <LogConsole logs={logs} jobStatus={isHistorical ? "succeeded" : job.status} className="h-full" />
+            <LogConsole events={events} rawLogs={logs} jobStatus={isHistorical ? "succeeded" : job.status} className="h-full" />
           </TabsContent>
 
           <TabsContent value="outline" className="h-full m-0">
@@ -1236,6 +1277,13 @@ function stripFrontmatter(md: string): string {
   return m ? md.slice(m[0].length).replace(/^\s+/, "") : md
 }
 
+// 成品处置（质量学习闭环信号）：读完标一下实际采纳程度，只存本地。
+const DISPOSITIONS: { key: string; label: string }[] = [
+  { key: "used", label: "👍 直接用了" },
+  { key: "edited", label: "✍️ 改了改" },
+  { key: "rewrote", label: "🔁 重写了" },
+]
+
 // ═══════════════════ Final View（artifact 文档阅读器）═══════════════════
 // 成品博文是主角：居中阅读列渲染整篇文档；元信息（路径/质检/成本）降为次级。
 function FinalView({ job, onCopy, onOpenInOS }: { job: EngineJob; onCopy: (text: string) => void; onOpenInOS: (path: string, mode: "finder" | "editor") => void }) {
@@ -1244,6 +1292,7 @@ function FinalView({ job, onCopy, onOpenInOS }: { job: EngineJob; onCopy: (text:
   const path = job.final_post_path
   const [content, setContent] = useState<string | null>(null)
   const [loadErr, setLoadErr] = useState<string | null>(null)
+  const [disposition, setDisposition] = useState<string | null>(null)
 
   useEffect(() => {
     if (!path) { setContent(null); return }
@@ -1253,6 +1302,27 @@ function FinalView({ job, onCopy, onOpenInOS }: { job: EngineJob; onCopy: (text:
       .then(d => setContent(stripFrontmatter(d.content ?? "")))
       .catch(e => setLoadErr(String(e)))
   }, [path])
+
+  // 载入该成品已有的处置标记（按 path 查全量 map）
+  useEffect(() => {
+    if (!path) { setDisposition(null); return }
+    fetch(apiUrl("/api/dispositions"))
+      .then(r => (r.ok ? r.json() : {}))
+      .then((map: Record<string, { value?: string } | undefined>) => setDisposition(map?.[path]?.value ?? null))
+      .catch(() => setDisposition(null))
+  }, [path])
+
+  // 点击切换处置（再点同一个=取消）；乐观更新 + POST 落盘。
+  const setDispo = (key: string) => {
+    if (!path) return
+    const next = disposition === key ? null : key
+    setDisposition(next)
+    fetch(apiUrl("/api/dispositions"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, value: next }),
+    }).catch(() => { /* 本地信号，失败不打断阅读 */ })
+  }
 
   return (
     <ScrollArea className="h-full">
@@ -1301,6 +1371,30 @@ function FinalView({ job, onCopy, onOpenInOS }: { job: EngineJob; onCopy: (text:
           </div>
         ) : (
           <MarkdownView source={content} />
+        )}
+
+        {/* 处置反馈 —— 读完标一下实际采纳，沉淀质量学习信号（只存本地） */}
+        {path && content != null && (
+          <div className="mt-10 flex flex-col gap-2">
+            <div className="text-xs text-muted-foreground">这篇用得怎么样？只存本地，帮工具校准质检。</div>
+            <div className="flex gap-2 flex-wrap">
+              {DISPOSITIONS.map(({ key, label }) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setDispo(key)}
+                  className={cn(
+                    "px-3 py-1.5 text-sm rounded-full border transition-colors",
+                    disposition === key
+                      ? "bg-primary/15 border-primary/40 text-primary font-medium"
+                      : "border-border text-muted-foreground hover:text-foreground hover:border-foreground/30",
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
         )}
 
         {/* 次级详情 —— 路径 / frontmatter / 成本，降权放在文末 */}

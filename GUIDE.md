@@ -17,13 +17,10 @@ Archive/     旧规则、旧知识库、设计背景
 
 ```bash
 brew install ffmpeg
-python3 -m venv .venv
-source .venv/bin/activate
-python3 -m pip install -r requirements.txt
+make install   # 建 .venv 并 pip install -e .（依赖来源唯一：pyproject.toml）
 ```
 
 本地 ASR 默认使用 `mlx-whisper`，也支持 `whisper.cpp` 和外部字幕/文字稿。
-默认开发环境使用 `.venv`；历史 `.venv-codex` 只作兼容，不再作为新任务的首选环境。
 日常开发请优先使用顶层 `Makefile`，所有 Python 入口都会固定走 `.venv/bin/python`。直接用系统 `python3` 可能缺少 FastAPI、uvicorn 等服务端依赖。
 
 ## 视频入口
