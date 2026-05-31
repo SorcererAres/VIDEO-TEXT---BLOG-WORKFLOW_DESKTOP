@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { ChevronRight, Loader2, Plus, RotateCw, Sparkle, X } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { ChevronRight, FileAudio, FileText, Film, Loader2, Plus, RotateCw, Sparkle, Upload, X } from 'lucide-react'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -19,6 +19,30 @@ const ROUTING_OPTIONS: { value: string; label: string }[] = [
   { value: "/meeting", label: "我在主持 / 做决策 · meeting" },
   { value: "/default", label: "不确定，让 AI 判断 · default" },
 ]
+const ROUTING_LABEL: Record<string, string> = {
+  "/lecture": "讲课 / 分享", "/dialogue": "受访嘉宾", "/screencast": "录屏讲解",
+  "/meeting": "主持 / 决策", "/default": "AI 判断",
+}
+
+// 竞品「源选定即自动配置」：按文件名/路径关键词猜写作视角；猜不准返回 ""（不动用户选择）。
+function suggestRouting(source: string): string {
+  const s = source.toLowerCase()
+  if (/对谈|访谈|对话|嘉宾|播客|dialogue|interview|podcast/.test(s)) return "/dialogue"
+  if (/录屏|演示|教程|walkthrough|screencast|demo|tutorial/.test(s)) return "/screencast"
+  if (/会议|复盘|纪要|meeting|standup/.test(s)) return "/meeting"
+  if (/讲座|课|分享|talk|lecture|keynote/.test(s)) return "/lecture"
+  return ""
+}
+
+const VIDEO_EXT_RE = /\.(mp4|mov|m4v|mkv|webm|flv|avi)$/i
+// 从 source 路径推断素材类型，用于「接下来会怎样」提示。
+function sourceKind(source: string): "video" | "transcript" | "text" | "" {
+  const s = source.toLowerCase()
+  if (VIDEO_EXT_RE.test(s) || s.includes("input/video/")) return "video"
+  if (/raw\.txt$|\.srt$|\.vtt$/.test(s) || s.includes("/work/")) return "transcript"
+  if (s.includes("input/text/") || /\.(md|txt)$/.test(s)) return "text"
+  return ""
+}
 
 // ═══════════════════ Create Form ═══════════════════
 export interface CreateFormProps {
@@ -69,8 +93,54 @@ export function CreateForm(props: CreateFormProps) {
     (props.mode === "full" && !props.pauseOnOutline)
   const [showAdvanced, setShowAdvanced] = useState(hasNonDefaultAdvanced)
 
+  // 竞品式「源定即配好」：源选定后自动建议写作视角（除非用户已手动改过）。
+  const [routingTouched, setRoutingTouched] = useState(false)
+  useEffect(() => {
+    if (routingTouched || !props.source) return
+    const sug = suggestRouting(props.source)
+    if (sug && sug !== props.routing) props.setRouting(sug)
+    // 只在 source 变化时跑；故意不入 routing/setRouting deps，避免回写时反复触发。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.source, routingTouched])
+
+  // 整块拖拽上传（复用 /upload）—— 竞品标志性的「拖进来就开始」。
+  const [dragOver, setDragOver] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const [uploadErr, setUploadErr] = useState<string | null>(null)
+  const dragDepth = useRef(0)
+  const uploadFile = async (file: File) => {
+    setUploading(true); setUploadErr(null)
+    try {
+      const res = await fetch(API_BASE + `/upload?name=${encodeURIComponent(file.name)}`, { method: "POST", body: file })
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}`
+        try { const j = await res.json(); if (typeof j?.detail === "string") detail = j.detail } catch { /* */ }
+        throw new Error(detail)
+      }
+      const data: { path: string } = await res.json()
+      props.setSource(data.path)
+    } catch (e) {
+      setUploadErr(`上传失败：${e instanceof Error ? e.message : String(e)}`)
+    } finally { setUploading(false) }
+  }
+
+  const kind = sourceKind(props.source)
+
   return (
-    <div className="flex-1 overflow-y-auto p-8">
+    <div
+      className="flex-1 overflow-y-auto p-8 relative"
+      onDragEnter={e => { e.preventDefault(); dragDepth.current += 1; setDragOver(true) }}
+      onDragOver={e => e.preventDefault()}
+      onDragLeave={e => { e.preventDefault(); dragDepth.current -= 1; if (dragDepth.current <= 0) setDragOver(false) }}
+      onDrop={e => { e.preventDefault(); dragDepth.current = 0; setDragOver(false); const f = e.dataTransfer.files?.[0]; if (f) uploadFile(f) }}
+    >
+      {dragOver && (
+        <div className="absolute inset-3 z-20 rounded-2xl border-2 border-dashed border-primary bg-primary/5 flex items-center justify-center pointer-events-none">
+          <div className="flex items-center gap-2 text-primary font-medium">
+            <Upload className="size-5" /> 松手上传，作为本次改写的源
+          </div>
+        </div>
+      )}
       <div className="max-w-2xl mx-auto flex flex-col gap-4">
         {props.draftRestoredTs && (
           <Alert className="border-primary/30 bg-primary/5">
@@ -109,12 +179,27 @@ export function CreateForm(props: CreateFormProps) {
               }}
               className="flex flex-col gap-5"
             >
-              <FormField label="输入源" required hint="可选 input/Video/ 里的视频(自动先转录)、work/<stem>/raw.txt 转录稿、或 input/Text/* 文字稿;也可手动粘路径">
+              <FormField label="输入源" required hint="选已有素材，或把视频 / 文字稿直接拖到此页上传">
                 <SourcePicker
                   value={props.source}
                   onChange={props.setSource}
                   apiBase={API_BASE}
                 />
+                {uploadErr && <span className="text-xs text-destructive">{uploadErr}</span>}
+                {uploading && (
+                  <span className="text-xs text-muted-foreground flex items-center gap-1.5">
+                    <Loader2 className="animate-spin size-3.5" /> 上传中…
+                  </span>
+                )}
+                {!uploading && kind && (
+                  <span className="text-xs text-muted-foreground flex items-center gap-1.5">
+                    {kind === "video"
+                      ? <><Film className="size-3.5 text-primary" /> 视频 · 提交后先自动转录（音频 → 转录 → 成稿）再改写</>
+                      : kind === "transcript"
+                        ? <><FileAudio className="size-3.5 text-primary" /> 转录稿 · 直接进入改写</>
+                        : <><FileText className="size-3.5 text-primary" /> 文字稿 · 直接进入改写</>}
+                  </span>
+                )}
               </FormField>
 
               <div className="grid grid-cols-2 gap-4">
@@ -144,13 +229,16 @@ export function CreateForm(props: CreateFormProps) {
                 <FormField label="写作视角" hint="决定文章里的「我」是谁">
                   <select
                     value={props.routing}
-                    onChange={e => props.setRouting(e.target.value)}
+                    onChange={e => { setRoutingTouched(true); props.setRouting(e.target.value) }}
                     className="w-full bg-card border rounded-md py-2 px-3 text-sm focus:border-primary outline-none"
                   >
                     {ROUTING_OPTIONS.map(opt => (
                       <option key={opt.value} value={opt.value}>{opt.label}</option>
                     ))}
                   </select>
+                  {!routingTouched && props.source && suggestRouting(props.source) === props.routing && props.routing !== "/default" && (
+                    <span className="text-xs text-primary/80">已按内容建议为「{ROUTING_LABEL[props.routing]}」· 可改</span>
+                  )}
                 </FormField>
               </div>
 
