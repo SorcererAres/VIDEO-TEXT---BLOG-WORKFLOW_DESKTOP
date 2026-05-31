@@ -9,6 +9,9 @@ import {
   Search,
   PanelLeft,
   PanelLeftClose,
+  Sparkles,
+  BookOpen,
+  PenLine,
 } from 'lucide-react'
 import { Toaster, toast } from 'sonner'
 import { Button } from '@/components/ui/button'
@@ -19,6 +22,7 @@ import { pushRecentSource } from '@/components/SourcePicker'
 import { ConfirmDialogHost, confirmAction } from '@/components/ConfirmDialog'
 import { CreateForm } from '@/components/CreateForm'
 import { JobList, HomeView, JobWorkspace } from '@/components/jobs'
+import { LibraryView, VoiceView } from '@/components/places'
 import { SettingsPanel } from '@/components/settings'
 import {
   inferCurrentStep,
@@ -170,6 +174,8 @@ export default function App() {
   const [selectedJob, setSelectedJob] = useState<EngineJob | null>(null)
   const [isCreating, setIsCreating] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
+  // 顶层"场所"（IA ④）：无 job/新建/设置时，主区按 place 展示。workshop=选中 job，settings=showSettings。
+  const [place, setPlace] = useState<"start" | "library" | "voice">("start")
   // logs = 原始 print 文本流（「原始日志」视图排查用）；
   // progressEvents = 结构化叙事（来自后端 progress + job 生命周期事件）。H1 去耦后两者分离。
   const [logs, setLogs] = useState<string[]>([])
@@ -1095,6 +1101,17 @@ export default function App() {
     setDraftRestoredTs(null)
   }
 
+  // 切到某个顶层场所：清掉 job/新建/设置，让主区落到该 place。
+  const goPlace = (p: "start" | "library" | "voice") => {
+    setPlace(p)
+    setSelectedJobId(null)
+    setIsCreating(false)
+    setShowSettings(false)
+  }
+  // 当前主区在显示什么 —— 驱动侧栏导航高亮。job/新建/设置 优先于 place。
+  const currentView: "create" | "settings" | "workshop" | "start" | "library" | "voice" =
+    isCreating ? "create" : showSettings ? "settings" : selectedJob ? "workshop" : place
+
   return (
     <TooltipProvider delayDuration={200}>
       <Toaster position="top-right" theme="system" />
@@ -1167,6 +1184,34 @@ export default function App() {
                 {healthStatus === "offline" ? "后端离线时无法提交新任务" : "新建改写任务 (Cmd/Ctrl + N)"}
               </TooltipContent>
             </Tooltip>
+          </div>
+
+          {/* 顶层场所导航（IA ④）：开始 / 作品集 / 你的声音。下方 recents 是「工作台」入口（选 job 即进）。 */}
+          <nav className="px-3 pb-2 flex flex-col gap-0.5">
+            {([
+              ["start", "开始", Sparkles],
+              ["library", "作品集", BookOpen],
+              ["voice", "你的声音", PenLine],
+            ] as const).map(([key, label, Icon]) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => goPlace(key)}
+                className={cn(
+                  "flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm transition-colors text-left",
+                  currentView === key
+                    ? "bg-primary/12 text-primary font-medium"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted/50",
+                )}
+              >
+                <Icon className="size-4 shrink-0" />
+                {label}
+              </button>
+            ))}
+          </nav>
+
+          <div className="px-3 pb-1.5">
+            <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/60 px-1">最近</div>
           </div>
 
           {/* 搜索 + 状态 chip —— 历史归档多了用来快速定位 */}
@@ -1312,6 +1357,13 @@ export default function App() {
               onReloadDraftOriginal={() => selectedJob && loadDraftAndReview(selectedJob.id, true)}
               onOpenSettings={openSettings}
             />
+          ) : place === "library" ? (
+            <LibraryView
+              historicalJobs={historicalJobs}
+              onOpenJob={(id) => { setSelectedJobId(id); setIsCreating(false); setShowSettings(false) }}
+            />
+          ) : place === "voice" ? (
+            <VoiceView onOpenSettings={openSettings} />
           ) : (
             <HomeView
               historicalJobs={historicalJobs}
