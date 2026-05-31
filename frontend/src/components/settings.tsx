@@ -70,7 +70,7 @@ function MiniSwitch({ checked, onChange, title }: { checked: boolean; onChange: 
   )
 }
 
-// 设置 = 纯模型/Key 配置。写作知识库（文风合同）已归位到「你的声音」场所（IA ⑤）。
+// 设置 = 纯模型/Key 配置。写作知识库（文风合同）已归位到「风格」场所（IA ⑤）。
 export function SettingsPanel({ onProfilesChanged }: { onProfilesChanged?: () => void }) {
   return (
     <div className="flex-1 flex flex-col min-h-0">

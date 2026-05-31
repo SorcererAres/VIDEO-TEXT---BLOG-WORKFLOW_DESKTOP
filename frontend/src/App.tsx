@@ -1186,12 +1186,12 @@ export default function App() {
             </Tooltip>
           </div>
 
-          {/* 顶层场所导航（IA ④）：开始 / 作品集 / 你的声音。下方 recents 是「工作台」入口（选 job 即进）。 */}
+          {/* 顶层场所导航（IA ④）：开始 / 作品集 / 风格。下方 recents 是「工作台」入口（选 job 即进）。 */}
           <nav className="px-3 pb-2 flex flex-col gap-0.5">
             {([
               ["start", "开始", Sparkles],
               ["library", "作品集", BookOpen],
-              ["voice", "你的声音", PenLine],
+              ["voice", "风格", PenLine],
             ] as const).map(([key, label, Icon]) => (
               <button
                 key={key}

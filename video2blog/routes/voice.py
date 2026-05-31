@@ -1,4 +1,4 @@
-"""你的声音：从 memory/fingerprints.jsonl 聚合出「文风画像」。
+"""风格：从 memory/fingerprints.jsonl 聚合出「文风画像」。
 
 只读、纯本地、无密钥。memory/ 不在 /file 白名单（那只放 output/work），故单开此端点。
 聚合在后端做，前端只渲染。

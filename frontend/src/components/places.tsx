@@ -1,4 +1,4 @@
-// 顶层"场所"视图：作品集 Library / 你的声音 Voice。
+// 顶层"场所"视图：作品集 Library / 风格 Voice。
 // ④ 先立骨架（可用但简单），③ 把 Library 做成富作品墙、⑤ 把 Voice 做成文风表单 + 指纹画像。
 
 import { useEffect, useState, type ReactNode } from "react"
@@ -223,7 +223,7 @@ export function LibraryView({
   )
 }
 
-// ═══════════════════ 你的声音 Voice ═══════════════════
+// ═══════════════════ 风格 Voice ═══════════════════
 
 interface FingerprintData {
   count: number
@@ -325,7 +325,7 @@ export function VoiceView() {
         <div>
           <h1 className="text-xl font-semibold tracking-tight flex items-center gap-2">
             <PenLine className="size-5 text-primary" />
-            你的声音
+            风格
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
             别的工具写出来是「AI 的第三人称摘要」；这里写出来是「你的第一人称署名长文」——

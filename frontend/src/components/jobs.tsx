@@ -649,7 +649,7 @@ export function HomeView({ historicalJobs, onCreate, onOpenLibrary, onOpenSettin
               </p>
               <ul className="text-sm flex flex-col gap-1.5">
                 <li className="flex gap-2"><span className="text-primary">·</span>是<b>你的署名长文</b>，不是 AI 的第三人称摘要</li>
-                <li className="flex gap-2"><span className="text-primary">·</span>用<b>你的文风</b>（可在「你的声音」里调）</li>
+                <li className="flex gap-2"><span className="text-primary">·</span>用<b>你的文风</b>（可在「风格」里调）</li>
                 <li className="flex gap-2"><span className="text-primary">·</span><b>全程在你机器上</b>，素材不上传、Key 进系统钥匙串</li>
                 <li className="flex gap-2"><span className="text-primary">·</span>每步可审、可改、可回退，<b>你说了算</b></li>
               </ul>
