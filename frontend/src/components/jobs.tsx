@@ -869,16 +869,10 @@ export function JobWorkspace(props: JobWorkspaceProps) {
       {/* Tabs — 历史归档只暴露"成品及报告"tab(没日志、没暂停产物)*/}
       <Tabs value={activeTab} onValueChange={v => setActiveTab(v as "console" | "outline" | "review" | "final" | "artifacts")} className="flex-1 flex flex-col overflow-hidden">
         <div className="px-6 pt-3">
+          {/* tab 顺序 = 当前最该看的排第一：成品前置 + 人工节点醒目化。
+              暂停时审批 tab 居首（轮到你了）；完成时成品居首；过程（日志/产物）降到其后。
+              用 paused_state 而非看磁盘内容 —— 旧 draft_v* 残留时启发式会让用户卡在错误审批界面（5/28 撞过两次）。 */}
           <TabsList>
-            {!isHistorical && (
-              <TabsTrigger value="console">
-                <Layers data-icon="inline-start" />
-                运行日志
-              </TabsTrigger>
-            )}
-            {/* tab 切换器用 paused_state 而非看磁盘内容 —— 旧 draft_v* 残留时
-                outlineText/draftContent 启发式会让 outline tab 不出现、review
-                tab 出现，把用户卡在错误的审批界面无法继续。5/28 撞过两次。 */}
             {!isHistorical && job.status === "paused" && job.paused_state === "WAITING_USER_OUTLINE" && (
               <TabsTrigger value="outline">
                 <ListTree data-icon="inline-start" />
@@ -895,6 +889,12 @@ export function JobWorkspace(props: JobWorkspaceProps) {
               <TabsTrigger value="final">
                 <Award data-icon="inline-start" />
                 {isHistorical ? "成品归档" : "成品及报告"}
+              </TabsTrigger>
+            )}
+            {!isHistorical && (
+              <TabsTrigger value="console">
+                <Layers data-icon="inline-start" />
+                运行日志
               </TabsTrigger>
             )}
             {!isHistorical && (

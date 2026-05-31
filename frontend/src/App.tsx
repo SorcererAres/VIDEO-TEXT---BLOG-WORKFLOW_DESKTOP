@@ -519,7 +519,11 @@ export default function App() {
             }
           })
       } else if (job.status === "succeeded") {
-        if (activeTab === "outline" || activeTab === "review") {
+        // 成品前置：跑完那一刻（running→succeeded）或新选中一个已完成任务时，默认落到成品阅读视图。
+        // 但不在后续每次 jobs 刷新时强切 —— 否则用户手点"运行日志"看一眼又被拽回成品。
+        const isFreshSelect = job.id !== selectedJob?.id
+        const justFinished = job.id === selectedJob?.id && prevStatus !== "succeeded"
+        if (isFreshSelect || justFinished || activeTab === "outline" || activeTab === "review") {
           setActiveTab("final")
         }
       }
