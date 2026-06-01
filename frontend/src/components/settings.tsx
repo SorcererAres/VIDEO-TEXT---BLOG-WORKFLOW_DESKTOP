@@ -24,7 +24,7 @@ import { cn } from '@/lib/utils'
 import { MarkdownView } from '@/components/MarkdownView'
 import { ConfirmDialogHost, confirmAction } from '@/components/ConfirmDialog'
 import { Segmented, FormField } from '@/components/form-primitives'
-import { apiUrl } from '@/lib/api'
+import { API_BASE, apiUrl } from '@/lib/api'
 import {
   PROVIDER_PRESETS,
   inferProviderId,
@@ -631,7 +631,7 @@ function SettingsForm({ onProfilesChanged, embedded }: { onCancel?: () => void; 
       }
       setTestResult(await res.json())
     } catch (e) {
-      setTestResult({ ok: false, error: `无法连接到本地后端 (127.0.0.1:8765): ${String(e)}` })
+      setTestResult({ ok: false, error: `无法连接到本地后端 (${API_BASE.replace(/^https?:\/\//, "")}): ${String(e)}` })
     } finally {
       setIsTesting(false)
     }

@@ -28,6 +28,8 @@ venv/
 
 # PyInstaller 后端二进制产物（Phase 3 sidecar，太大不入库）
 .build-backend/
+# stage 进 Tauri resources 的冻结后端副本（make stage-sidecar 生成）
+frontend/src-tauri/backend/
 
 # 系统与编辑器
 .DS_Store

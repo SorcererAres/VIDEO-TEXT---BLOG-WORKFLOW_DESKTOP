@@ -1287,7 +1287,7 @@ export default function App() {
               <div className="text-sm font-medium truncate">本地工作台</div>
               <div className="text-[10px] text-muted-foreground flex items-center gap-1">
                 <span className={cn("size-1.5 rounded-full", healthStatus === "online" ? "bg-emerald-500" : "bg-destructive")} />
-                {healthStatus === "online" ? "已连接 · 127.0.0.1:8765" : "后端离线"}
+                {healthStatus === "online" ? `已连接 · ${API_BASE.replace(/^https?:\/\//, "")}` : "后端离线"}
               </div>
             </div>
             <Settings className="size-4 text-muted-foreground shrink-0" />

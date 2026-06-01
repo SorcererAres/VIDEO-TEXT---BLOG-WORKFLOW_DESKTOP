@@ -1,7 +1,12 @@
+use std::sync::Arc;
+
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder},
-    Emitter, Manager, WebviewUrl, WebviewWindowBuilder,
+    Emitter, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder,
 };
+
+mod sidecar;
+use sidecar::BackendState;
 
 /// 打开（或聚焦）独立的「设置」窗口 —— macOS 规范：设置是独立窗口，由 Cmd+, / 菜单 / 齿轮触发。
 fn open_settings_window(app: &tauri::AppHandle) {
@@ -84,31 +89,49 @@ fn build_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let backend_state: Arc<BackendState> = Arc::new(BackendState::default());
+
+    let app = tauri::Builder::default()
         // 记住窗口位置/尺寸，关闭再开恢复 frame（macOS 习惯）。
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_notification::init())
-        .invoke_handler(tauri::generate_handler![open_settings])
-        .setup(|app| {
-            if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
-            }
-            // 原生菜单栏 + 快捷键
-            let menu = build_menu(app.handle())?;
-            app.set_menu(menu)?;
-            app.on_menu_event(|app, event| match event.id().as_ref() {
-                "settings" => open_settings_window(app),
-                "new" => {
-                    let _ = app.emit("menu:new", ());
+        .manage(backend_state.clone())
+        .invoke_handler(tauri::generate_handler![
+            open_settings,
+            sidecar::get_backend_url
+        ])
+        .setup({
+            let backend_state = backend_state.clone();
+            move |app| {
+                if cfg!(debug_assertions) {
+                    app.handle().plugin(
+                        tauri_plugin_log::Builder::default()
+                            .level(log::LevelFilter::Info)
+                            .build(),
+                    )?;
                 }
-                _ => {}
-            });
-            Ok(())
+                // 原生菜单栏 + 快捷键
+                let menu = build_menu(app.handle())?;
+                app.set_menu(menu)?;
+                app.on_menu_event(|app, event| match event.id().as_ref() {
+                    "settings" => open_settings_window(app),
+                    "new" => {
+                        let _ = app.emit("menu:new", ());
+                    }
+                    _ => {}
+                });
+                // 拉起后端 sidecar，ready 后 emit backend:ready 给前端
+                sidecar::spawn(app.handle(), backend_state.clone());
+                Ok(())
+            }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    // App 退出时 kill 子进程，防止变孤儿
+    app.run(move |_app, event| {
+        if let RunEvent::Exit = event {
+            sidecar::shutdown(&backend_state);
+        }
+    });
 }

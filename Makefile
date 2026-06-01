@@ -1,7 +1,11 @@
 PYTHON := .venv/bin/python
 FRONTEND_DIR := frontend
 
-.PHONY: install test validate regression frontend-lint frontend-build server dev app app-build backend-bin
+# Sidecar：PyInstaller onedir 产物 → stage 进 Tauri resources 目录
+SIDECAR_SRC := .build-backend/dist/video2blog-server
+SIDECAR_DST := frontend/src-tauri/backend/video2blog-server
+
+.PHONY: install test validate regression frontend-lint frontend-build server dev app app-build backend-bin stage-sidecar sign-app notarize-app dist
 
 # 单一依赖来源 = pyproject.toml（pip install -e . 会注册包 + console script）。
 # 一律走 `$(PYTHON) -m pip`，不用 `.venv/bin/pip`：后者在解释器/venv 错位时会装到别处（踩过坑）。
@@ -30,15 +34,44 @@ server:
 dev:
 	$(PYTHON) scripts/run_engine_server.py
 
-# 桌面 App（Tauri 壳）：起后端 + tauri dev（需 Rust 工具链，详见 README）
+# 桌面 App（Tauri 壳 · dev）：直接 tauri dev。
+# 后端由 Rust sidecar 在 setup 时自动拉起（dev 模式用 .venv + --auto-port），
+# 不再需要脚本预启后端。浏览器降级开发仍可单独 `make server` + `npm run dev`。
 app:
 	bash scripts/run_app.sh
 
-# 构建可分发的 .app（注意：当前未打包 Python 后端 sidecar，运行仍需独立后端）
-app-build:
+# 把冻结后端 stage 进 Tauri resources（app-build 依赖）。
+# 缺二进制时自动先跑 backend-bin。
+stage-sidecar:
+	@if [ ! -x "$(SIDECAR_SRC)/video2blog-server" ]; then \
+	  echo "[stage-sidecar] 缺后端二进制，先跑 make backend-bin…"; \
+	  $(MAKE) backend-bin; \
+	fi
+	rm -rf "$(SIDECAR_DST)"
+	mkdir -p frontend/src-tauri/backend
+	cp -R "$(SIDECAR_SRC)" "$(SIDECAR_DST)"
+	@echo "[stage-sidecar] 已 stage → $(SIDECAR_DST)"
+
+# 构建可分发的 .app：先 stage 后端 sidecar 进 resources，再 tauri build。
+# 出的 .app 内含冻结后端，双击即用，无需独立启动后端。
+# 注意：仍未签名/公证——首次访问钥匙串会弹授权框（点「始终允许」）。签名见 scripts/sign_app.sh。
+app-build: stage-sidecar
 	cd $(FRONTEND_DIR) && PATH="$$HOME/.cargo/bin:$$PATH" npm run tauri build
 
-# Phase 3 sidecar 准备：把 FastAPI 后端冻结成 onedir 可执行。
-# 暂不含 mlx-whisper（需 .metallib datas）；暂未签名（首次访问钥匙串会弹窗）。
+# 把 FastAPI 后端冻结成 onedir 可执行（sidecar 弹药）。
+# 暂不含 mlx-whisper（需 .metallib datas）；暂未签名。
 backend-bin:
 	bash scripts/build_backend_bin.sh
+
+# ── 阶段 B：Developer ID 签名 + 公证（需 Apple 证书；见脚本头部注释）──
+# 深签 .app（含 sidecar 内 dylib）。需 export SIGN_IDENTITY。
+sign-app:
+	bash scripts/sign_app.sh
+
+# 提交公证 + staple 票据。需 NOTARY_PROFILE 或 APPLE_ID/TEAM_ID/APP_PASSWORD。
+notarize-app:
+	bash scripts/notarize_app.sh
+
+# 一键出可分发成品：build → 签名 → 公证。证书/账号配齐后即用。
+dist: app-build sign-app notarize-app
+	@echo "[dist] ✓ 已出签名 + 公证的 .app。"

@@ -1,26 +1,17 @@
 #!/usr/bin/env bash
-# 一键起桌面 App：先确保后端（FastAPI 8765）在跑，再启动 Tauri 壳（tauri dev）。
-# 后端若已在运行则复用、退出时不动它；本脚本启动的后端会在退出时一并清理。
+# 一键起桌面 App（Tauri 壳 · dev）。
+#
+# 后端不再由本脚本预启：Rust sidecar 在 App setup 时自动拉起
+# （dev 模式用 .venv/bin/python scripts/run_engine_server.py --auto-port），
+# 退出时一并回收。避免「脚本起一个 + sidecar 又起一个」的双后端冲突。
+#
+# 若想用浏览器降级开发（不进 Tauri 壳），另开两个终端：
+#   make server          # 手动起后端 8765
+#   npm --prefix frontend run dev
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-BACKEND_PID=""
-cleanup() { [ -n "$BACKEND_PID" ] && kill "$BACKEND_PID" 2>/dev/null || true; }
-trap cleanup EXIT INT TERM
-
-if lsof -nP -iTCP:8765 -sTCP:LISTEN >/dev/null 2>&1; then
-  echo "[app] 后端已在 8765 运行，复用。"
-else
-  echo "[app] 启动后端 FastAPI (8765)…"
-  .venv/bin/python scripts/run_engine_server.py &
-  BACKEND_PID=$!
-  for _ in $(seq 1 30); do
-    curl -s -o /dev/null "http://127.0.0.1:8765/health" && break
-    sleep 0.5
-  done
-fi
-
 # Tauri 需要 cargo 在 PATH
 export PATH="$HOME/.cargo/bin:$PATH"
-echo "[app] 启动 Tauri 壳…"
+echo "[app] 启动 Tauri 壳（后端由 sidecar 自动拉起）…"
 cd frontend && npm run tauri dev

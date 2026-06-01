@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Hardened Runtime entitlements，公证（notarization）的硬性要求。 -->
+
+  <!-- PyInstaller sidecar 必需：冻结后端里的 dylib/.so 不是被本 Team 签的，
+       不禁用库校验就加载不进来。这是打包 Python 后端能跑的关键开关。 -->
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+
+  <!-- 某些 native 扩展（解释器 / cffi 等）需要可执行内存 + JIT。 -->
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+
+  <!-- 出站：LLM API（DeepSeek/OpenAI 等）。 -->
+  <key>com.apple.security.network.client</key>
+  <true/>
+  <!-- 入站：本地 FastAPI 监听 127.0.0.1（sidecar）。 -->
+  <key>com.apple.security.network.server</key>
+  <true/>
+
+  <!-- 用户经面板选择的视频/文字稿读写。 -->
+  <key>com.apple.security.files.user-selected.read-write</key>
+  <true/>
+</dict>
+</plist>
