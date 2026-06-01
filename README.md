@@ -178,7 +178,11 @@ vibrancy 毛玻璃侧栏、记住窗口尺寸、跟随系统外观（浅/深/自
 - **打包**：`make app-build` 出 `Video2Blog.app`（~65M）+ `.dmg`，**内含 PyInstaller 冻结后端**（`bundle.resources` 打进 `Contents/Resources/backend/`），双击即用、无需独立起后端。后端 `--auto-port` 自选端口 + 握手文件，前端动态读取。
 - **分发签名**：`make dist`（= app-build → `sign_app.sh` → `notarize_app.sh`(.app) → `package_signed_dmg.sh` → `notarize_app.sh`(.dmg)）。需 Apple Developer ID 证书；脚本会自动使用钥匙串里的第一个 `Developer ID Application` 身份，也可手动 `export SIGN_IDENTITY="Developer ID Application: NAME (TEAMID)"`；公证用 `export NOTARY_PROFILE=<notarytool 配置档名>`。`.app` 与 `.dmg` 均签名+公证+staple——`spctl` 全 `accepted, Notarized Developer ID`，双击 dmg / 拖出 .app 都不被拦。未签名版（adhoc）首次访问钥匙串会弹授权框、Gatekeeper 拦「未识别开发者」——签名公证后解除。
   - **证书链坑**：codesign 报 `unable to build chain to self-signed root` 时，是钥匙串缺 Apple 中间证书（`Developer ID Certification Authority`）或根证书（`Apple Root CA`）。从 [apple.com/certificateauthority](https://www.apple.com/certificateauthority/) 下载 `Developer ID - G2` 中间证书 + `Apple Root CA` 导入登录钥匙串即可。
-- **当前不打包 mlx-whisper**：依赖 `.metallib`，体积大且需 datas 收集；转录仍走独立 `.venv` 子进程。正式分发可选只 bundle whisper.cpp。
+- **打包版自带视频转录**：`.app` 内置两个转录引擎 + ffmpeg，不依赖用户机器装 ffmpeg/whisper/mlx：
+  - **whisper.cpp**（默认）：whisper-cli + ggml backend 插件（Metal GPU 加速），`@loader_path` 重定位；模型 `ggml-large-v3-turbo` 首次用时下载（带进度）。
+  - **mlx**（可选，Apple 原生）：`--collect-all mlx` + `.metallib`；模型 mlx_whisper 自动从 HF 下载。
+  - **引擎选择**：建任务时（视频源）UI 选「默认 / whisper.cpp / mlx」，或全局 `VIDEO2BLOG_ENGINE` env。dev（非打包）走系统 mlx/whisper.cpp 的 auto 链。
+  - 打包脚本：`scripts/bundle_whisper_cpp.sh`、`scripts/bundle_ffmpeg.sh`（`make backend-bin` 自动收集进 onedir）。
 
 `make regression` 在隔离临时 repo 里用 mock LLM 跑 `tests/fixtures/regression/<name>/`
 预置的金标 fixture，验证状态机、frontmatter、`VIEWER_RE`、HISTORY 与 fingerprints
