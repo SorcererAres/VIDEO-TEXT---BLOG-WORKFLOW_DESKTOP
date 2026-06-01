@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from video2blog.routes.models import TestLLMRequest
-from video2blog.server_core import redact_sensitive_text
+from video2blog.server_core import redact_sensitive_text, transcription_available
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -18,7 +18,13 @@ if TYPE_CHECKING:
 def register(app: "FastAPI", service: "EngineJobService", root: Path) -> None:
     @app.get("/health")
     def health() -> dict[str, Any]:
-        return {"ok": True, "repo_root": str(root)}
+        # transcription：本机能否跑视频转录。打包版（frozen，未打包 mlx/whisper.cpp）为 false，
+        # 前端据此在视频源上给降级提示。
+        return {
+            "ok": True,
+            "repo_root": str(root),
+            "capabilities": {"transcription": transcription_available()},
+        }
 
     @app.post("/api/test-llm")
     def test_llm(payload: TestLLMRequest) -> dict[str, Any]:

@@ -182,6 +182,8 @@ export default function App() {
   const [progressEvents, setProgressEvents] = useState<ParsedEvent[]>([])
   const [activeTab, setActiveTab] = useState<"console" | "outline" | "review" | "final" | "artifacts">("console")
   const [healthStatus, setHealthStatus] = useState<"online" | "offline">("offline")
+  // 本机能否跑视频转录（/health capabilities.transcription）。打包版未内置转录引擎时 false。
+  const [transcriptionAvailable, setTranscriptionAvailable] = useState(true)
   // 可收起的安静侧栏（Claude recents 气质）—— 状态持久化
   const [sidebarOpen, setSidebarOpen] = useState(() => localStorage.getItem("v2b_sidebar_open") !== "0")
   useEffect(() => { localStorage.setItem("v2b_sidebar_open", sidebarOpen ? "1" : "0") }, [sidebarOpen])
@@ -544,6 +546,13 @@ export default function App() {
     try {
       const res = await fetch(API_BASE + "/health")
       setHealthStatus(res.ok ? "online" : "offline")
+      if (res.ok) {
+        try {
+          const data = await res.json()
+          // 缺字段时默认 true（兼容老后端 / dev）
+          setTranscriptionAvailable(data?.capabilities?.transcription !== false)
+        } catch { /* 非 JSON 不影响在线判定 */ }
+      }
     } catch {
       setHealthStatus("offline")
     }
@@ -1314,6 +1323,7 @@ export default function App() {
               onOpenSettings={openSettings}
               isSubmitting={isSubmittingJob}
               healthOffline={healthStatus === "offline"}
+              transcriptionAvailable={transcriptionAvailable}
               draftRestoredTs={draftRestoredTs}
               onDiscardDraft={handleDiscardDraft}
               onSubmit={handleCreateJob}

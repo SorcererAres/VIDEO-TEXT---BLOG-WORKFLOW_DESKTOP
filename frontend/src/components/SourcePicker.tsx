@@ -27,6 +27,9 @@ interface SourcePickerProps {
   onChange: (v: string) => void
   apiBase: string
   className?: string
+  // 本机能否跑视频转录（后端 /health capabilities.transcription）。
+  // 打包版（frozen，未内置转录引擎）为 false：视频源禁用 + 给降级说明。
+  transcriptionAvailable?: boolean
 }
 
 const RECENT_KEY = "v2b_recent_sources"
@@ -64,7 +67,7 @@ function formatSize(n: number): string {
  *   - 支持搜索过滤
  *   - 仍允许用户切换到手动输入模式(粘任意路径)
  */
-export function SourcePicker({ value, onChange, apiBase, className }: SourcePickerProps) {
+export function SourcePicker({ value, onChange, apiBase, className, transcriptionAvailable = true }: SourcePickerProps) {
   const [open, setOpen] = useState(false)
   const [items, setItems] = useState<SourceItem[]>([])
   const [loading, setLoading] = useState(false)
@@ -150,7 +153,9 @@ export function SourcePicker({ value, onChange, apiBase, className }: SourcePick
       ref={fileRef}
       type="file"
       hidden
-      accept=".mp4,.mov,.mkv,.m4v,.webm,.flv,.avi,.txt,.md,.srt,.vtt,video/*"
+      accept={transcriptionAvailable
+        ? ".mp4,.mov,.mkv,.m4v,.webm,.flv,.avi,.txt,.md,.srt,.vtt,video/*"
+        : ".txt,.md,.srt,.vtt"}
       onChange={e => { const f = e.target.files?.[0]; if (f) handleUpload(f); e.target.value = "" }}
     />
     <Popover open={open} onOpenChange={setOpen}>
@@ -235,13 +240,27 @@ export function SourcePicker({ value, onChange, apiBase, className }: SourcePick
             )}
 
             {videos.length > 0 && (
-              <CommandGroup heading={`待转录视频 · ${videos.length}（选中会先自动转录）`}>
+              <CommandGroup
+                heading={
+                  transcriptionAvailable
+                    ? `待转录视频 · ${videos.length}（选中会先自动转录）`
+                    : `待转录视频 · ${videos.length} · 打包版不支持转录`
+                }
+              >
+                {!transcriptionAvailable && (
+                  <div className="px-2 pb-1.5 text-[11px] text-muted-foreground leading-relaxed">
+                    打包版未内置转录引擎（mlx / whisper.cpp）。请改用下方「视频转录稿 / 文字稿」，
+                    或在开发版（<code>make app</code>）里把视频转成文字稿。
+                  </div>
+                )}
                 {videos.map(item => (
                   <SourceRow
                     key={item.path}
                     item={item}
                     selected={value === item.path}
+                    disabled={!transcriptionAvailable}
                     onSelect={() => {
+                      if (!transcriptionAvailable) return
                       onChange(item.path)
                       setOpen(false)
                     }}
@@ -300,7 +319,7 @@ export function SourcePicker({ value, onChange, apiBase, className }: SourcePick
               onClick={() => fileRef.current?.click()}
             >
               {uploading ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <Upload data-icon="inline-start" />}
-              {uploading ? "上传中…" : "上传视频 / 文字稿…"}
+              {uploading ? "上传中…" : transcriptionAvailable ? "上传视频 / 文字稿…" : "上传文字稿 / 字幕…"}
             </Button>
             <Button
               type="button"
@@ -322,10 +341,15 @@ export function SourcePicker({ value, onChange, apiBase, className }: SourcePick
   )
 }
 
-function SourceRow({ item, selected, recent, onSelect }: { item: SourceItem; selected: boolean; recent?: boolean; onSelect: () => void }) {
+function SourceRow({ item, selected, recent, disabled, onSelect }: { item: SourceItem; selected: boolean; recent?: boolean; disabled?: boolean; onSelect: () => void }) {
   const Icon = item.kind === "video" ? Film : item.kind === "transcript" ? FileAudio : FileText
   return (
-    <CommandItem onSelect={onSelect} className="gap-2" value={item.path + " " + item.label}>
+    <CommandItem
+      onSelect={onSelect}
+      disabled={disabled}
+      className={cn("gap-2", disabled && "opacity-50 cursor-not-allowed")}
+      value={item.path + " " + item.label}
+    >
       {recent ? (
         <Clock className="size-3.5 shrink-0 text-muted-foreground" />
       ) : (

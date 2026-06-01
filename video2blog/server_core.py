@@ -29,6 +29,19 @@ VALID_REWRITE_STRATEGIES = {"single", "sectioned"}
 VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".mkv", ".webm", ".flv", ".avi"}
 
 
+def transcription_available() -> bool:
+    """本机能否跑视频转录（前三步）。
+
+    打包版（PyInstaller frozen）下为 False：sys.executable 是 server 二进制、
+    .app 内无 video2blog.py 源码、且未打包 mlx/whisper.cpp 转录引擎。前端据此
+    在视频源上给降级提示，后端 _transcribe 据此 fail-closed。
+    可用 VIDEO2BLOG_FORCE_TRANSCRIBE=1 强制覆盖（给将来打包了引擎的版本留口子）。
+    """
+    if os.environ.get("VIDEO2BLOG_FORCE_TRANSCRIBE") == "1":
+        return True
+    return not getattr(sys, "frozen", False)
+
+
 def redact_sensitive_text(text: str, *secrets: str | None) -> str:
     redacted = text
     for secret in secrets:
@@ -479,6 +492,17 @@ class EngineJobService:
                 emit_transcribe("asr", engine=engine)
 
         raw_txt = self.repo_root / "work" / video.stem / "raw.txt"
+
+        # 打包版（PyInstaller frozen）拦截：sys.executable 是 server 二进制不是 python，
+        # 且 .app 内无 video2blog.py 源码、未打包 mlx/whisper.cpp 转录引擎。给清晰引导，
+        # 而非让子进程报费解的 `unrecognized arguments`。视频转录走 dev（make app）或
+        # 改用「文字稿 / 字幕」入口（不经转录）。capability 由 transcription_available() 暴露给前端。
+        if not transcription_available():
+            raise RuntimeError(
+                "打包版暂不支持视频转录：转录引擎（mlx-whisper / whisper.cpp）未随 .app 打包。\n"
+                "请改用「文字稿 / 字幕」入口（拖入 .txt / .md / .srt 或粘贴已有文字稿），\n"
+                "或在开发环境用 `make app` 先把视频转成文字稿。"
+            )
         cmd = [
             sys.executable, "video2blog.py", str(video),
             "--no-auto-terminal", "--engine", "auto", "--fallback-policy", "auto",

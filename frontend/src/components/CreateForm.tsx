@@ -64,6 +64,7 @@ export interface CreateFormProps {
   onOpenSettings: () => void
   isSubmitting: boolean
   healthOffline: boolean
+  transcriptionAvailable: boolean
   draftRestoredTs: number | null
   onDiscardDraft: () => void
   onSubmit: (e: React.FormEvent) => void
@@ -184,6 +185,7 @@ export function CreateForm(props: CreateFormProps) {
                   value={props.source}
                   onChange={props.setSource}
                   apiBase={API_BASE}
+                  transcriptionAvailable={props.transcriptionAvailable}
                 />
                 {uploadErr && <span className="text-xs text-destructive">{uploadErr}</span>}
                 {uploading && (
@@ -192,13 +194,19 @@ export function CreateForm(props: CreateFormProps) {
                   </span>
                 )}
                 {!uploading && kind && (
-                  <span className="text-xs text-muted-foreground flex items-center gap-1.5">
-                    {kind === "video"
-                      ? <><Film className="size-3.5 text-primary" /> 视频 · 提交后先自动转录（音频 → 转录 → 成稿）再改写</>
-                      : kind === "transcript"
-                        ? <><FileAudio className="size-3.5 text-primary" /> 转录稿 · 直接进入改写</>
-                        : <><FileText className="size-3.5 text-primary" /> 文字稿 · 直接进入改写</>}
-                  </span>
+                  kind === "video" && !props.transcriptionAvailable ? (
+                    <span className="text-xs text-destructive flex items-center gap-1.5">
+                      <Film className="size-3.5" /> 打包版不支持视频转录 · 请改用文字稿 / 字幕，或在开发版处理视频
+                    </span>
+                  ) : (
+                    <span className="text-xs text-muted-foreground flex items-center gap-1.5">
+                      {kind === "video"
+                        ? <><Film className="size-3.5 text-primary" /> 视频 · 提交后先自动转录（音频 → 转录 → 成稿）再改写</>
+                        : kind === "transcript"
+                          ? <><FileAudio className="size-3.5 text-primary" /> 转录稿 · 直接进入改写</>
+                          : <><FileText className="size-3.5 text-primary" /> 文字稿 · 直接进入改写</>}
+                    </span>
+                  )
                 )}
               </FormField>
 
