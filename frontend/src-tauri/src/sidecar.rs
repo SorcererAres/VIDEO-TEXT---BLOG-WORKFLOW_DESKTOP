@@ -165,15 +165,36 @@ fn launch_and_wait(app: &AppHandle, state: &BackendState) -> anyhow::Result<Stri
         }
     };
 
-    // 子进程日志：dev 走 stdout（便于调试），prod 走 dev null（避免日志污染）。
-    // 用 debug_assertions 区分。
+    // 子进程日志：dev 走 stdout（便于调试）；prod 落 app_support/sidecar.log，
+    // 而非 null —— 否则后端在 .app 里启动出问题就是个黑盒，没法诊断（生产级可观测性）。
+    // 同时显式给 stdin = null：GUI 进程无 tty，避免子进程意外阻塞在读 stdin。
+    cmd.stdin(Stdio::null());
     #[cfg(debug_assertions)]
     {
         cmd.stdout(Stdio::inherit()).stderr(Stdio::inherit());
     }
     #[cfg(not(debug_assertions))]
     {
-        cmd.stdout(Stdio::null()).stderr(Stdio::null());
+        let log_path = state_dir()
+            .map(|d| {
+                let _ = fs::create_dir_all(&d);
+                d.join("sidecar.log")
+            })
+            .unwrap_or_else(|| PathBuf::from("/tmp/video2blog-sidecar.log"));
+        let open = || {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log_path)
+        };
+        match (open(), open()) {
+            (Ok(out), Ok(err)) => {
+                cmd.stdout(Stdio::from(out)).stderr(Stdio::from(err));
+            }
+            _ => {
+                cmd.stdout(Stdio::null()).stderr(Stdio::null());
+            }
+        }
     }
 
     log::info!("[sidecar] spawn: {label} (repo_root={})", repo_root.display());
