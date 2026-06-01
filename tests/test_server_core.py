@@ -20,6 +20,7 @@ class MockLLMClient:
         self.total_output_tokens = 8
         self.total_cost = 0.00001
         self.model = "mock-model"
+        self.api_key = "mock-key"  # 注入的 mock 视为已配 key（server_core 无 key 早检查用）
 
     def call_api(self, system_prompt: str, user_prompt: str, json_mode: bool = False) -> str:
         self.calls.append((system_prompt, user_prompt, json_mode))
@@ -152,7 +153,7 @@ class TestEngineJobService(unittest.TestCase):
         finished = service.wait_for_job(job.id)
 
         self.assertEqual(finished.status, "failed")
-        self.assertIn("LLM API Key", finished.error or "")
+        self.assertIn("API Key", finished.error or "")
         self.assertEqual(events[-1]["event"], "failed")
         service.shutdown()
 

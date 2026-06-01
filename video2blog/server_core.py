@@ -333,7 +333,15 @@ class EngineJobService:
         try:
             client = self._client_factory(request)
             client_holder[0] = client
-            
+
+            # 无 LLM key 早失败：改写（Step 3–8）必须有 key。视频源若不早查，用户会
+            # 白等转录几分钟才在改写阶段报错。给 GUI 友好引导（不提"环境变量"）。
+            # 判最终生效 client 的 key（real LLMClient 解析后的，注入的 mock 视为已配）。
+            if not (getattr(client, "api_key", None) or "").strip():
+                raise RuntimeError(
+                    "还没配置 LLM —— 请在「设置」里添加一个模型配置档、填好 API Key，再开始任务。"
+                )
+
             def check_cancelled() -> bool:
                 with self._lock:
                     rt = self._jobs.get(job_id)

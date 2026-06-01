@@ -115,7 +115,10 @@ class LLMClient:
     ) -> str:
         """Calls the OpenAI-compatible completions API with robust retries and exponential backoff."""
         if not self.api_key:
-            raise ValueError("缺失 LLM API Key，请设置环境变量 VIDEO2BLOG_API_KEY。")
+            raise ValueError(
+                "还没配置 LLM API Key —— 请在「设置」里添加模型配置档、填好 Key"
+                "（或设环境变量 VIDEO2BLOG_API_KEY）。"
+            )
 
         full_prompt_est = system_prompt + "\n" + user_prompt
         self.check_budget(full_prompt_est)
