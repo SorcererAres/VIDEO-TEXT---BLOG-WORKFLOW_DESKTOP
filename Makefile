@@ -41,12 +41,9 @@ app:
 	bash scripts/run_app.sh
 
 # 把冻结后端 stage 进 Tauri resources（app-build 依赖）。
-# 缺二进制时自动先跑 backend-bin。
-stage-sidecar:
-	@if [ ! -x "$(SIDECAR_SRC)/video2blog-server" ]; then \
-	  echo "[stage-sidecar] 缺后端二进制，先跑 make backend-bin…"; \
-	  $(MAKE) backend-bin; \
-	fi
+# 总是先重打 backend-bin —— 否则旧产物会被 cp 进 .app，导致打包版跑过期后端代码
+# （踩过：改了 server 代码但 .app 里仍是旧逻辑）。发版才 app-build，重打代价可接受。
+stage-sidecar: backend-bin
 	rm -rf "$(SIDECAR_DST)"
 	mkdir -p frontend/src-tauri/backend
 	cp -R "$(SIDECAR_SRC)" "$(SIDECAR_DST)"
