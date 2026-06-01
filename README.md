@@ -164,7 +164,7 @@ make frontend-build  # npm --prefix frontend run build
 make server          # 启动 FastAPI 本地服务
 make app             # 桌面 App（Tauri 壳 · dev）：tauri dev（后端由 sidecar 自动拉起）
 make app-build       # 构建 .app + .dmg（内含冻结后端 sidecar，双击即用）
-make dist            # app-build → 签名 → 公证（需 Apple Developer ID 证书）
+make dist            # app-build → 签名+公证 .app → 打包+签名 .dmg → 公证+staple .dmg
 ```
 
 ### 桌面 App（Tauri 壳 · macOS 尊重式）
@@ -176,7 +176,8 @@ vibrancy 毛玻璃侧栏、记住窗口尺寸、跟随系统外观（浅/深/自
 - **前置**：Rust 工具链（`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`）。首次编译耗时数分钟。
 - **运行**：`make app`（`tauri dev`，后端由 Rust sidecar 自动拉起、退出回收）。仍可 `make server` + `npm run dev` 在浏览器做降级开发。
 - **打包**：`make app-build` 出 `Video2Blog.app`（~65M）+ `.dmg`，**内含 PyInstaller 冻结后端**（`bundle.resources` 打进 `Contents/Resources/backend/`），双击即用、无需独立起后端。后端 `--auto-port` 自选端口 + 握手文件，前端动态读取。
-- **分发签名**：`make dist`（= app-build → `sign_app.sh` → `notarize_app.sh`）。需 Apple Developer ID 证书：`export SIGN_IDENTITY="Developer ID Application: NAME (TEAMID)"`。未签名版（adhoc）首次访问钥匙串会弹授权框、Gatekeeper 拦「未识别开发者」——签名公证后解除。
+- **分发签名**：`make dist`（= app-build → `sign_app.sh` → `notarize_app.sh`(.app) → `package_signed_dmg.sh` → `notarize_app.sh`(.dmg)）。需 Apple Developer ID 证书；脚本会自动使用钥匙串里的第一个 `Developer ID Application` 身份，也可手动 `export SIGN_IDENTITY="Developer ID Application: NAME (TEAMID)"`；公证用 `export NOTARY_PROFILE=<notarytool 配置档名>`。`.app` 与 `.dmg` 均签名+公证+staple——`spctl` 全 `accepted, Notarized Developer ID`，双击 dmg / 拖出 .app 都不被拦。未签名版（adhoc）首次访问钥匙串会弹授权框、Gatekeeper 拦「未识别开发者」——签名公证后解除。
+  - **证书链坑**：codesign 报 `unable to build chain to self-signed root` 时，是钥匙串缺 Apple 中间证书（`Developer ID Certification Authority`）或根证书（`Apple Root CA`）。从 [apple.com/certificateauthority](https://www.apple.com/certificateauthority/) 下载 `Developer ID - G2` 中间证书 + `Apple Root CA` 导入登录钥匙串即可。
 - **当前不打包 mlx-whisper**：依赖 `.metallib`，体积大且需 datas 收集；转录仍走独立 `.venv` 子进程。正式分发可选只 bundle whisper.cpp。
 
 `make regression` 在隔离临时 repo 里用 mock LLM 跑 `tests/fixtures/regression/<name>/`

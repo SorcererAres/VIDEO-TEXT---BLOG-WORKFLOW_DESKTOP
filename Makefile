@@ -5,7 +5,7 @@ FRONTEND_DIR := frontend
 SIDECAR_SRC := .build-backend/dist/video2blog-server
 SIDECAR_DST := frontend/src-tauri/backend/video2blog-server
 
-.PHONY: install test validate regression frontend-lint frontend-build server dev app app-build backend-bin stage-sidecar sign-app notarize-app dist
+.PHONY: install test validate regression frontend-lint frontend-build server dev app app-build backend-bin stage-sidecar sign-app notarize-app package-dmg notarize-dmg dist
 
 # 单一依赖来源 = pyproject.toml（pip install -e . 会注册包 + console script）。
 # 一律走 `$(PYTHON) -m pip`，不用 `.venv/bin/pip`：后者在解释器/venv 错位时会装到别处（踩过坑）。
@@ -72,6 +72,14 @@ sign-app:
 notarize-app:
 	bash scripts/notarize_app.sh
 
-# 一键出可分发成品：build → 签名 → 公证。证书/账号配齐后即用。
-dist: app-build sign-app notarize-app
-	@echo "[dist] ✓ 已出签名 + 公证的 .app。"
+# 从已签名/已公证 .app 重新生成 dmg，并签名 dmg 本身。
+package-dmg:
+	bash scripts/package_signed_dmg.sh
+
+# 公证 + staple dmg 本身（取 bundle/dmg 下最新 dmg）。否则双击 dmg 仍被 Gatekeeper 拦。
+notarize-dmg:
+	bash scripts/notarize_app.sh "$$(ls -t frontend/src-tauri/target/release/bundle/dmg/*.dmg | head -1)"
+
+# 一键出可分发成品：build → 签名 .app → 公证 .app → 打包签名 dmg → 公证 dmg。证书/账号配齐后即用。
+dist: app-build sign-app notarize-app package-dmg notarize-dmg
+	@echo "[dist] ✓ 已出签名+公证的 .app，以及签名+公证的 .dmg（双击 dmg / 拖出 .app 都过 Gatekeeper）。"
