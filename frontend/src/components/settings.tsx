@@ -73,7 +73,7 @@ function MiniSwitch({ checked, onChange, title }: { checked: boolean; onChange: 
 }
 
 // ── 本地转录模型管理（设置 → 本地模型）──────────────────────────
-interface GgmlModel {
+interface LocalModel {
   name: string
   label: string
   size_mb: number
@@ -85,8 +85,50 @@ interface GgmlModel {
   error?: string | null
 }
 
+type Engine = "whisper-cpp" | "mlx"
+
+function ModelRow({ m, onDownload, onRemove }: {
+  m: LocalModel
+  onDownload: () => void
+  onRemove: () => void
+}) {
+  const downloading = m.status === "downloading"
+  return (
+    <div className="flex items-center gap-3 border rounded-lg p-3">
+      <HardDrive className={cn("size-4 shrink-0", m.downloaded ? "text-primary" : "text-muted-foreground/40")} />
+      <div className="flex-1 min-w-0">
+        <div className="text-sm font-medium flex items-center gap-2">
+          {m.label}
+          {m.is_default && <Badge variant="secondary" className="text-[10px]">默认</Badge>}
+        </div>
+        <div className="text-[11px] text-muted-foreground">
+          {downloading ? `下载中${m.percent != null ? ` ${m.percent}%` : "…"}`
+            : m.status === "error" ? <span className="text-destructive">下载失败：{m.error}</span>
+            : m.downloaded ? `已下载 · ${m.local_mb} MB`
+            : `约 ${m.size_mb} MB`}
+        </div>
+      </div>
+      {downloading ? (
+        <div className="w-28 shrink-0">
+          <div className="h-1.5 bg-muted rounded-full overflow-hidden">
+            <div className="h-full bg-primary transition-all" style={{ width: `${m.percent ?? 5}%` }} />
+          </div>
+        </div>
+      ) : m.downloaded ? (
+        <Button size="sm" variant="ghost" className="text-destructive hover:text-destructive shrink-0" onClick={onRemove}>
+          <Trash2 data-icon="inline-start" /> 删除
+        </Button>
+      ) : (
+        <Button size="sm" variant="outline" className="shrink-0" onClick={onDownload}>
+          <Download data-icon="inline-start" /> 下载
+        </Button>
+      )}
+    </div>
+  )
+}
+
 function LocalModelsPanel() {
-  const [models, setModels] = useState<GgmlModel[]>([])
+  const [data, setData] = useState<{ whisper_cpp: LocalModel[]; mlx: LocalModel[] }>({ whisper_cpp: [], mlx: [] })
   const [loading, setLoading] = useState(true)
 
   const load = async () => {
@@ -94,7 +136,7 @@ function LocalModelsPanel() {
       const r = await fetch(apiUrl("/api/local-models"))
       if (r.ok) {
         const d = await r.json()
-        setModels(d.whisper_cpp || [])
+        setData({ whisper_cpp: d.whisper_cpp || [], mlx: d.mlx || [] })
       }
     } catch { /* 离线时静默 */ }
     setLoading(false)
@@ -106,75 +148,70 @@ function LocalModelsPanel() {
     return () => clearInterval(t)
   }, [])
 
-  const download = async (name: string) => {
+  const download = async (name: string, engine: Engine) => {
     try {
       await fetch(apiUrl("/api/local-models/download"), {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name }),
+        body: JSON.stringify({ name, engine }),
       })
       load()
     } catch (e) { toast.error("启动下载失败", { description: String(e) }) }
   }
 
-  const remove = async (m: GgmlModel) => {
+  const remove = async (m: LocalModel, engine: Engine) => {
     const ok = await confirmAction({
       title: `删除 ${m.label}？`,
-      description: `将删除本地模型文件（${m.local_mb} MB）。需要时可重新下载。`,
+      description: `将删除本地模型（${m.local_mb} MB）。需要时可重新下载。`,
       confirmText: "删除", variant: "destructive",
     })
     if (!ok) return
     try {
       await fetch(apiUrl("/api/local-models/delete"), {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: m.name }),
+        body: JSON.stringify({ name: m.name, engine }),
       })
       load()
     } catch (e) { toast.error("删除失败", { description: String(e) }) }
   }
 
+  const empty = data.whisper_cpp.length === 0 && data.mlx.length === 0
   return (
     <ScrollArea className="flex-1">
-      <div className="p-6 flex flex-col gap-3">
-        <p className="text-xs text-muted-foreground leading-relaxed">
-          whisper.cpp 转录模型（视频转录用）。质量越高、体积越大、越慢。默认 <b>Large v3 Turbo</b>，
-          首次转录会自动下载。mlx 引擎的模型由系统自动管理，不在此列。
-        </p>
-        {loading && models.length === 0 ? (
+      <div className="p-6 flex flex-col gap-6">
+        {loading && empty ? (
           <div className="text-sm text-muted-foreground py-8 text-center">
             <Loader2 className="size-4 animate-spin inline mr-1.5" />加载…
           </div>
-        ) : models.map(m => (
-          <div key={m.name} className="flex items-center gap-3 border rounded-lg p-3">
-            <HardDrive className={cn("size-4 shrink-0", m.downloaded ? "text-primary" : "text-muted-foreground/40")} />
-            <div className="flex-1 min-w-0">
-              <div className="text-sm font-medium flex items-center gap-2">
-                {m.label}
-                {m.is_default && <Badge variant="secondary" className="text-[10px]">默认</Badge>}
+        ) : (
+          <>
+            <section className="flex flex-col gap-2.5">
+              <div>
+                <h3 className="text-sm font-semibold">whisper.cpp</h3>
+                <p className="text-[11px] text-muted-foreground mt-0.5">
+                  默认引擎 · Metal 加速 · 模型单文件。首次转录会自动下载默认档。
+                </p>
               </div>
-              <div className="text-[11px] text-muted-foreground">
-                {m.status === "downloading" ? `下载中 ${m.percent ?? 0}%`
-                  : m.status === "error" ? <span className="text-destructive">下载失败：{m.error}</span>
-                  : m.downloaded ? `已下载 · ${m.local_mb} MB`
-                  : `约 ${m.size_mb} MB`}
+              {data.whisper_cpp.map(m => (
+                <ModelRow key={m.name} m={m}
+                  onDownload={() => download(m.name, "whisper-cpp")}
+                  onRemove={() => remove(m, "whisper-cpp")} />
+              ))}
+            </section>
+            <section className="flex flex-col gap-2.5">
+              <div>
+                <h3 className="text-sm font-semibold">mlx · Apple 原生</h3>
+                <p className="text-[11px] text-muted-foreground mt-0.5">
+                  Apple Silicon 原生，质量略优。模型从 HuggingFace 下载到系统缓存。
+                </p>
               </div>
-            </div>
-            {m.status === "downloading" ? (
-              <div className="w-28 shrink-0">
-                <div className="h-1.5 bg-muted rounded-full overflow-hidden">
-                  <div className="h-full bg-primary transition-all" style={{ width: `${m.percent ?? 0}%` }} />
-                </div>
-              </div>
-            ) : m.downloaded ? (
-              <Button size="sm" variant="ghost" className="text-destructive hover:text-destructive shrink-0" onClick={() => remove(m)}>
-                <Trash2 data-icon="inline-start" /> 删除
-              </Button>
-            ) : (
-              <Button size="sm" variant="outline" className="shrink-0" onClick={() => download(m.name)}>
-                <Download data-icon="inline-start" /> 下载
-              </Button>
-            )}
-          </div>
-        ))}
+              {data.mlx.map(m => (
+                <ModelRow key={m.name} m={m}
+                  onDownload={() => download(m.name, "mlx")}
+                  onRemove={() => remove(m, "mlx")} />
+              ))}
+            </section>
+          </>
+        )}
       </div>
     </ScrollArea>
   )

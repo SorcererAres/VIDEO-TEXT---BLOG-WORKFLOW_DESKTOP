@@ -34,6 +34,19 @@ KNOWN_GGML_MODELS: list[tuple[str, str, int]] = [
     ("ggml-large-v3.bin", "Large v3 · 最高质量", 3100),
 ]
 
+# mlx 引擎模型（HF mlx-community）。mlx_whisper 用 huggingface_hub 下到标准 HF cache，
+# 是「目录」（blobs/snapshots）不是单文件。(repo, 展示标签, 大致 MB)。
+KNOWN_MLX_MODELS: list[tuple[str, str, int]] = [
+    ("mlx-community/whisper-tiny", "Tiny · 最快最小", 85),
+    ("mlx-community/whisper-base-mlx", "Base · 轻量", 150),
+    ("mlx-community/whisper-small-mlx", "Small · 平衡", 500),
+    ("mlx-community/whisper-medium-mlx", "Medium · 较好", 1500),
+    ("mlx-community/whisper-large-v3-turbo", "Large v3 Turbo · 默认推荐", 1600),
+    ("mlx-community/whisper-large-v3-mlx", "Large v3 · 最高质量", 3000),
+]
+# mlx 引擎默认模型（与 server_core 的 VIDEO2BLOG_WHISPER_MODEL 默认一致）。
+DEFAULT_MLX_MODEL = "mlx-community/whisper-large-v3-turbo"
+
 # 后台下载状态跟踪：name → {"status": downloading/done/error, "percent": int, "error": str}
 _dl_state: dict[str, dict] = {}
 _dl_lock = threading.Lock()
@@ -238,6 +251,107 @@ def delete_ggml_model(name: str) -> bool:
     (p.with_suffix(p.suffix + ".part")).unlink(missing_ok=True)
     with _dl_lock:
         _dl_state.pop(name, None)
+    return existed
+
+
+# ── mlx 模型管理（HF cache，对称 ggml）────────────────────────────
+
+
+def _hf_hub_dir() -> Path:
+    """HuggingFace 模型缓存目录（mlx_whisper 把 mlx 模型下到这）。"""
+    base = os.environ.get("HF_HOME") or os.environ.get("HUGGINGFACE_HUB_CACHE")
+    if base:
+        return Path(base) / "hub" if not base.rstrip("/").endswith("hub") else Path(base)
+    return Path.home() / ".cache" / "huggingface" / "hub"
+
+
+def _mlx_cache_path(repo: str) -> Path:
+    """repo 'mlx-community/whisper-tiny' → <hf_hub>/models--mlx-community--whisper-tiny。"""
+    return _hf_hub_dir() / ("models--" + repo.replace("/", "--"))
+
+
+def _dir_size_mb(p: Path) -> int:
+    if not p.exists():
+        return 0
+    total = 0
+    for f in p.rglob("*"):
+        try:
+            # HF cache：snapshots/ 是指向 blobs/ 的软链，只算实际文件（blobs），
+            # 否则同一份数据被算两次（软链 stat 跟随到 blob）。
+            if f.is_file() and not f.is_symlink():
+                total += f.stat().st_size
+        except OSError:
+            pass
+    return round(total / 1_048_576)
+
+
+def _mlx_downloaded(repo: str) -> bool:
+    """是否已下到 HF cache（snapshots 下有真文件，>1MB）。"""
+    return _dir_size_mb(_mlx_cache_path(repo)) > 1
+
+
+def list_mlx_models() -> list[dict]:
+    """已知 mlx 模型 + 本地状态（HF cache 目录大小 / 下载中 / 可下载）。"""
+    out: list[dict] = []
+    for repo, label, mb in KNOWN_MLX_MODELS:
+        local_mb = _dir_size_mb(_mlx_cache_path(repo))
+        downloaded = local_mb > 1
+        with _dl_lock:
+            st = dict(_dl_state.get(repo, {}))
+        # 下载中没有精确 % 时，用「已落盘大小 / 目标」估个粗略进度（HF 多文件无统一 hook）。
+        pct = st.get("percent")
+        if st.get("status") == "downloading" and pct is None and mb:
+            pct = min(99, round(local_mb * 100 / mb))
+        out.append({
+            "name": repo,
+            "label": label,
+            "size_mb": mb,
+            "downloaded": downloaded,
+            "local_mb": local_mb,
+            "is_default": repo == DEFAULT_MLX_MODEL,
+            "status": st.get("status"),
+            "percent": pct,
+            "error": st.get("error"),
+        })
+    return out
+
+
+def start_mlx_download(repo: str) -> None:
+    """后台线程用 huggingface_hub 下载 mlx 模型（整个 repo snapshot）。"""
+    if repo not in {r for r, _, _ in KNOWN_MLX_MODELS}:
+        raise ValueError(f"未知模型：{repo}")
+    with _dl_lock:
+        st = _dl_state.get(repo)
+        if st and st.get("status") == "downloading":
+            return
+        _dl_state[repo] = {"status": "downloading", "percent": None}
+
+    def _run() -> None:
+        try:
+            from huggingface_hub import snapshot_download
+
+            snapshot_download(repo_id=repo)
+            with _dl_lock:
+                _dl_state[repo] = {"status": "done", "percent": 100}
+        except Exception as exc:  # noqa: BLE001
+            with _dl_lock:
+                _dl_state[repo] = {"status": "error", "error": str(exc)}
+
+    threading.Thread(target=_run, daemon=True, name=f"mlx-dl-{repo}").start()
+
+
+def delete_mlx_model(repo: str) -> bool:
+    """删除已下载的 mlx 模型（删整个 HF cache 目录）。"""
+    if repo not in {r for r, _, _ in KNOWN_MLX_MODELS}:
+        raise ValueError(f"未知模型：{repo}")
+    import shutil
+
+    p = _mlx_cache_path(repo)
+    existed = p.exists()
+    if existed:
+        shutil.rmtree(p, ignore_errors=True)
+    with _dl_lock:
+        _dl_state.pop(repo, None)
     return existed
 
 
