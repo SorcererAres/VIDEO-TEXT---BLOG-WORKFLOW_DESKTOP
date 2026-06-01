@@ -58,6 +58,7 @@ export interface CreateFormProps {
   force: boolean; setForce: (v: boolean) => void
   pauseOnOutline: boolean; setPauseOnOutline: (v: boolean) => void
   rewriteStrategy: "single" | "sectioned"; setRewriteStrategy: (v: "single" | "sectioned") => void
+  transcribeEngine: "default" | "whisper-cpp" | "mlx"; setTranscribeEngine: (v: "default" | "whisper-cpp" | "mlx") => void
   profileId: string; setProfileId: (v: string) => void
   profileOptions: LlmProfile[]
   defaultProfileId: string | null
@@ -207,6 +208,21 @@ export function CreateForm(props: CreateFormProps) {
                           : <><FileText className="size-3.5 text-primary" /> 文字稿 · 直接进入改写</>}
                     </span>
                   )
+                )}
+                {/* 转录引擎选择（仅视频源 + 转录可用时；打包版生效，dev 走 auto）。 */}
+                {kind === "video" && props.transcriptionAvailable && (
+                  <div className="flex items-center gap-2 mt-1">
+                    <span className="text-xs text-muted-foreground shrink-0">转录引擎</span>
+                    <Segmented
+                      value={props.transcribeEngine}
+                      onChange={(v) => props.setTranscribeEngine(v as "default" | "whisper-cpp" | "mlx")}
+                      options={[
+                        { value: "default", label: "默认" },
+                        { value: "whisper-cpp", label: "whisper.cpp" },
+                        { value: "mlx", label: "mlx · Apple" },
+                      ]}
+                    />
+                  </div>
                 )}
               </FormField>
 

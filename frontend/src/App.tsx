@@ -222,6 +222,8 @@ export default function App() {
   const [rewriteStrategy, setRewriteStrategy] = useState<"single" | "sectioned">(
     () => draftInit?.rewriteStrategy ?? "single",
   )
+  // 视频转录引擎（仅打包版视频源生效；dev 走 auto 忽略）。default = 跟随后端默认（whisper-cpp）。
+  const [transcribeEngine, setTranscribeEngine] = useState<"default" | "whisper-cpp" | "mlx">("default")
   const [isSubmittingJob, setIsSubmittingJob] = useState(false)
   const [draftRestoredTs, setDraftRestoredTs] = useState<number | null>(() => draftInit?.ts ?? null)
 
@@ -883,6 +885,8 @@ export default function App() {
       }
       // §9-C：sectioned 仅在 full 模式有效，quick 时强制回 single 避免后端拒收。
       payload.rewrite_strategy = mode === "full" ? rewriteStrategy : "single"
+      // 转录引擎：非 default 才带（仅打包版视频源生效；dev 忽略）。
+      if (transcribeEngine !== "default") payload.transcribe_engine = transcribeEngine
       // 配置档：选了就带 profile_id，否则后端用默认档。api_key / api_base 不由前端发送。
       if (profileId) payload.profile_id = profileId
       // model 仅作为本任务对该档的临时覆盖：填了才带，否则用档里的模型。
@@ -1317,6 +1321,7 @@ export default function App() {
               force={force} setForce={setForce}
               pauseOnOutline={pauseOnOutline} setPauseOnOutline={setPauseOnOutline}
               rewriteStrategy={rewriteStrategy} setRewriteStrategy={setRewriteStrategy}
+              transcribeEngine={transcribeEngine} setTranscribeEngine={setTranscribeEngine}
               profileId={profileId} setProfileId={setProfileId}
               profileOptions={profileOptions}
               defaultProfileId={defaultProfileId}

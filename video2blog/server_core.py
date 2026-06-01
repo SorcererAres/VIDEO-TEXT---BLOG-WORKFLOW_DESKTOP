@@ -73,6 +73,9 @@ class EngineJobRequest:
     # §9-C：single = 一次性整篇（默认），sectioned = 按 outline 拆节滚动改写。
     # quick 模式或 outline 不可解析时引擎会自动回退 single，不强求按节。
     rewrite_strategy: str = "single"
+    # 视频转录引擎（仅打包版视频源用）：None=跟随默认（whisper-cpp），
+    # "whisper-cpp"=稳定 CPU/Metal，"mlx"=Apple 原生。dev 恒走 auto。
+    transcribe_engine: str | None = None
 
 
 @dataclass
@@ -361,6 +364,7 @@ class EngineJobService:
                     check_cancelled,
                     emit_progress_event,
                     force=request.force,
+                    engine_choice=request.transcribe_engine,
                 )
 
             if request.force:
@@ -464,6 +468,7 @@ class EngineJobService:
         emit_event: Callable[[str, dict[str, Any]], None] | None = None,
         *,
         force: bool,
+        engine_choice: str | None = None,
     ) -> Path:
         """前三步：子进程跑 video2blog.py 转录视频 → work/<stem>/raw.txt。
 
@@ -516,7 +521,12 @@ class EngineJobService:
             #   mlx：mlx-whisper（Apple 原生），模型由 mlx_whisper 自动从 HF 下载，.metallib 已打包
             # 切引擎用 VIDEO2BLOG_ENGINE（默认 whisper-cpp）。两引擎都需打包的 ffmpeg 提音频。
             proc_env.update(ffmpeg_env())
-            engine = (os.environ.get("VIDEO2BLOG_ENGINE", "whisper-cpp").strip() or "whisper-cpp").lower()
+            # 引擎选择优先级：job 参数 > 环境变量 > 默认 whisper-cpp。
+            engine = (
+                (engine_choice or os.environ.get("VIDEO2BLOG_ENGINE") or "whisper-cpp")
+                .strip()
+                .lower()
+            ) or "whisper-cpp"
             out_tail = ["--output-dir", str(self.repo_root / "work"), "--no-auto-terminal"]
 
             if engine == "mlx":

@@ -24,6 +24,10 @@ class JobCreateRequest(BaseModel):
         default="single",
         description="single=一次性整篇（默认）；sectioned=full 模式按 outline 拆节滚动改写，长稿用",
     )
+    transcribe_engine: str | None = Field(
+        default=None,
+        description="视频转录引擎（仅打包版视频源）：None=默认 whisper-cpp，'whisper-cpp' 或 'mlx'",
+    )
 
 
 class ApproveOutlineRequest(BaseModel):
