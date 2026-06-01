@@ -54,6 +54,15 @@ PYINSTALLER_CONFIG_DIR="$PWD/.build-backend/cache" \
 # stage whisper.cpp 运行时闭包进 onedir —— frozen 后端按 <exe_dir>/whisper/ 定位
 # whisper-cli + backend 插件（见 video2blog/engine/whisper_assets.py）。
 echo
+# mlx metallib 顶层兜底：mlx.core 按 libmlx.dylib 同目录找 mlx.metallib。PyInstaller
+# 把 libmlx 放 _internal/ 顶层，但 metallib 只在 _internal/mlx/lib/——.app 内加载顶层
+# libmlx 时同目录没 metallib → "Failed to load the default metallib"。复制一份到顶层。
+_MLX_METALLIB=".build-backend/dist/video2blog-server/_internal/mlx/lib/mlx.metallib"
+if [ -f "$_MLX_METALLIB" ]; then
+  cp "$_MLX_METALLIB" ".build-backend/dist/video2blog-server/_internal/mlx.metallib"
+  echo "[backend-bin] mlx.metallib 已复制到 _internal/ 顶层（修 .app 内 metallib 定位）"
+fi
+
 echo "[backend-bin] 收集 whisper.cpp 闭包进 onedir…"
 bash "$(dirname "$0")/bundle_whisper_cpp.sh" .build-backend/dist/video2blog-server/whisper 2>&1 \
   | grep -v "install_name_tool: warning" || true
