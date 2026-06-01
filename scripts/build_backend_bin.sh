@@ -45,8 +45,8 @@ PYINSTALLER_CONFIG_DIR="$PWD/.build-backend/cache" \
   --collect-submodules video2blog \
   --collect-submodules uvicorn \
   --collect-all keyring \
-  --exclude-module mlx \
-  --exclude-module mlx_whisper \
+  --collect-all mlx \
+  --collect-all mlx_whisper \
   --exclude-module torch \
   --exclude-module tkinter \
   --exclude-module matplotlib

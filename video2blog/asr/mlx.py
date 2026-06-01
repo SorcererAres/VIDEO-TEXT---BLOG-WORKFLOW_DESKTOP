@@ -10,7 +10,57 @@ from typing import Any
 
 from video2blog.media import split_audio_for_chunks
 from video2blog.transcript import normalize_txt
-from video2blog.utils import append_log
+from video2blog.utils import append_log, atomic_write
+
+
+def _json_safe(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    return str(value)
+
+
+def _mlx_worker_main(argv: list[str]) -> int:
+    """mlx 转录 worker 子进程入口：import mlx_whisper 跑转录，结果/错误写文件。
+
+    隔离子进程跑（mlx Metal 是最大不稳定源，崩溃/OOM/超时不波及主进程）。
+    - dev：经 `python -c "...; _mlx_worker_main(sys.argv[1:])"` 调（sys.executable 是 python）。
+    - frozen：经 server 二进制 `mlx-worker` 子命令调（frozen 下 sys.executable 是
+      server 二进制，不支持 python -c）。
+    argv: [wav, model_repo, result_path, error_path, log_path]
+    """
+    import contextlib
+    import traceback
+    from datetime import datetime
+
+    wav, model_repo, result_path, error_path, log_path = argv[:5]
+    try:
+        with Path(log_path).open("a", encoding="utf-8") as log_fh:
+            log_fh.write(f"[{datetime.now().isoformat(timespec='seconds')}] mlx child start: {wav}\n")
+            log_fh.flush()
+            with contextlib.redirect_stdout(log_fh), contextlib.redirect_stderr(log_fh):
+                import mlx_whisper
+
+                raw = mlx_whisper.transcribe(
+                    wav,
+                    path_or_hf_repo=model_repo,
+                    word_timestamps=False,
+                    verbose=False,
+                    condition_on_previous_text=False,
+                    no_speech_threshold=0.6,
+                )
+            log_fh.write(f"[{datetime.now().isoformat(timespec='seconds')}] mlx child complete: {wav}\n")
+        atomic_write(Path(result_path), json.dumps(_json_safe(raw), ensure_ascii=False))
+        return 0
+    except BaseException:
+        tb = traceback.format_exc()
+        atomic_write(Path(error_path), tb)
+        with Path(log_path).open("a", encoding="utf-8") as log_fh:
+            log_fh.write(f"[{datetime.now().isoformat(timespec='seconds')}] mlx child failed:\n{tb}\n")
+        return 1
 
 
 def transcribe_audio_mlx(
@@ -26,62 +76,19 @@ def transcribe_audio_mlx(
     for stale in (result_path, error_path):
         stale.unlink(missing_ok=True)
 
-    worker_code = r'''
-import contextlib
-import json
-import sys
-import traceback
-from datetime import datetime
-from pathlib import Path
-from video2blog.utils import atomic_write
-
-
-def json_safe(value):
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    if isinstance(value, dict):
-        return {str(k): json_safe(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [json_safe(v) for v in value]
-    return str(value)
-
-
-wav, model_repo, result_path, error_path, log_path = sys.argv[1:6]
-try:
-    with Path(log_path).open("a", encoding="utf-8") as log_fh:
-        log_fh.write(f"[{datetime.now().isoformat(timespec='seconds')}] mlx child start: {wav}\n")
-        log_fh.flush()
-        with contextlib.redirect_stdout(log_fh), contextlib.redirect_stderr(log_fh):
-            import mlx_whisper
-
-            raw = mlx_whisper.transcribe(
-                wav,
-                path_or_hf_repo=model_repo,
-                word_timestamps=False,
-                verbose=False,
-                condition_on_previous_text=False,
-                no_speech_threshold=0.6,
-            )
-        log_fh.write(f"[{datetime.now().isoformat(timespec='seconds')}] mlx child complete: {wav}\n")
-    atomic_write(Path(result_path), json.dumps(json_safe(raw), ensure_ascii=False))
-except BaseException:
-    tb = traceback.format_exc()
-    atomic_write(Path(error_path), tb)
-    with Path(log_path).open("a", encoding="utf-8") as log_fh:
-        log_fh.write(f"[{datetime.now().isoformat(timespec='seconds')}] mlx child failed:\n{tb}\n")
-    sys.exit(1)
-'''
-
-    cmd = [
-        sys.executable,
-        "-c",
-        worker_code,
-        str(wav),
-        model_repo,
-        str(result_path),
-        str(error_path),
-        str(log_path),
-    ]
+    worker_args = [str(wav), model_repo, str(result_path), str(error_path), str(log_path)]
+    if getattr(sys, "frozen", False):
+        # 打包版：sys.executable 是 server 二进制，经 mlx-worker 子命令跑 worker。
+        cmd = [sys.executable, "mlx-worker", *worker_args]
+    else:
+        # 开发态：python -c 调本模块的 worker（不再内联大段字符串）。
+        cmd = [
+            sys.executable,
+            "-c",
+            "import sys; from video2blog.asr.mlx import _mlx_worker_main;"
+            " sys.exit(_mlx_worker_main(sys.argv[1:]))",
+            *worker_args,
+        ]
     append_log(log_path, f"mlx parent start: wav={wav}, timeout={timeout_seconds}s, worker=subprocess")
     with log_path.open("a", encoding="utf-8") as log_fh:
         proc = subprocess.Popen(cmd, stdout=log_fh, stderr=log_fh, text=True)

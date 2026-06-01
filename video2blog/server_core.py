@@ -511,35 +511,52 @@ class EngineJobService:
         proc_env = dict(os.environ)
         if is_frozen():
             # 打包版：sys.executable 是 server 二进制，用它的 transcribe 子命令跑转录
-            #（不能直接跑 video2blog.py 脚本）；引擎走打包的 whisper.cpp（whisper-cli + ggml 模型）。
-            # 模型首次用时下载（带 SSE 进度）；ggml backend 插件目录经 GGML_BACKEND_PATH 指定。
-            cli = whisper_cli_path()
-            assert cli is not None  # transcription_available 已校验在位
+            #（不能直接跑 video2blog.py 脚本）。两个引擎都打进 .app：
+            #   whisper-cpp（默认）：whisper-cli + ggml 模型（我方下载，带进度）+ GGML_BACKEND_PATH
+            #   mlx：mlx-whisper（Apple 原生），模型由 mlx_whisper 自动从 HF 下载，.metallib 已打包
+            # 切引擎用 VIDEO2BLOG_ENGINE（默认 whisper-cpp）。两引擎都需打包的 ffmpeg 提音频。
+            proc_env.update(ffmpeg_env())
+            engine = (os.environ.get("VIDEO2BLOG_ENGINE", "whisper-cpp").strip() or "whisper-cpp").lower()
+            out_tail = ["--output-dir", str(self.repo_root / "work"), "--no-auto-terminal"]
 
-            emit_transcribe("model")
-            emit_line("[前三步] 准备转录模型（首次需下载，约 1.6GB，后续复用）…")
+            if engine == "mlx":
+                # frozen 下 cli engine=mlx → transcribe_audio_mlx → mlx-worker 子命令（已验证）。
+                mlx_model = os.environ.get(
+                    "VIDEO2BLOG_WHISPER_MODEL", "mlx-community/whisper-large-v3-turbo"
+                )
+                emit_transcribe("model")
+                emit_line(f"[前三步] 引擎 mlx（{mlx_model}，模型首次用时下载）…")
+                cmd = [
+                    sys.executable, "transcribe", str(video),
+                    "--engine", "mlx", "--model", mlx_model,
+                    "--fallback-policy", "stop",  # 打包版不静默回退，失败直接报
+                    *out_tail,
+                ]
+            else:
+                # whisper.cpp（默认）：模型首次下载（带 SSE 进度），ggml backend 目录经 env 指定。
+                cli = whisper_cli_path()
+                assert cli is not None  # transcription_available 已校验在位
 
-            def _on_dl(done: int, total_bytes: int) -> None:
-                pct = int(done * 100 / total_bytes) if total_bytes else 0
-                emit_transcribe("model", percent=pct, mb=round(total_bytes / 1_048_576))
+                emit_transcribe("model")
+                emit_line("[前三步] 准备转录模型（首次需下载，约 1.6GB，后续复用）…")
 
-            try:
-                model_path = ensure_model(_on_dl)
-            except Exception as exc:  # noqa: BLE001
-                raise RuntimeError(f"转录模型下载失败：{exc}") from exc
+                def _on_dl(done: int, total_bytes: int) -> None:
+                    pct = int(done * 100 / total_bytes) if total_bytes else 0
+                    emit_transcribe("model", percent=pct, mb=round(total_bytes / 1_048_576))
 
-            cmd = [
-                sys.executable, "transcribe", str(video),
-                "--engine", "whisper-cpp",
-                "--whisper-cpp-bin", str(cli),
-                "--whisper-cpp-model", str(model_path),
-                # frozen 下 cli 默认 output-dir 基于 __file__（= .app 内 _internal），
-                # 必须显式指到 repo_root/work，否则 raw.txt 落进 .app 内部（错位/只读）。
-                "--output-dir", str(self.repo_root / "work"),
-                "--no-auto-terminal",
-            ]
-            proc_env.update(ggml_backend_env())  # ggml backend 插件目录
-            proc_env.update(ffmpeg_env())        # 打包的 ffmpeg（提音频用）
+                try:
+                    model_path = ensure_model(_on_dl)
+                except Exception as exc:  # noqa: BLE001
+                    raise RuntimeError(f"转录模型下载失败：{exc}") from exc
+
+                cmd = [
+                    sys.executable, "transcribe", str(video),
+                    "--engine", "whisper-cpp",
+                    "--whisper-cpp-bin", str(cli),
+                    "--whisper-cpp-model", str(model_path),
+                    *out_tail,
+                ]
+                proc_env.update(ggml_backend_env())  # ggml backend 插件目录
         else:
             # 开发态：python 直接跑 video2blog.py，引擎 auto（先 mlx，失败 fallback whisper.cpp）。
             cmd = [

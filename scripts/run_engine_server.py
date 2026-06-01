@@ -76,6 +76,12 @@ def main(argv: list[str] | None = None) -> int:
         cli_main(raw_argv[1:])
         return 0
 
+    # mlx 转录 worker 子进程入口（frozen 下 sys.executable 是 server 二进制，
+    # 不支持 python -c；mlx 引擎的隔离 worker 改经此子命令拉起）。
+    if raw_argv and raw_argv[0] == "mlx-worker":
+        from video2blog.asr.mlx import _mlx_worker_main
+        return _mlx_worker_main(raw_argv[1:])
+
     parser = argparse.ArgumentParser(description="启动 Video2Blog 本地 Engine 服务。")
     parser.add_argument("--host", default="127.0.0.1", help="监听地址，默认 127.0.0.1")
     parser.add_argument("--port", type=int, default=8765, help="监听端口，默认 8765")
