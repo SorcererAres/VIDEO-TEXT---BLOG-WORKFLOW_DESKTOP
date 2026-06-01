@@ -1129,7 +1129,6 @@ function AppearanceSwitch() {
   const { theme, setTheme } = useTheme()
   return (
     <div className="shrink-0">
-      <div className="text-[10px] text-muted-foreground mb-1 text-right">外观</div>
       <Segmented
         value={theme ?? "system"}
         onChange={setTheme}
