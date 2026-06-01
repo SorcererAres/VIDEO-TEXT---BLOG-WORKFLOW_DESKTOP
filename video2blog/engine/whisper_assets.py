@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 import urllib.request
 from pathlib import Path
 from typing import Callable
@@ -21,6 +22,21 @@ from typing import Callable
 # large-v3-turbo：质量接近 large-v3、速度快很多，~1.6GB，博客转录的甜点。
 DEFAULT_MODEL = "ggml-large-v3-turbo.bin"
 MODEL_URL_BASE = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/"
+
+# 可在「设置 → 本地模型」里管理的 whisper.cpp ggml 模型档（HF ggerganov/whisper.cpp）。
+# (文件名, 展示标签, 大致 MB)。质量从低到高、体积从小到大。
+KNOWN_GGML_MODELS: list[tuple[str, str, int]] = [
+    ("ggml-tiny.bin", "Tiny · 最快最小", 75),
+    ("ggml-base.bin", "Base · 轻量", 142),
+    ("ggml-small.bin", "Small · 平衡", 466),
+    ("ggml-medium.bin", "Medium · 较好", 1530),
+    ("ggml-large-v3-turbo.bin", "Large v3 Turbo · 默认推荐", 1600),
+    ("ggml-large-v3.bin", "Large v3 · 最高质量", 3100),
+]
+
+# 后台下载状态跟踪：name → {"status": downloading/done/error, "percent": int, "error": str}
+_dl_state: dict[str, dict] = {}
+_dl_lock = threading.Lock()
 
 
 def is_frozen() -> bool:
@@ -112,23 +128,16 @@ def model_ready() -> bool:
     return p.exists() and p.stat().st_size > 1_000_000
 
 
-def ensure_model(on_progress: Callable[[int, int], None] | None = None) -> Path:
-    """确保 ggml 模型存在；缺则从 HuggingFace 流式下载（原子落盘）。
+def _download_to(
+    dest: Path, url: str, on_progress: Callable[[int, int], None] | None = None
+) -> None:
+    """流式下载 url → dest，原子落盘 + 文件锁并发安全。
 
-    on_progress(downloaded_bytes, total_bytes) 用于把下载进度 emit 给前端。
-    返回模型本地路径。
-
-    并发安全：用文件锁（flock）保证同一模型同时只有一个下载在进行——两个视频
-    任务并排开时，第二个会阻塞等第一个下完直接复用，不会写坏同一个 .part。
+    flock 保证同一文件同时只有一个下载：并发的第二个阻塞等第一个下完直接复用，
+    不会写坏同一个 .part。
     """
     import fcntl
 
-    dest = default_model_path()
-    if model_ready():
-        return dest
-
-    name = model_filename()
-    url = MODEL_URL_BASE + name
     tmp = dest.with_suffix(dest.suffix + ".part")
     lock_path = dest.with_suffix(dest.suffix + ".lock")
 
@@ -138,10 +147,9 @@ def ensure_model(on_progress: Callable[[int, int], None] | None = None) -> Path:
             on_progress(done, total_size)
 
     with open(lock_path, "w", encoding="utf-8") as lock_fh:
-        fcntl.flock(lock_fh, fcntl.LOCK_EX)  # 独占锁；并发的第二个在此阻塞等待
-        # 拿到锁后复查：别的进程可能已经下完了
-        if model_ready():
-            return dest
+        fcntl.flock(lock_fh, fcntl.LOCK_EX)
+        if dest.exists() and dest.stat().st_size > 1_000_000:
+            return  # 拿到锁后复查：别的进程已下完
         tmp.unlink(missing_ok=True)
         try:
             urllib.request.urlretrieve(url, tmp, _hook)
@@ -149,7 +157,88 @@ def ensure_model(on_progress: Callable[[int, int], None] | None = None) -> Path:
             tmp.unlink(missing_ok=True)
             raise
         os.replace(tmp, dest)
+
+
+def ensure_model(on_progress: Callable[[int, int], None] | None = None) -> Path:
+    """确保默认 ggml 模型存在；缺则下载。转录前置调，返回模型本地路径。"""
+    dest = default_model_path()
+    if model_ready():
+        return dest
+    _download_to(dest, MODEL_URL_BASE + model_filename(), on_progress)
     return dest
+
+
+# ── 「设置 → 本地模型」管理：列出 / 下载（后台）/ 删除 ──────────────────
+
+
+def list_ggml_models() -> list[dict]:
+    """已知 ggml 模型 + 本地状态（已下载大小 / 下载中进度 / 可下载）。"""
+    out: list[dict] = []
+    md = models_dir()
+    for name, label, mb in KNOWN_GGML_MODELS:
+        p = md / name
+        downloaded = p.exists() and p.stat().st_size > 1_000_000
+        with _dl_lock:
+            st = dict(_dl_state.get(name, {}))
+        out.append({
+            "name": name,
+            "label": label,
+            "size_mb": mb,
+            "downloaded": downloaded,
+            "local_mb": round(p.stat().st_size / 1_048_576) if downloaded else 0,
+            "is_default": name == DEFAULT_MODEL,
+            "status": st.get("status"),       # downloading / error / None
+            "percent": st.get("percent"),
+            "error": st.get("error"),
+        })
+    return out
+
+
+def ggml_download_status(name: str) -> dict:
+    with _dl_lock:
+        return dict(_dl_state.get(name, {}))
+
+
+def start_ggml_download(name: str) -> None:
+    """后台线程下载指定 ggml 模型，进度写入 _dl_state（前端轮询 list_ggml_models）。"""
+    if name not in {n for n, _, _ in KNOWN_GGML_MODELS}:
+        raise ValueError(f"未知模型：{name}")
+    with _dl_lock:
+        st = _dl_state.get(name)
+        if st and st.get("status") == "downloading":
+            return  # 已在下，不重复
+        _dl_state[name] = {"status": "downloading", "percent": 0}
+
+    dest = models_dir() / name
+    url = MODEL_URL_BASE + name
+
+    def _run() -> None:
+        def _on_prog(done: int, total: int) -> None:
+            pct = int(done * 100 / total) if total else 0
+            with _dl_lock:
+                _dl_state[name] = {"status": "downloading", "percent": pct}
+        try:
+            _download_to(dest, url, _on_prog)
+            with _dl_lock:
+                _dl_state[name] = {"status": "done", "percent": 100}
+        except Exception as exc:  # noqa: BLE001
+            with _dl_lock:
+                _dl_state[name] = {"status": "error", "error": str(exc)}
+
+    threading.Thread(target=_run, daemon=True, name=f"ggml-dl-{name}").start()
+
+
+def delete_ggml_model(name: str) -> bool:
+    """删除已下载的 ggml 模型。返回是否删了文件。"""
+    if name not in {n for n, _, _ in KNOWN_GGML_MODELS}:
+        raise ValueError(f"未知模型：{name}")
+    p = models_dir() / name
+    existed = p.exists()
+    p.unlink(missing_ok=True)
+    (p.with_suffix(p.suffix + ".part")).unlink(missing_ok=True)
+    with _dl_lock:
+        _dl_state.pop(name, None)
+    return existed
 
 
 def transcription_supported() -> bool:

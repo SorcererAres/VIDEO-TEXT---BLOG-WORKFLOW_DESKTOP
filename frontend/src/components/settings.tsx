@@ -12,6 +12,8 @@ import {
   Star,
   ChevronUp,
   ChevronDown,
+  Download,
+  HardDrive,
 } from 'lucide-react'
 import { Toaster, toast } from 'sonner'
 import { Button } from '@/components/ui/button'
@@ -70,16 +72,134 @@ function MiniSwitch({ checked, onChange, title }: { checked: boolean; onChange: 
   )
 }
 
-// 设置 = 纯模型/Key 配置。写作知识库（文风合同）已归位到「风格」场所（IA ⑤）。
+// ── 本地转录模型管理（设置 → 本地模型）──────────────────────────
+interface GgmlModel {
+  name: string
+  label: string
+  size_mb: number
+  downloaded: boolean
+  local_mb: number
+  is_default: boolean
+  status?: string | null
+  percent?: number | null
+  error?: string | null
+}
+
+function LocalModelsPanel() {
+  const [models, setModels] = useState<GgmlModel[]>([])
+  const [loading, setLoading] = useState(true)
+
+  const load = async () => {
+    try {
+      const r = await fetch(apiUrl("/api/local-models"))
+      if (r.ok) {
+        const d = await r.json()
+        setModels(d.whisper_cpp || [])
+      }
+    } catch { /* 离线时静默 */ }
+    setLoading(false)
+  }
+
+  useEffect(() => {
+    load()
+    const t = setInterval(load, 1500)  // 轮询下载进度
+    return () => clearInterval(t)
+  }, [])
+
+  const download = async (name: string) => {
+    try {
+      await fetch(apiUrl("/api/local-models/download"), {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      })
+      load()
+    } catch (e) { toast.error("启动下载失败", { description: String(e) }) }
+  }
+
+  const remove = async (m: GgmlModel) => {
+    const ok = await confirmAction({
+      title: `删除 ${m.label}？`,
+      description: `将删除本地模型文件（${m.local_mb} MB）。需要时可重新下载。`,
+      confirmText: "删除", variant: "destructive",
+    })
+    if (!ok) return
+    try {
+      await fetch(apiUrl("/api/local-models/delete"), {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: m.name }),
+      })
+      load()
+    } catch (e) { toast.error("删除失败", { description: String(e) }) }
+  }
+
+  return (
+    <ScrollArea className="flex-1">
+      <div className="p-6 flex flex-col gap-3">
+        <p className="text-xs text-muted-foreground leading-relaxed">
+          whisper.cpp 转录模型（视频转录用）。质量越高、体积越大、越慢。默认 <b>Large v3 Turbo</b>，
+          首次转录会自动下载。mlx 引擎的模型由系统自动管理，不在此列。
+        </p>
+        {loading && models.length === 0 ? (
+          <div className="text-sm text-muted-foreground py-8 text-center">
+            <Loader2 className="size-4 animate-spin inline mr-1.5" />加载…
+          </div>
+        ) : models.map(m => (
+          <div key={m.name} className="flex items-center gap-3 border rounded-lg p-3">
+            <HardDrive className={cn("size-4 shrink-0", m.downloaded ? "text-primary" : "text-muted-foreground/40")} />
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-medium flex items-center gap-2">
+                {m.label}
+                {m.is_default && <Badge variant="secondary" className="text-[10px]">默认</Badge>}
+              </div>
+              <div className="text-[11px] text-muted-foreground">
+                {m.status === "downloading" ? `下载中 ${m.percent ?? 0}%`
+                  : m.status === "error" ? <span className="text-destructive">下载失败：{m.error}</span>
+                  : m.downloaded ? `已下载 · ${m.local_mb} MB`
+                  : `约 ${m.size_mb} MB`}
+              </div>
+            </div>
+            {m.status === "downloading" ? (
+              <div className="w-28 shrink-0">
+                <div className="h-1.5 bg-muted rounded-full overflow-hidden">
+                  <div className="h-full bg-primary transition-all" style={{ width: `${m.percent ?? 0}%` }} />
+                </div>
+              </div>
+            ) : m.downloaded ? (
+              <Button size="sm" variant="ghost" className="text-destructive hover:text-destructive shrink-0" onClick={() => remove(m)}>
+                <Trash2 data-icon="inline-start" /> 删除
+              </Button>
+            ) : (
+              <Button size="sm" variant="outline" className="shrink-0" onClick={() => download(m.name)}>
+                <Download data-icon="inline-start" /> 下载
+              </Button>
+            )}
+          </div>
+        ))}
+      </div>
+    </ScrollArea>
+  )
+}
+
+// 设置 = 模型/Key 配置 + 本地转录模型管理。写作知识库已归位到「风格」场所（IA ⑤）。
 export function SettingsPanel({ onProfilesChanged }: { onProfilesChanged?: () => void }) {
+  const [tab, setTab] = useState<"llm" | "models">("llm")
   return (
     <div className="flex-1 flex flex-col min-h-0">
       <div className="px-6 pt-5 pb-3 border-b flex items-center justify-between gap-4">
-        <span className="text-sm font-medium">模型配置</span>
+        <Segmented
+          value={tab}
+          onChange={(v) => setTab(v as "llm" | "models")}
+          options={[
+            { value: "llm", label: "LLM 配置" },
+            { value: "models", label: "本地模型" },
+          ]}
+        />
         <AppearanceSwitch />
       </div>
       <div className="flex-1 min-h-0 flex flex-col">
-        <SettingsForm onProfilesChanged={onProfilesChanged} embedded />
+        {tab === "llm"
+          ? <SettingsForm onProfilesChanged={onProfilesChanged} embedded />
+          : <LocalModelsPanel />}
       </div>
     </div>
   )
