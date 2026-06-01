@@ -162,8 +162,9 @@ make regression      # mock LLM 跑 tests/fixtures/regression/ 金标 fixture
 make frontend-lint   # npm --prefix frontend run lint
 make frontend-build  # npm --prefix frontend run build
 make server          # 启动 FastAPI 本地服务
-make app             # 桌面 App（Tauri 壳）：起后端 + tauri dev
-make app-build       # 构建 .app（暂未打包后端 sidecar，运行仍需独立后端）
+make app             # 桌面 App（Tauri 壳 · dev）：tauri dev（后端由 sidecar 自动拉起）
+make app-build       # 构建 .app + .dmg（内含冻结后端 sidecar，双击即用）
+make dist            # app-build → 签名 → 公证（需 Apple Developer ID 证书）
 ```
 
 ### 桌面 App（Tauri 壳 · macOS 尊重式）
@@ -173,8 +174,10 @@ vibrancy 毛玻璃侧栏、记住窗口尺寸、跟随系统外观（浅/深/自
 「降低透明度 / 减弱动态效果」等无障碍开关。
 
 - **前置**：Rust 工具链（`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`）。首次编译耗时数分钟。
-- **运行**：`make app`（先确保后端 8765 在跑，再 `tauri dev`）。仍可 `npm run dev` 在浏览器打开做降级开发。
-- **当前不做**：把 Python 后端打包成 sidecar 二进制进独立 `.app`（签名公证），留后续阶段——`make app-build` 出的包运行时仍需独立启动后端。
+- **运行**：`make app`（`tauri dev`，后端由 Rust sidecar 自动拉起、退出回收）。仍可 `make server` + `npm run dev` 在浏览器做降级开发。
+- **打包**：`make app-build` 出 `Video2Blog.app`（~65M）+ `.dmg`，**内含 PyInstaller 冻结后端**（`bundle.resources` 打进 `Contents/Resources/backend/`），双击即用、无需独立起后端。后端 `--auto-port` 自选端口 + 握手文件，前端动态读取。
+- **分发签名**：`make dist`（= app-build → `sign_app.sh` → `notarize_app.sh`）。需 Apple Developer ID 证书：`export SIGN_IDENTITY="Developer ID Application: NAME (TEAMID)"`。未签名版（adhoc）首次访问钥匙串会弹授权框、Gatekeeper 拦「未识别开发者」——签名公证后解除。
+- **当前不打包 mlx-whisper**：依赖 `.metallib`，体积大且需 datas 收集；转录仍走独立 `.venv` 子进程。正式分发可选只 bundle whisper.cpp。
 
 `make regression` 在隔离临时 repo 里用 mock LLM 跑 `tests/fixtures/regression/<name>/`
 预置的金标 fixture，验证状态机、frontmatter、`VIEWER_RE`、HISTORY 与 fingerprints
