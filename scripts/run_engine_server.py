@@ -66,6 +66,16 @@ def _clear_port_file(port_file: Path) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    raw_argv = sys.argv[1:] if argv is None else list(argv)
+    # 子命令分发：让 frozen server 二进制（sys.executable）复用 CLI 转录链。
+    # 打包版下 server_core._transcribe 调 `video2blog-server transcribe <video> ...`，
+    # 绕开「frozen 下 sys.executable 是 server 二进制、不能直接跑 video2blog.py 脚本」的问题。
+    # 转录仍是独立子进程，崩溃/超时不影响主 server。
+    if raw_argv and raw_argv[0] == "transcribe":
+        from video2blog.cli.main import main as cli_main
+        cli_main(raw_argv[1:])
+        return 0
+
     parser = argparse.ArgumentParser(description="启动 Video2Blog 本地 Engine 服务。")
     parser.add_argument("--host", default="127.0.0.1", help="监听地址，默认 127.0.0.1")
     parser.add_argument("--port", type=int, default=8765, help="监听端口，默认 8765")
@@ -89,7 +99,7 @@ def main(argv: list[str] | None = None) -> int:
         default=Path(__file__).resolve().parents[1],
         help="Video2Blog 仓库根目录",
     )
-    args = parser.parse_args(argv)
+    args = parser.parse_args(raw_argv)
 
     try:
         import uvicorn

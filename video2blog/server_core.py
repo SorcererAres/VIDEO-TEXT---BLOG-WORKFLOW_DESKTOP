@@ -20,6 +20,14 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from video2blog.engine import Engine, LLMClient
+from video2blog.engine.whisper_assets import (
+    ensure_model,
+    ffmpeg_env,
+    ggml_backend_env,
+    is_frozen,
+    transcription_supported,
+    whisper_cli_path,
+)
 
 
 VALID_ROUTINGS = {"/default", "/lecture", "/dialogue", "/screencast", "/meeting"}
@@ -32,14 +40,12 @@ VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".mkv", ".webm", ".flv", ".avi"}
 def transcription_available() -> bool:
     """本机能否跑视频转录（前三步）。
 
-    打包版（PyInstaller frozen）下为 False：sys.executable 是 server 二进制、
-    .app 内无 video2blog.py 源码、且未打包 mlx/whisper.cpp 转录引擎。前端据此
-    在视频源上给降级提示，后端 _transcribe 据此 fail-closed。
-    可用 VIDEO2BLOG_FORCE_TRANSCRIBE=1 强制覆盖（给将来打包了引擎的版本留口子）。
+    委托 whisper_assets.transcription_supported()：
+    - 打包版（frozen）需打包的 whisper.cpp 在位（已打包 → True，模型可首次下载）；
+    - dev 走系统 mlx / whisper.cpp（True）。
+    前端据此决定是否允许视频源，后端 _transcribe 据此 fail-closed。
     """
-    if os.environ.get("VIDEO2BLOG_FORCE_TRANSCRIBE") == "1":
-        return True
-    return not getattr(sys, "frozen", False)
+    return transcription_supported()
 
 
 def redact_sensitive_text(text: str, *secrets: str | None) -> str:
@@ -493,20 +499,51 @@ class EngineJobService:
 
         raw_txt = self.repo_root / "work" / video.stem / "raw.txt"
 
-        # 打包版（PyInstaller frozen）拦截：sys.executable 是 server 二进制不是 python，
-        # 且 .app 内无 video2blog.py 源码、未打包 mlx/whisper.cpp 转录引擎。给清晰引导，
-        # 而非让子进程报费解的 `unrecognized arguments`。视频转录走 dev（make app）或
-        # 改用「文字稿 / 字幕」入口（不经转录）。capability 由 transcription_available() 暴露给前端。
+        # 防御：正常情况下打包版已内置 whisper.cpp（transcription_supported→True）。
+        # 万一 bundle 缺失（异常打包）才走到这，给清晰错误而非费解的子进程报错。
         if not transcription_available():
             raise RuntimeError(
-                "打包版暂不支持视频转录：转录引擎（mlx-whisper / whisper.cpp）未随 .app 打包。\n"
-                "请改用「文字稿 / 字幕」入口（拖入 .txt / .md / .srt 或粘贴已有文字稿），\n"
-                "或在开发环境用 `make app` 先把视频转成文字稿。"
+                "本机未找到可用的视频转录引擎。\n"
+                "打包版应内置 whisper.cpp；若缺失请重新安装完整版，"
+                "或改用「文字稿 / 字幕」入口（拖入 .txt / .md / .srt）。"
             )
-        cmd = [
-            sys.executable, "video2blog.py", str(video),
-            "--no-auto-terminal", "--engine", "auto", "--fallback-policy", "auto",
-        ]
+
+        proc_env = dict(os.environ)
+        if is_frozen():
+            # 打包版：sys.executable 是 server 二进制，用它的 transcribe 子命令跑转录
+            #（不能直接跑 video2blog.py 脚本）；引擎走打包的 whisper.cpp（whisper-cli + ggml 模型）。
+            # 模型首次用时下载（带 SSE 进度）；ggml backend 插件目录经 GGML_BACKEND_PATH 指定。
+            cli = whisper_cli_path()
+            assert cli is not None  # transcription_available 已校验在位
+
+            emit_transcribe("model")
+            emit_line("[前三步] 准备转录模型（首次需下载，约 1.6GB，后续复用）…")
+
+            def _on_dl(done: int, total_bytes: int) -> None:
+                pct = int(done * 100 / total_bytes) if total_bytes else 0
+                emit_transcribe("model", percent=pct, mb=round(total_bytes / 1_048_576))
+
+            try:
+                model_path = ensure_model(_on_dl)
+            except Exception as exc:  # noqa: BLE001
+                raise RuntimeError(f"转录模型下载失败：{exc}") from exc
+
+            cmd = [
+                sys.executable, "transcribe", str(video),
+                "--engine", "whisper-cpp",
+                "--whisper-cpp-bin", str(cli),
+                "--whisper-cpp-model", str(model_path),
+                "--no-auto-terminal",
+            ]
+            proc_env.update(ggml_backend_env())  # ggml backend 插件目录
+            proc_env.update(ffmpeg_env())        # 打包的 ffmpeg（提音频用）
+        else:
+            # 开发态：python 直接跑 video2blog.py，引擎 auto（先 mlx，失败 fallback whisper.cpp）。
+            cmd = [
+                sys.executable, "video2blog.py", str(video),
+                "--no-auto-terminal", "--engine", "auto", "--fallback-policy", "auto",
+            ]
+
         if force:
             cmd.append("--force")
         emit_line(f"[前三步] 开始转录：{video.name}")
@@ -515,7 +552,7 @@ class EngineJobService:
         proc = subprocess.Popen(
             cmd, cwd=str(self.repo_root),
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, bufsize=1,
+            text=True, bufsize=1, env=proc_env,
         )
         line_q: "queue.Queue[str | None]" = queue.Queue()
 

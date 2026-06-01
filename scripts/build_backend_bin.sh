@@ -51,6 +51,18 @@ PYINSTALLER_CONFIG_DIR="$PWD/.build-backend/cache" \
   --exclude-module tkinter \
   --exclude-module matplotlib
 
+# stage whisper.cpp 运行时闭包进 onedir —— frozen 后端按 <exe_dir>/whisper/ 定位
+# whisper-cli + backend 插件（见 video2blog/engine/whisper_assets.py）。
+echo
+echo "[backend-bin] 收集 whisper.cpp 闭包进 onedir…"
+bash "$(dirname "$0")/bundle_whisper_cpp.sh" .build-backend/dist/video2blog-server/whisper 2>&1 \
+  | grep -v "install_name_tool: warning" || true
+
+# stage ffmpeg 闭包进 onedir —— frozen 后端按 <exe_dir>/ffmpeg/ 定位（提音频用）。
+echo "[backend-bin] 收集 ffmpeg 闭包进 onedir…"
+bash "$(dirname "$0")/bundle_ffmpeg.sh" .build-backend/dist/video2blog-server/ffmpeg 2>&1 \
+  | grep -v "install_name_tool: warning" || true
+
 BIN=".build-backend/dist/video2blog-server/video2blog-server"
 echo
 echo "[backend-bin] 完成。"

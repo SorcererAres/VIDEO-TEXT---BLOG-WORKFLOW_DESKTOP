@@ -58,6 +58,8 @@ export interface ProgressData {
   path?: string
   phase?: string
   engine?: string
+  percent?: number
+  mb?: number
 }
 
 /**
@@ -144,6 +146,14 @@ export function mapProgress(data: ProgressData): ParsedEvent {
 
     case "transcribe":
       switch (data.phase) {
+        case "model": {
+          // 打包版首次转录需下载 ggml 模型（约 1.6GB）；percent 在则显示进度。
+          const pct = typeof data.percent === "number" ? `${data.percent}%` : ""
+          const sub = pct
+            ? `下载中 ${pct}${data.mb ? ` · ${data.mb}MB` : ""}`
+            : "首次需下载，约 1.6GB，后续复用"
+          return { ...base, type: "step", step: 0, title: "准备转录模型", subtitle: sub }
+        }
         case "start":
           return { ...base, type: "system", step: 0, title: "开始转录视频" }
         case "audio":

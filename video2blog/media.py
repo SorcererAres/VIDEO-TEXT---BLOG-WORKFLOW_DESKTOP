@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -10,8 +11,20 @@ from pathlib import Path
 from video2blog.utils import append_log, shell_join
 
 
+def _resolve_tool(name: str, env_var: str) -> str | None:
+    """定位外部工具：优先环境变量（打包版注入的二进制路径），否则 PATH。
+
+    打包版（frozen）通过 VIDEO2BLOG_FFMPEG_BIN / VIDEO2BLOG_FFPROBE_BIN 指向
+    .app 内打包的静态 ffmpeg，从而不依赖用户机器装 ffmpeg。
+    """
+    explicit = os.environ.get(env_var, "").strip()
+    if explicit and Path(explicit).exists():
+        return explicit
+    return shutil.which(name)
+
+
 def probe_duration(path: Path, log_path: Path | None = None) -> float | None:
-    ffprobe = shutil.which("ffprobe")
+    ffprobe = _resolve_tool("ffprobe", "VIDEO2BLOG_FFPROBE_BIN")
     if not ffprobe:
         append_log(log_path, "ffprobe not found; duration probe skipped")
         return None
@@ -37,7 +50,7 @@ def probe_duration(path: Path, log_path: Path | None = None) -> float | None:
 
 
 def extract_audio(video: Path, wav: Path, log_path: Path | None = None) -> None:
-    ffmpeg = shutil.which("ffmpeg")
+    ffmpeg = _resolve_tool("ffmpeg", "VIDEO2BLOG_FFMPEG_BIN")
     if not ffmpeg:
         sys.exit("未找到 ffmpeg，请先安装：brew install ffmpeg")
     cmd = [
@@ -79,7 +92,7 @@ def split_audio_for_chunks(
         append_log(log_path, f"audio duration does not need chunking: duration={duration}")
         return [(wav, 0.0)]
 
-    ffmpeg = shutil.which("ffmpeg")
+    ffmpeg = _resolve_tool("ffmpeg", "VIDEO2BLOG_FFMPEG_BIN")
     if not ffmpeg:
         sys.exit("未找到 ffmpeg，请先安装：brew install ffmpeg")
 
