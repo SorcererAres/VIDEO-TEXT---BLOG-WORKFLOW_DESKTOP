@@ -63,6 +63,10 @@ if [ -f "$_MLX_METALLIB" ]; then
   echo "[backend-bin] mlx.metallib 已复制到 _internal/ 顶层（修 .app 内 metallib 定位）"
 fi
 
+# 合同模板进 onedir/contracts/ —— 打包版首启复制到工作目录（开箱即用，见 app_bootstrap.py）。
+echo "[backend-bin] 收集合同模板进 onedir…"
+bash "$(dirname "$0")/bundle_contracts.sh" .build-backend/dist/video2blog-server/contracts
+
 echo "[backend-bin] 收集 whisper.cpp 闭包进 onedir…"
 bash "$(dirname "$0")/bundle_whisper_cpp.sh" .build-backend/dist/video2blog-server/whisper 2>&1 \
   | grep -v "install_name_tool: warning" || true

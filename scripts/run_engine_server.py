@@ -115,6 +115,13 @@ def main(argv: list[str] | None = None) -> int:
 
     from video2blog.server import create_app
 
+    # 首启初始化：打包版工作目录全新时没有写作合同，从打包模板补齐 + 建目录结构，
+    # 否则改写链 Pre-Flight 会失败（开箱不可用）。幂等、非破坏，dev 下只确保目录存在。
+    from video2blog.app_bootstrap import ensure_repo_initialized
+    created = ensure_repo_initialized(args.repo_root)
+    if created:
+        print(f"[server] 首启初始化工作目录：补齐 {', '.join(created)}", flush=True)
+
     # 决定实际端口：默认走指定 --port；--auto-port 时被占则向上扫。
     port = _pick_port(args.host, args.port) if args.auto_port else args.port
 
