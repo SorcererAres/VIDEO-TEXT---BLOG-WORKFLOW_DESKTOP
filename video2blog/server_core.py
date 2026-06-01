@@ -533,6 +533,9 @@ class EngineJobService:
                 "--engine", "whisper-cpp",
                 "--whisper-cpp-bin", str(cli),
                 "--whisper-cpp-model", str(model_path),
+                # frozen 下 cli 默认 output-dir 基于 __file__（= .app 内 _internal），
+                # 必须显式指到 repo_root/work，否则 raw.txt 落进 .app 内部（错位/只读）。
+                "--output-dir", str(self.repo_root / "work"),
                 "--no-auto-terminal",
             ]
             proc_env.update(ggml_backend_env())  # ggml backend 插件目录
