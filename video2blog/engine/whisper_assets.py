@@ -117,7 +117,12 @@ def ensure_model(on_progress: Callable[[int, int], None] | None = None) -> Path:
 
     on_progress(downloaded_bytes, total_bytes) 用于把下载进度 emit 给前端。
     返回模型本地路径。
+
+    并发安全：用文件锁（flock）保证同一模型同时只有一个下载在进行——两个视频
+    任务并排开时，第二个会阻塞等第一个下完直接复用，不会写坏同一个 .part。
     """
+    import fcntl
+
     dest = default_model_path()
     if model_ready():
         return dest
@@ -125,19 +130,25 @@ def ensure_model(on_progress: Callable[[int, int], None] | None = None) -> Path:
     name = model_filename()
     url = MODEL_URL_BASE + name
     tmp = dest.with_suffix(dest.suffix + ".part")
-    tmp.unlink(missing_ok=True)
+    lock_path = dest.with_suffix(dest.suffix + ".lock")
 
     def _hook(block_num: int, block_size: int, total_size: int) -> None:
         if on_progress and total_size > 0:
             done = min(block_num * block_size, total_size)
             on_progress(done, total_size)
 
-    try:
-        urllib.request.urlretrieve(url, tmp, _hook)
-    except Exception:
+    with open(lock_path, "w", encoding="utf-8") as lock_fh:
+        fcntl.flock(lock_fh, fcntl.LOCK_EX)  # 独占锁；并发的第二个在此阻塞等待
+        # 拿到锁后复查：别的进程可能已经下完了
+        if model_ready():
+            return dest
         tmp.unlink(missing_ok=True)
-        raise
-    os.replace(tmp, dest)
+        try:
+            urllib.request.urlretrieve(url, tmp, _hook)
+        except Exception:
+            tmp.unlink(missing_ok=True)
+            raise
+        os.replace(tmp, dest)
     return dest
 
 
