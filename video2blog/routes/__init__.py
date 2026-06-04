@@ -23,17 +23,25 @@ from video2blog.routes import (
     knowledge,
     llm_profiles,
     local_models,
+    posts,
     sources,
+    tasks,
     voice,
 )
 
 
 def register_all(app: "FastAPI", service: "EngineJobService", root: Path) -> None:
-    """把所有域路由注册到 app。顺序无关（路径各自独立）。"""
+    """把所有域路由注册到 app。顺序无关（路径各自独立）。
+
+    DECOUPLE Round 1：tasks / posts 是新前缀（/api/tasks*, /api/posts*），
+    与旧 /jobs/* / /jobs/history 并存，行为一致；前端 Round 2 再切换。
+    """
     health.register(app, service, root)
     llm_profiles.register(app, service, root)
     sources.register(app, service, root)
     jobs.register(app, service, root)
+    tasks.register(app, service, root)
+    posts.register(app, service, root)
     files.register(app, service, root)
     knowledge.register(app, service, root)
     voice.register(app, service, root)
