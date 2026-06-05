@@ -21,32 +21,38 @@ import {
   FolderOpen,
   ExternalLink,
   Sparkle,
+  Trash2,
+  MoreHorizontal,
+  Eye,
+  Code as CodeIcon,
 } from 'lucide-react'
+import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert'
 import { Separator } from '@/components/ui/separator'
+import { CalibrationPanel } from '@/components/places'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { FilterChip } from '@/components/form-primitives'
 import { cn } from '@/lib/utils'
 import { StepProgress } from '@/components/StepProgress'
 import { LogConsole } from '@/components/LogConsole'
 import { type ParsedEvent } from '@/lib/log-parser'
 import { MarkdownView } from '@/components/MarkdownView'
-import { formatRelativeTime } from '@/components/CreateForm'
+import { formatRelativeTime } from '@/lib/utils'
 import { API_BASE, apiUrl } from '@/lib/api'
 import { type TestLLMResult } from '@/lib/settings-store'
 import {
-  COMMON_MODELS,
   classifyDiagnosis,
   formatRelativeOrAbsolute,
   shortApiBase,
   type EngineJob,
   type ReviewJson,
 } from '@/lib/job-types'
-import { readSessionJobIds } from '@/lib/session-jobs'
 
 // ═══════════════════ Status Badge ═══════════════════
 function StatusBadge({ status }: { status: string }) {
@@ -55,16 +61,16 @@ function StatusBadge({ status }: { status: string }) {
       return <Badge variant="secondary" className="shrink-0">排队中</Badge>
     case "running":
       return (
-        <Badge className="shrink-0 bg-blue-500/15 text-blue-400 border-blue-500/30 hover:bg-blue-500/15">
+        <Badge className="shrink-0 bg-info/15 text-info border-info/30 hover:bg-info/15">
           <Loader2 className="animate-spin" />执行中
         </Badge>
       )
     case "paused":
-      return <Badge className="shrink-0 bg-amber-500/15 text-amber-400 border-amber-500/30 hover:bg-amber-500/15">待人工审批</Badge>
+      return <Badge className="shrink-0 bg-warning/15 text-warning border-warning/30 hover:bg-warning/15">待人工审批</Badge>
     case "succeeded":
-      return <Badge className="shrink-0 bg-emerald-500/15 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/15">已完成</Badge>
+      return <Badge className="shrink-0 bg-success/15 text-success border-success/30 hover:bg-success/15">已完成</Badge>
     case "draft":
-      return <Badge className="shrink-0 bg-amber-500/15 text-amber-400 border-amber-500/30 hover:bg-amber-500/15">DRAFT</Badge>
+      return <Badge className="shrink-0 bg-warning/15 text-warning border-warning/30 hover:bg-warning/15">DRAFT</Badge>
     case "failed":
       return <Badge variant="destructive" className="shrink-0">失败</Badge>
     default:
@@ -143,17 +149,17 @@ function SseStatusIndicator({
       ? `${elapsedSec}s 前`
       : `${Math.floor(elapsedSec / 60)}分钟前`
 
-  let dotClass = "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.6)]"
-  let textClass = "text-emerald-400"
+  let dotClass = "bg-success shadow-[0_0_8px_rgba(16,185,129,0.6)]"
+  let textClass = "text-success"
   let label: string
 
   if (status === "connecting") {
-    dotClass = "bg-amber-400 animate-pulse"
-    textClass = "text-amber-400"
+    dotClass = "bg-warning animate-pulse"
+    textClass = "text-warning"
     label = "连接中…"
   } else if (status === "reconnecting") {
-    dotClass = "bg-amber-500 animate-pulse"
-    textClass = "text-amber-400"
+    dotClass = "bg-warning animate-pulse"
+    textClass = "text-warning"
     label = "已断开 · 重连中…"
   } else {
     // connected
@@ -163,7 +169,7 @@ function SseStatusIndicator({
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-muted/30 border text-[11px] cursor-default select-none">
+        <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-muted/30 border text-caption-sm cursor-default select-none">
           <span className={cn("size-1.5 rounded-full shrink-0", dotClass)} />
           <span className={cn("font-medium tabular-nums", textClass)}>{label}</span>
         </div>
@@ -187,19 +193,15 @@ function FailureBanner({
   error,
   diagnosis,
   isDiagnosing,
-  currentModel,
   onCopy,
   onRetry,
-  onRetryWithModel,
   onOpenSettings,
 }: {
   error: string
   diagnosis: TestLLMResult | null
   isDiagnosing: boolean
-  currentModel?: string  // 任务原本用的 model,用于把它从"换模型"chip 里过滤掉
   onCopy: (t: string) => void
   onRetry: () => void
-  onRetryWithModel: (model: string) => void
   onOpenSettings: () => void
 }) {
   // 把诊断结果归类成一句"用户语言"的提示
@@ -268,7 +270,7 @@ function FailureBanner({
             <div className="text-xs flex flex-col gap-1.5">
               <div className={cn(
                 "font-semibold",
-                diagnosisHint.tone === "actionable" ? "text-amber-300" : "text-emerald-300",
+                diagnosisHint.tone === "actionable" ? "text-warning" : "text-success",
               )}>
                 {diagnosisHint.title}
               </div>
@@ -278,31 +280,28 @@ function FailureBanner({
             </div>
           )}
 
-          {/* 快速修复按钮组 —— 换模型重跑(主路径) + 打开 Settings(配置类问题) */}
+          {/* 快速修复 —— PR #3 起 launcher 不再支持指定模型覆盖，模型类问题统一去 Settings 改 profile.model。 */}
           {!isDiagnosing && diagnosis && (
             <div className="flex items-center gap-1.5 mt-2.5 pt-2 border-t border-border/40 flex-wrap">
-              <span className="text-[11px] text-muted-foreground shrink-0">快速修复:</span>
-              {COMMON_MODELS.filter(m => m !== currentModel).slice(0, 3).map(m => (
-                <Button
-                  key={m}
-                  size="sm"
-                  variant="outline"
-                  onClick={() => onRetryWithModel(m)}
-                  className="h-7 text-xs"
-                  title={`把 model 换成 ${m} 重新提交,其他参数保持不变`}
-                >
-                  <RotateCw data-icon="inline-start" />
-                  换 <code className="font-mono">{m}</code> 重跑
-                </Button>
-              ))}
+              <span className="text-caption-sm text-muted-foreground shrink-0">快速修复:</span>
               <Button
                 size="sm"
-                variant="ghost"
+                variant="outline"
                 onClick={onOpenSettings}
                 className="h-7 text-xs"
               >
                 <Settings data-icon="inline-start" />
-                打开 Settings
+                去 Settings 改 Profile
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={onRetry}
+                className="h-7 text-xs"
+                title="把参数预填到新建框，可改后再跑"
+              >
+                <Edit data-icon="inline-start" />
+                改参数重跑…
               </Button>
             </div>
           )}
@@ -313,7 +312,14 @@ function FailureBanner({
 }
 
 // ═══════════════════ Job List (live + historical) ═══════════════════
-type JobFilter = "all" | "active" | "waiting" | "done" | "failed"
+// 维度收敛（2026-06）：原本 scope(4) × filter(5) 的正交切面被压成单一 popover —
+//   - status: all / needs_me（paused+failed）/ active（running+queued）/ done（succeeded+draft+historical）
+//   - timeRange: any / 7d / 30d
+//   - sortMode: smart（needs_me 顶置）/ updated / created
+// "本会话"维度彻底砍——用户不懂"会话"语义；要找近的就用 timeRange=7d。
+export type JobFilter = "all" | "needs_me" | "active" | "done"
+export type JobTimeRange = "any" | "7d" | "30d"
+export type JobSortMode = "smart" | "updated" | "created"
 
 interface JobListProps {
   liveJobs: EngineJob[]
@@ -321,23 +327,64 @@ interface JobListProps {
   selectedId: string | null
   query: string
   filter: JobFilter
+  timeRange: JobTimeRange
+  sortMode: JobSortMode
   onSelect: (id: string) => void
+  // PR #5：行 hover 出 × 删除。live → 6s Undo Toast；historical → 多选 ConfirmDialog。
+  onDelete: (job: EngineJob) => void
 }
 
-// 同一个 job 是否命中过滤条件
+// 单一 job 时间戳的统一表示（毫秒）：live 用 updated_at / created_at；historical 用 mtime（秒→毫秒）。
+function jobUpdatedMs(j: EngineJob): number {
+  if (j.kind === "historical") {
+    const m = (j as EngineJob & { mtime?: number }).mtime
+    return typeof m === "number" ? m * 1000 : 0
+  }
+  return Date.parse(j.updated_at || j.created_at || "") || 0
+}
+function jobCreatedMs(j: EngineJob): number {
+  if (j.kind === "historical") {
+    const m = (j as EngineJob & { mtime?: number }).mtime
+    return typeof m === "number" ? m * 1000 : 0
+  }
+  return Date.parse(j.created_at || "") || 0
+}
+
+// 任务是否在"等我"段（paused 等审批 / failed 等修复）
+export function isNeedsMe(job: EngineJob): boolean {
+  return job.status === "paused" || job.status === "failed"
+}
+
+// 智能排序桶序：paused → failed → running → queued → done(succeeded/draft/historical)
+function smartBucket(job: EngineJob): number {
+  if (job.kind === "historical") return 4
+  switch (job.status) {
+    case "paused": return 0
+    case "failed": return 1
+    case "running": return 2
+    case "queued": return 2
+    default: return 4  // succeeded / draft
+  }
+}
+
 function matchesJobFilter(job: EngineJob, filter: JobFilter): boolean {
   if (filter === "all") return true
   switch (filter) {
+    case "needs_me":
+      return isNeedsMe(job)
     case "active":
       return job.status === "running" || job.status === "queued"
-    case "waiting":
-      return job.status === "paused"
     case "done":
       // succeeded 实时任务 + 历史归档 + draft 落盘 都算"已完成"
       return job.status === "succeeded" || job.status === "draft" || job.kind === "historical"
-    case "failed":
-      return job.status === "failed"
   }
+}
+
+function matchesTimeRange(job: EngineJob, range: JobTimeRange): boolean {
+  if (range === "any") return true
+  const days = range === "7d" ? 7 : 30
+  const cutoff = Date.now() - days * 864e5
+  return jobUpdatedMs(job) >= cutoff
 }
 
 function matchesJobQuery(job: EngineJob, q: string): boolean {
@@ -350,32 +397,34 @@ function matchesJobQuery(job: EngineJob, q: string): boolean {
   )
 }
 
-export function JobList({ liveJobs, historicalJobs, selectedId, query, filter, onSelect }: JobListProps) {
-  // 历史归档去重:同 path 已经在 live 里出现过的(刚跑完还在内存)就不重复显示
+export function JobList({ liveJobs, historicalJobs, selectedId, query, filter, timeRange, sortMode, onSelect, onDelete }: JobListProps) {
+  // 历史归档去重：同 path 已经在 live 里出现过的（刚跑完还在内存）就不重复显示
   const livePaths = new Set(liveJobs.map(j => j.final_post_path).filter(Boolean) as string[])
   const dedupedHistorical = historicalJobs.filter(h => !h.final_post_path || !livePaths.has(h.final_post_path))
 
-  // 5/28 UX 重构：把"当前会话"拆成两类
-  // - 本会话（sessionIds 命中）：用户在这个浏览器主动提交过 → 永远置顶
-  // - 后端活跃但非本会话：server _restore_jobs_from_disk 出来的 disk-xxx，
-  //   或者其他 session 提交的；放第二段，视觉降权
-  const sessionIds = useMemo(() => new Set(readSessionJobIds()), [])
-  const sessionJobs = liveJobs.filter(j => sessionIds.has(j.id))
-  const restoredJobs = liveJobs.filter(j => !sessionIds.has(j.id))
+  const combined: EngineJob[] = [...liveJobs, ...dedupedHistorical]
 
-  // 再叠加 query + filter
-  const sessionFiltered = sessionJobs.filter(j => matchesJobFilter(j, filter) && matchesJobQuery(j, query))
-  const restoredFiltered = restoredJobs.filter(j => matchesJobFilter(j, filter) && matchesJobQuery(j, query))
-  const historicalFiltered = dedupedHistorical.filter(j => matchesJobFilter(j, filter) && matchesJobQuery(j, query))
+  // 状态 + 时间 + query 三层过滤
+  const filtered = combined.filter(j =>
+    matchesJobFilter(j, filter) && matchesTimeRange(j, timeRange) && matchesJobQuery(j, query)
+  )
 
-  // 排序：本会话 / 活跃按更新时间倒序；历史归档 server 已按 mtime 排好
-  const sortByUpdated = (a: EngineJob, b: EngineJob) => (b.updated_at || "").localeCompare(a.updated_at || "")
-  sessionFiltered.sort(sortByUpdated)
-  restoredFiltered.sort(sortByUpdated)
+  // 排序：
+  //   smart  = 先按桶（等我 → 进行中 → 已完成），桶内 updated 倒序
+  //   updated = 全列表按 updated_at 倒序
+  //   created = 全列表按 created_at 倒序
+  filtered.sort((a, b) => {
+    if (sortMode === "smart") {
+      const db = smartBucket(a) - smartBucket(b)
+      if (db !== 0) return db
+      return jobUpdatedMs(b) - jobUpdatedMs(a)
+    }
+    if (sortMode === "created") return jobCreatedMs(b) - jobCreatedMs(a)
+    return jobUpdatedMs(b) - jobUpdatedMs(a)
+  })
 
   const hasAnyRaw = liveJobs.length > 0 || dedupedHistorical.length > 0
-  const hasAnyFiltered = sessionFiltered.length > 0 || restoredFiltered.length > 0 || historicalFiltered.length > 0
-  const isFiltering = !!query || filter !== "all"
+  const isFiltering = !!query || filter !== "all" || timeRange !== "any"
 
   if (!hasAnyRaw) {
     return (
@@ -385,7 +434,7 @@ export function JobList({ liveJobs, historicalJobs, selectedId, query, filter, o
     )
   }
 
-  if (!hasAnyFiltered) {
+  if (filtered.length === 0) {
     return (
       <div className="text-center py-12 text-muted-foreground text-sm px-4">
         {isFiltering ? "当前过滤下没有匹配的任务" : "没有任务"}
@@ -393,163 +442,118 @@ export function JobList({ liveJobs, historicalJobs, selectedId, query, filter, o
     )
   }
 
+  // min-w-0 + w-full：阻断长 stem 沿 flex-col 链反向把 button 撑爆 sidebar 可视宽。
   return (
-    <div className="flex flex-col gap-2">
-      {sessionFiltered.length > 0 && (
-        <>
-          <SectionHeader>本会话 · {sessionFiltered.length}</SectionHeader>
-          <div className="flex flex-col gap-1">
-            {sessionFiltered.map(job => (
-              <JobRow key={job.id} job={job} selected={selectedId === job.id} onClick={() => onSelect(job.id)} />
-            ))}
-          </div>
-        </>
-      )}
-
-      {restoredFiltered.length > 0 && (
-        <>
-          {sessionFiltered.length > 0 && <div className="my-1 border-t border-border/50" />}
-          <SectionHeader muted>
-            后端活跃 · {restoredFiltered.length}
-            <span className="ml-1.5 text-[9px] normal-case tracking-normal text-muted-foreground/50">
-              · 服务重启 restore 的 job
-            </span>
-          </SectionHeader>
-          <div className="flex flex-col gap-1">
-            {restoredFiltered.map(job => (
-              <JobRow key={job.id} job={job} selected={selectedId === job.id} onClick={() => onSelect(job.id)} dim />
-            ))}
-          </div>
-        </>
-      )}
-
-      {historicalFiltered.length > 0 && (
-        <>
-          {(sessionFiltered.length > 0 || restoredFiltered.length > 0) && (
-            <div className="my-1 border-t border-border/50" />
-          )}
-          <SectionHeader muted>
-            历史归档 · {historicalFiltered.length} 篇
-            {isFiltering && historicalFiltered.length !== dedupedHistorical.length && ` / ${dedupedHistorical.length}`}
-          </SectionHeader>
-          <div className="flex flex-col gap-1">
-            {historicalFiltered.map(job => (
-              <JobRow key={job.id} job={job} selected={selectedId === job.id} onClick={() => onSelect(job.id)} historical />
-            ))}
-          </div>
-        </>
-      )}
+    <div className="flex flex-col gap-0.5 w-full min-w-0">
+      {filtered.map(job => (
+        <JobRow
+          key={job.id}
+          job={job}
+          selected={selectedId === job.id}
+          onClick={() => onSelect(job.id)}
+          onDelete={() => onDelete(job)}
+        />
+      ))}
     </div>
   )
 }
 
-function SectionHeader({ children, muted }: { children: React.ReactNode; muted?: boolean }) {
-  return (
-    <div
-      className={cn(
-        "px-3 py-1 text-[10px] uppercase tracking-wider font-semibold select-none",
-        muted ? "text-muted-foreground/50" : "text-muted-foreground/80",
-      )}
-    >
-      {children}
-    </div>
-  )
-}
+// SectionHeader / StatusPill 已废 —— 改为单一 flat list + StatusDot（Recents 风）。
 
-// status 对应的左侧 colored dot —— 比 badge 更轻量的视觉锚
-function StatusDot({ status }: { status: string }) {
-  const cls = (() => {
-    switch (status) {
-      case "running": return "bg-blue-400 animate-pulse"
-      case "queued": return "bg-slate-400"
-      case "paused": return "bg-amber-400 animate-pulse"
-      case "succeeded": return "bg-emerald-500"
-      case "draft": return "bg-amber-500"
-      case "failed": return "bg-destructive"
-      default: return "bg-muted-foreground/40"
-    }
-  })()
-  return <span className={cn("size-2 rounded-full shrink-0", cls)} aria-hidden />
+// Status dot：根据任务状态映射颜色。运行中 / 等待审批用 animate-pulse 呼吸。
+function StatusDot({ job }: { job: EngineJob }) {
+  const isHistorical = job.kind === "historical"
+  const s = job.status
+  // 已完成 / 历史归档 / 草稿 → 空心环
+  if (isHistorical || s === "succeeded" || s === "draft") {
+    return <span className="block size-2 rounded-full border border-foreground/35 shrink-0" />
+  }
+  // 失败 → 红色实心
+  if (s === "failed") {
+    return <span className="block size-2 rounded-full bg-destructive shrink-0" />
+  }
+  // 暂停（等待审批） → 黄色实心 + pulse
+  if (s === "paused") {
+    return <span className="block size-2 rounded-full bg-warning shrink-0 animate-pulse" />
+  }
+  // 队列中 / 运行中 → 蓝色实心 + pulse
+  if (s === "running" || s === "queued") {
+    return <span className="block size-2 rounded-full bg-info shrink-0 animate-pulse" />
+  }
+  // 兜底：空心环
+  return <span className="block size-2 rounded-full border border-foreground/35 shrink-0" />
 }
 
 function JobRow({
-  job, selected, onClick, historical, dim,
+  job, selected, onClick, onDelete,
 }: {
   job: EngineJob; selected: boolean; onClick: () => void;
-  historical?: boolean; dim?: boolean
+  onDelete: () => void;
 }) {
-  // 5/28 UX 重构：信息密度优先，去掉演讲人占据右下显眼位（改放成本/评分元数据）。
-  // 标题用 Tooltip 替代 native title 避免浮窗错位 bug。
+  // 仿 Claude Recents：左侧 status dot + 单行标题 truncate。timestamp / MODE / status pill 全砍，
+  // 完整 meta（路由 / 演讲人 / 评分 / cost / sectioned）下沉到 hover tooltip。
+  const isHistorical = job.kind === "historical"
   const strategy = job.request.rewrite_strategy
-  const isSectioned = strategy === "sectioned"
-  const modeLabel = job.request.mode === "full" ? "full" : "quick"
-  const passScore = job.pass_score // 历史归档专属
-  const hasCost = !historical && job.estimated_cost_usd > 0
   const tsLabel = formatRelativeOrAbsolute(job.updated_at || job.created_at)
+  const extraMeta = [
+    `路由 ${job.request.routing}`,
+    job.request.mode === "quick" ? "QUICK" : "FULL",
+    strategy === "sectioned" && "sectioned",
+    job.pass_score && `评分 ${job.pass_score}`,
+    !isHistorical && job.estimated_cost_usd > 0 && `$${job.estimated_cost_usd.toFixed(4)}`,
+    job.request.speaker && job.request.speaker !== "我" && `演讲人：${job.request.speaker}`,
+    tsLabel && tsLabel,
+  ].filter(Boolean) as string[]
 
   return (
-    <button
-      onClick={onClick}
-      className={cn(
-        "group text-left p-2.5 rounded-lg border transition-all w-full",
-        selected
-          ? "bg-primary/10 border-primary/30"
-          : "bg-transparent border-transparent hover:bg-accent/50 hover:border-border",
-        // dim：后端 restore 但非本会话；historical：已归档成品。两者都视觉降权。
-        (dim || historical) && !selected && "opacity-70 hover:opacity-100",
-      )}
-    >
-      {/* Row 1：左侧 colored dot + 标题（带 Radix Tooltip）+ 右侧 status badge */}
-      <div className="flex items-start gap-2 mb-1">
-        <div className="pt-1">
-          <StatusDot status={job.status} />
-        </div>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <h3 className="font-semibold text-sm leading-snug line-clamp-2 flex-1 min-w-0 break-all cursor-default">
+    <div className="relative group w-full min-w-0 max-w-full">
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            onClick={onClick}
+            className={cn(
+              // pr-8 永远预留 32px 的"右操作槽"——idle 透明、hover 时 × 浮入。
+              // 标题 truncate 始终在 pr-8 之前停，× 出现也不会盖到末几个字（原 px-2.5 + 绝对定位的 × 会压标题）。
+              "text-left w-full min-w-0 max-w-full h-8 rounded-md overflow-hidden relative pl-2.5 pr-8 flex items-center gap-2 transition-colors",
+              selected
+                ? "bg-foreground/[0.08]"
+                : "hover:bg-foreground/[0.04]",
+            )}
+          >
+            <StatusDot job={job} />
+            <span className={cn(
+              "flex-1 min-w-0 truncate text-[13px] leading-[20px]",
+              selected ? "text-foreground font-medium" : "text-foreground/85",
+            )}>
               {job.stem}
-            </h3>
-          </TooltipTrigger>
-          <TooltipContent side="right" align="start" collisionPadding={16} className="max-w-xs">
-            <p className="text-xs leading-relaxed break-all">{job.stem}</p>
-          </TooltipContent>
-        </Tooltip>
-        <StatusBadge status={job.status} />
-      </div>
-
-      {/* Row 2: meta chips —— 时间 · 模式 · sectioned 标记 · 评分 · 成本 · 演讲人(轻) */}
-      <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 pl-4 text-[10.5px] text-muted-foreground">
-        {tsLabel && <span className="font-medium">{tsLabel}</span>}
-        <span className="text-muted-foreground/40">·</span>
-        <span className="uppercase tracking-wide">{modeLabel}</span>
-        {isSectioned && (
-          <>
-            <span className="text-muted-foreground/40">·</span>
-            <span className="text-primary/80">sectioned</span>
-          </>
-        )}
-        {passScore && (
-          <>
-            <span className="text-muted-foreground/40">·</span>
-            <span className="text-emerald-400/80">{passScore}</span>
-          </>
-        )}
-        {hasCost && (
-          <>
-            <span className="text-muted-foreground/40">·</span>
-            <span className="text-amber-400/70 font-mono">${job.estimated_cost_usd.toFixed(4)}</span>
-          </>
-        )}
-        {job.request.speaker && job.request.speaker !== "我" && (
-          <>
-            <span className="text-muted-foreground/40">·</span>
-            <span className="truncate max-w-[80px] text-muted-foreground/60" title={job.request.speaker}>
-              {job.request.speaker}
             </span>
-          </>
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="right" align="start" collisionPadding={16} className="max-w-xs">
+          <p className="text-xs leading-relaxed break-all">{job.stem}</p>
+          {extraMeta.length > 0 && (
+            <p className="text-xs leading-relaxed text-muted-foreground mt-1">{extraMeta.join(" · ")}</p>
+          )}
+        </TooltipContent>
+      </Tooltip>
+
+      {/* PR #5 · hover 出删除按钮（保留） */}
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); onDelete() }}
+        onMouseDown={(e) => e.stopPropagation()}
+        title={isHistorical ? "删除归档任务…" : "删除任务"}
+        aria-label={isHistorical ? "删除归档任务" : "删除任务"}
+        className={cn(
+          "absolute right-1 top-1/2 -translate-y-1/2 size-6 rounded-md flex items-center justify-center",
+          "text-foreground/50 hover:text-destructive hover:bg-destructive/15",
+          "opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
+          "transition-opacity transition-colors outline-none focus-visible:ring-2 focus-visible:ring-destructive/40",
         )}
-      </div>
-    </button>
+      >
+        <Trash2 className="size-3.5" />
+      </button>
+    </div>
   )
 }
 
@@ -592,7 +596,7 @@ export function OverviewPanel({ historicalJobs }: { historicalJobs: EngineJob[] 
 
   if (stats.total === 0) return null
   return (
-    <div className="rounded-2xl border bg-card/60 p-5">
+    <div className="rounded-xl border bg-card/60 p-5">
       <div className="grid grid-cols-3 sm:grid-cols-6 gap-2.5">
         <StatCell label="成品" value={String(stats.total)} />
         <StatCell label="活跃天数" value={String(stats.activeDays)} />
@@ -609,14 +613,17 @@ export function OverviewPanel({ historicalJobs }: { historicalJobs: EngineJob[] 
   )
 }
 
-export function HomeView({ historicalJobs, onCreate, onOpenLibrary, onOpenSettings, needsKey, healthOffline, defaultProfileName }: {
+export function HomeView({ historicalJobs, onCreate, onOpenLibrary, onOpenSettings, needsKey, healthOffline, composer, onFileDrop }: {
   historicalJobs: EngineJob[]
   onCreate: () => void
   onOpenLibrary: () => void
   onOpenSettings: () => void
   needsKey: boolean
   healthOffline: boolean
-  defaultProfileName: string | null
+  // 底部启动器（inline Launcher）—— 由 App.tsx 注入，HomeView 只负责放在 composer 槽位
+  composer: React.ReactNode
+  // 整页拖拽落地时回调：HomeView 接管 drop → 把 File 转给 Launcher 走统一 upload 通道
+  onFileDrop: (file: File) => void
 }) {
   const total = historicalJobs.filter(j => j.kind === "historical").length
   // 首run 引导：没成品且没主动关掉时展示；有成品的老用户自然不出。
@@ -624,26 +631,46 @@ export function HomeView({ historicalJobs, onCreate, onOpenLibrary, onOpenSettin
   const showGuide = total === 0 && !guideDismissed
   const dismissGuide = () => { localStorage.setItem("v2b_onboarded", "1"); setGuideDismissed(true) }
 
+  // 整页拖拽接管 —— 任意位置拖入文件都走 onFileDrop（→ launcherRef.uploadFile）
+  const [dragOver, setDragOver] = useState(false)
+  const dragDepth = useRef(0)
+
   return (
-    <div className="app-main flex-1 flex flex-col min-h-0">
-      <div className="flex-1 min-h-0 flex flex-col justify-center px-8">
-        <div className="max-w-3xl w-full mx-auto">
-          <h1 className="flex items-center gap-2.5 text-2xl font-semibold tracking-tight">
-            <Sparkle className="size-6 text-primary" />
-            {showGuide ? "欢迎 —— 把你讲过的，变成你写的" : "接下来，写点什么？"}
-          </h1>
-          {total > 0 && (
-            <button
-              type="button"
-              onClick={onOpenLibrary}
-              className="mt-3 text-sm text-muted-foreground hover:text-primary transition-colors"
-            >
-              已写下 {total} 篇署名博文 · 去作品集查看 →
-            </button>
-          )}
+    <div
+      className="app-main flex-1 flex flex-col min-h-0 relative"
+      onDragEnter={e => { e.preventDefault(); dragDepth.current += 1; setDragOver(true) }}
+      onDragOver={e => e.preventDefault()}
+      onDragLeave={e => { e.preventDefault(); dragDepth.current -= 1; if (dragDepth.current <= 0) setDragOver(false) }}
+      onDrop={e => {
+        e.preventDefault(); dragDepth.current = 0; setDragOver(false)
+        const f = e.dataTransfer.files?.[0]; if (f) onFileDrop(f)
+      }}
+    >
+      <div className="flex-1 min-h-0 overflow-y-auto px-8 py-10">
+        <div className="max-w-3xl w-full mx-auto flex flex-col gap-6">
+          <div>
+            {/* Hero 标题用 SF Pro Rounded（font-heading）—— DESIGN.md heading-lg 字号 */}
+            <h1 className="flex items-center gap-2.5 text-heading-lg font-semibold tracking-tight font-heading">
+              <Sparkle className="size-6 text-primary" />
+              {showGuide ? "欢迎 —— 把你讲过的，变成你写的" : "接下来，写点什么？"}
+            </h1>
+            {total > 0 && (
+              <button
+                type="button"
+                onClick={onOpenLibrary}
+                className="mt-3 text-sm text-muted-foreground hover:text-primary transition-colors"
+              >
+                已写下 {total} 篇署名博文 · 去作品集查看 →
+              </button>
+            )}
+          </div>
+
+          {/* 创作概览 + 质检校准（从「作品集」挪到「开始」）—— 有成品才显示 */}
+          {total > 0 && <OverviewPanel historicalJobs={historicalJobs} />}
+          {total > 0 && <CalibrationPanel historicalJobs={historicalJobs} />}
 
           {showGuide && (
-            <div className="mt-6 rounded-2xl border bg-card/60 p-5 flex flex-col gap-4">
+            <div className="rounded-xl border bg-card/60 p-5 flex flex-col gap-4">
               <p className="text-sm text-muted-foreground leading-relaxed">
                 把口播视频 / 访谈 / 讲座 / 文字稿，改写成<b className="text-foreground">你本人第一人称署名</b>的可发布博文。和别的工具不一样的地方：
               </p>
@@ -671,34 +698,25 @@ export function HomeView({ historicalJobs, onCreate, onOpenLibrary, onOpenSettin
         </div>
       </div>
 
-      {/* 底部 composer（启动器式）—— 点击展开 CreateForm */}
-      <div className="shrink-0 border-t bg-background/80 px-8 py-4">
+      {/* 底部 inline Launcher（启动器） —— 由 App.tsx 注入。
+          折叠态长得像 composer 卡片，点击 / 拖入 / ⌘N 触发后原地展开为完整 Launcher。 */}
+      <div className="shrink-0 bg-background/80 px-8 py-4">
         <div className="max-w-3xl mx-auto">
-          <button
-            type="button"
-            onClick={onCreate}
-            disabled={healthOffline}
-            className="group w-full rounded-2xl border bg-card hover:border-primary/40 transition-colors p-4 flex items-center gap-3 text-left disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <div className="size-9 shrink-0 rounded-xl bg-primary/10 text-primary flex items-center justify-center group-hover:bg-primary/15 transition-colors">
-              <Plus className="size-5" />
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="text-sm text-foreground">开始一篇改写…</div>
-              <div className="text-xs text-muted-foreground mt-0.5">
-                选一段转录稿 / 文字稿，AI 清洗·提炼·搭骨架·改写·质检，落盘成署名博文
-              </div>
-            </div>
-            <div className="hidden sm:flex items-center gap-1.5 shrink-0">
-              {defaultProfileName && <Badge variant="outline" className="text-[10px] font-mono">{defaultProfileName}</Badge>}
-              <kbd className="px-1.5 py-0.5 rounded border bg-muted text-[10px] font-mono text-muted-foreground">⌘N</kbd>
-            </div>
-          </button>
+          {composer}
           {healthOffline && (
-            <p className="text-xs text-destructive/80 mt-2 text-center">后端离线，请先 <code className="text-[11px]">make server</code> 启动</p>
+            <p className="text-xs text-destructive/80 mt-2 text-center">后端离线，请先 <code className="text-caption-sm">make server</code> 启动</p>
           )}
         </div>
       </div>
+
+      {/* 整页拖拽落地视觉 */}
+      {dragOver && (
+        <div className="absolute inset-3 z-20 rounded-xl border-2 border-dashed border-primary bg-primary/5 flex items-center justify-center pointer-events-none">
+          <div className="flex items-center gap-2 text-primary font-medium">
+            <Plus className="size-5" /> 松手作为本次改写的源
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -706,8 +724,8 @@ export function HomeView({ historicalJobs, onCreate, onOpenLibrary, onOpenSettin
 function StatCell({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
   return (
     <div className="rounded-xl bg-muted/50 px-3 py-2.5">
-      <div className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</div>
-      <div className={cn("text-lg font-semibold mt-0.5 truncate", mono && "font-mono text-base")}>{value}</div>
+      <div className="text-caption-sm uppercase tracking-wider text-muted-foreground">{label}</div>
+      <div className={cn("text-heading-sm font-semibold mt-0.5 truncate", mono && "font-mono text-body-md")}>{value}</div>
     </div>
   )
 }
@@ -725,11 +743,15 @@ function Heatmap({ perDay }: { perDay: Map<string, number> }) {
     const k = dayKey(d)
     cells.push({ key: k, count: perDay.get(k) ?? 0 })
   }
+  // 4 档色阶（参考 GitHub 贡献图）：
+  // 空格子用 foreground/[0.08] —— 浅色下 ≈ #ebebeb 比 muted/60 更明显，深色下 ≈ 微亮，两态都看得见。
+  // 1/2/3+ 篇按 primary 浓度递增，最深档用满色保持可识别。
+  // ring-inset 给单元格细边框，防止相邻空格子在浅色下融成一片。
   const tone = (c: number) =>
-    c === 0 ? "bg-muted/60"
-    : c === 1 ? "bg-primary/35"
-    : c === 2 ? "bg-primary/60"
-    : "bg-primary/90"
+    c === 0 ? "bg-foreground/[0.08] ring-1 ring-inset ring-foreground/[0.04]"
+    : c === 1 ? "bg-primary/40"
+    : c === 2 ? "bg-primary/70"
+    : "bg-primary"
   return (
     <div className="mt-4 flex gap-[3px]">
       {Array.from({ length: weeks }).map((_, w) => (
@@ -747,6 +769,167 @@ function Heatmap({ perDay }: { perDay: Map<string, number> }) {
   )
 }
 
+// ═══════════════════ Job Params Card ═══════════════════
+// Workspace 顶部参数行 + 重跑入口。承接 PR #1 的"重跑路径不再走 CreateForm"决策：
+//   - 「再跑一遍」直接用 job.request 提交新任务
+//   - 「改参数…」浮出 Launcher 预填字段，等用户改完再提交
+// 失败时整行加 warning 底色，模型字段加 chip 高亮（最常见的责任字段）。
+const ROUTING_LABEL: Record<string, string> = {
+  "/lecture": "讲课·分享", "/dialogue": "受访嘉宾", "/screencast": "录屏讲解",
+  "/meeting": "主持·决策", "/default": "AI 判断",
+}
+
+function JobParamsCard({ job, onRerunSame, onRerunModify, onDelete, healthOffline }: {
+  job: EngineJob
+  onRerunSame: () => void
+  onRerunModify: () => void
+  onDelete: () => void
+  healthOffline: boolean
+}) {
+  const r = job.request
+  const isHistorical = job.kind === "historical"
+  const isFailed = job.status === "failed"
+  // running / queued / paused 不显示重跑（任务还活着，不该并发 retry）
+  const canRerun = isHistorical || job.status === "succeeded" || isFailed
+
+  return (
+    <div className={cn(
+      "flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs",
+      isFailed
+        ? "text-foreground/85 bg-warning/[0.08] -mx-2 px-2 py-1.5 rounded-md ring-1 ring-warning/20"
+        : "text-muted-foreground"
+    )}>
+      <span className="flex items-center gap-1"><User className="size-3" /> {r.speaker}</span>
+      <span>视角 <code className="text-xs">{ROUTING_LABEL[r.routing] ?? r.routing}</code></span>
+      <span title={r.pause_on_outline ? "大纲生成后等审批" : "不暂停，一气呵成跑完"}>
+        {r.pause_on_outline ? "⏸ 大纲后审批" : "▶ 一气呵成"}
+      </span>
+      <span title={r.model || "未指定，后端走配置档默认"}>
+        模型 <code className={cn(
+          "text-xs",
+          !r.model && "text-muted-foreground/60",
+          isFailed && "bg-warning/15 px-1 rounded",
+        )}>
+          {r.model || "档默认"}
+        </code>
+      </span>
+      {r.api_base && (
+        <span title={r.api_base}>
+          API <code className="text-xs">{shortApiBase(r.api_base)}</code>
+        </span>
+      )}
+      <span className="truncate max-w-[300px]">源 <code className="text-xs">{r.source}</code></span>
+      {(job.input_tokens > 0 || job.output_tokens > 0) && (
+        <span className="flex items-center gap-1.5">
+          <span className="flex items-center gap-1">
+            <DollarSign className="size-3 text-success" />
+            <span className="font-mono text-success">${job.estimated_cost_usd.toFixed(4)}</span>
+          </span>
+          <span className="text-muted-foreground/60">·</span>
+          <span className="font-mono">
+            {(job.input_tokens / 1000).toFixed(1)}k in / {(job.output_tokens / 1000).toFixed(1)}k out
+          </span>
+        </span>
+      )}
+
+      <div className="ml-auto flex items-center gap-1">
+        {canRerun && (
+          <>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={onRerunSame}
+              disabled={healthOffline}
+              title={healthOffline ? "后端离线" : "不改参数，再跑一遍"}
+              className="h-7 text-xs"
+            >
+              <RotateCw data-icon="inline-start" />
+              再跑一遍
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={onRerunModify}
+              disabled={healthOffline}
+              title={healthOffline ? "后端离线" : "把参数预填到新建框，可改后再跑"}
+              className="h-7 text-xs"
+            >
+              <Edit data-icon="inline-start" />
+              改参数…
+            </Button>
+          </>
+        )}
+        {/* PR #5：删除入口（任何状态都可删；live → 6s undo；historical → 多选弹窗）。 */}
+        <MoreMenu
+          items={[
+            {
+              label: isHistorical ? "删除归档…" : "删除任务",
+              icon: Trash2,
+              destructive: true,
+              disabled: healthOffline,
+              onSelect: onDelete,
+            },
+          ]}
+        />
+      </div>
+    </div>
+  )
+}
+
+// ─── 小型 ⋯ Popover 菜单 ─────────────────────────────────────────────
+// JobParamsCard 用：把次要 / 销毁性动作收进 ⋯，避免行内 chip 长度失控。
+function MoreMenu({ items }: {
+  items: {
+    label: string
+    icon: React.ComponentType<{ className?: string }>
+    onSelect: () => void
+    destructive?: boolean
+    disabled?: boolean
+  }[]
+}) {
+  const [open, setOpen] = useState(false)
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          aria-label="更多操作"
+          className="size-7"
+        >
+          <MoreHorizontal className="size-4" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-44 p-1">
+        {items.map((item, i) => {
+          const Icon = item.icon
+          return (
+            <button
+              key={i}
+              type="button"
+              disabled={item.disabled}
+              onClick={() => { setOpen(false); item.onSelect() }}
+              className={cn(
+                "w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-left transition-colors",
+                item.disabled && "opacity-50 cursor-not-allowed",
+                !item.disabled && (item.destructive
+                  ? "text-destructive hover:bg-destructive/10"
+                  : "hover:bg-foreground/[0.05]"),
+              )}
+            >
+              <Icon className="size-4 shrink-0" />
+              <span>{item.label}</span>
+            </button>
+          )
+        })}
+      </PopoverContent>
+    </Popover>
+  )
+}
+
 // ═══════════════════ Job Workspace ═══════════════════
 interface JobWorkspaceProps {
   job: EngineJob
@@ -758,8 +941,8 @@ interface JobWorkspaceProps {
   pausedAt: "outline" | "review" | null
   outlineText: string
   setOutlineText: (v: string) => void
-  outlineViewMode: "edit" | "preview" | "split"
-  setOutlineViewMode: (v: "edit" | "preview" | "split") => void
+  outlineViewMode: "edit" | "preview"
+  setOutlineViewMode: (v: "edit" | "preview") => void
   draftContent: string
   reviewJson: ReviewJson | null
   isSubmittingOutline: boolean
@@ -770,15 +953,19 @@ interface JobWorkspaceProps {
   onCopy: (text: string) => void
   onCancel: () => void
   onOpenInOS: (path: string, mode: "finder" | "editor") => void
-  onRetry: (job: EngineJob, modelOverride?: string) => void
+  // PR #3：「改参数重跑」浮出 launcher 预填；「再跑一遍」直接发新任务。
+  onRetry: (job: EngineJob) => void
+  onRerunSame: (job: EngineJob) => void
+  // PR #5：删除任务（live → 6s undo / historical → 多选弹窗）
+  onDelete: (job: EngineJob) => void
   healthOffline: boolean
   sseStatus: "idle" | "connecting" | "connected" | "reconnecting" | "terminal"
   lastEventAt: number | null
   outlineDraftRestoredTs: number | null
   onReloadOutlineOriginal: () => void
   setDraftContent: (v: string) => void
-  draftViewMode: "edit" | "preview" | "split"
-  setDraftViewMode: (v: "edit" | "preview" | "split") => void
+  draftViewMode: "edit" | "preview"
+  setDraftViewMode: (v: "edit" | "preview") => void
   draftEditRestoredTs: number | null
   onReloadDraftOriginal: () => void
   onOpenSettings: () => void
@@ -799,7 +986,7 @@ export function JobWorkspace(props: JobWorkspaceProps) {
       <div className="px-6 pt-5 pb-2 border-b">
         <div className="flex items-start justify-between gap-4 mb-3">
           <div className="flex-1 min-w-0">
-            <h2 className="text-xl font-bold text-foreground flex items-center gap-2 flex-wrap">
+            <h2 className="text-heading-md font-bold text-foreground flex items-center gap-2 flex-wrap font-heading">
               <span className="truncate">{job.stem}</span>
               {!isHistorical && (
                 <code className="text-xs font-mono text-muted-foreground font-normal">
@@ -811,35 +998,13 @@ export function JobWorkspace(props: JobWorkspaceProps) {
                 <Badge variant="outline" className="text-xs">{job.pass_score}</Badge>
               )}
             </h2>
-            <div className="flex items-center gap-4 text-xs text-muted-foreground mt-1 flex-wrap">
-              <span className="flex items-center gap-1"><User className="size-3" /> {job.request.speaker}</span>
-              <span>路由 <code className="text-xs">{job.request.routing}</code></span>
-              <span>模式 <code className="text-xs">{job.request.mode}</code></span>
-              {/* 模型 / API Base —— 失败任务定位根因最关键的两个字段,顶到 Header 而不是埋在表单里 */}
-              <span title={job.request.model || "未指定,后端走环境变量默认"}>
-                模型 <code className={cn("text-xs", !job.request.model && "text-muted-foreground/60")}>
-                  {job.request.model || "环境默认"}
-                </code>
-              </span>
-              {job.request.api_base && (
-                <span title={job.request.api_base}>
-                  API <code className="text-xs">{shortApiBase(job.request.api_base)}</code>
-                </span>
-              )}
-              <span className="truncate max-w-[300px]">源 <code className="text-xs">{job.request.source}</code></span>
-              {(job.input_tokens > 0 || job.output_tokens > 0) && (
-                <span className="flex items-center gap-1.5 ml-auto">
-                  <span className="flex items-center gap-1">
-                    <DollarSign className="size-3 text-emerald-500" />
-                    <span className="font-mono text-emerald-400">${job.estimated_cost_usd.toFixed(4)}</span>
-                  </span>
-                  <span className="text-muted-foreground/60">·</span>
-                  <span className="font-mono">
-                    {(job.input_tokens / 1000).toFixed(1)}k in / {(job.output_tokens / 1000).toFixed(1)}k out
-                  </span>
-                </span>
-              )}
-            </div>
+            <JobParamsCard
+              job={job}
+              onRerunSame={() => props.onRerunSame(job)}
+              onRerunModify={() => props.onRetry(job)}
+              onDelete={() => props.onDelete(job)}
+              healthOffline={props.healthOffline}
+            />
           </div>
           {!isHistorical && (
             <div className="flex items-center gap-2 shrink-0">
@@ -854,6 +1019,7 @@ export function JobWorkspace(props: JobWorkspaceProps) {
                       size="icon"
                       onClick={props.onCancel}
                       disabled={props.healthOffline}
+                      aria-label="取消任务"
                       className="size-8 text-destructive hover:text-destructive hover:bg-destructive/10"
                     >
                       <XCircle />
@@ -866,7 +1032,7 @@ export function JobWorkspace(props: JobWorkspaceProps) {
               )}
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <Button variant="ghost" size="icon" onClick={props.onRefresh} className="size-8">
+                  <Button variant="ghost" size="icon" onClick={props.onRefresh} aria-label="刷新状态与日志" className="size-8">
                     <RotateCw />
                   </Button>
                 </TooltipTrigger>
@@ -890,16 +1056,14 @@ export function JobWorkspace(props: JobWorkspaceProps) {
           }}
         />
 
-        {/* 失败 Banner —— 让 job.error 不再藏在日志深处,并嵌一份自动诊断 + 一键换模型重跑 */}
+        {/* 失败 Banner —— job.error 顶到醒目位置 + 自动归因诊断 + 「去 Settings」「改参数重跑」 */}
         {isFailed && (
           <FailureBanner
             error={job.error || "未知错误(后端未返回 error 字段)"}
             diagnosis={diagnosis}
             isDiagnosing={isDiagnosing}
-            currentModel={job.request.model}
             onCopy={props.onCopy}
             onRetry={() => props.onRetry(job)}
-            onRetryWithModel={(m) => props.onRetry(job, m)}
             onOpenSettings={props.onOpenSettings}
           />
         )}
@@ -977,8 +1141,8 @@ function OutlineView({ outlineText, setOutlineText, outlineViewMode, setOutlineV
   return (
     <div className="flex flex-col h-full gap-4">
       {outlineDraftRestoredTs && (
-        <Alert className="border-amber-500/30 bg-amber-500/5 py-2">
-          <RotateCw className="text-amber-500" />
+        <Alert className="border-warning/30 bg-warning/5 py-2">
+          <RotateCw className="text-warning" />
           <AlertTitle className="flex items-center justify-between gap-2 text-sm">
             <span>已恢复 {formatRelativeTime(outlineDraftRestoredTs)}的本地编辑</span>
             <Button
@@ -1009,51 +1173,57 @@ function OutlineView({ outlineText, setOutlineText, outlineViewMode, setOutlineV
       </Alert>
 
       <Card className="flex-1 flex flex-col overflow-hidden">
-        <CardHeader className="py-2.5 px-4 border-b flex-row items-center justify-between space-y-0">
-          <code className="text-xs text-muted-foreground">work/{job.stem}/outline.md</code>
-          <div className="flex items-center gap-1">
+        {/* plain div 而非 CardHeader —— 后者 grid auto-rows-min 会把子项强制分两行（同 draft 视图） */}
+        <div className="pt-0 pb-2.5 px-4 flex items-center justify-between gap-2 shrink-0">
+          <code className="text-xs text-muted-foreground truncate min-w-0">work/{job.stem}/outline.md</code>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <div className="inline-flex rounded-md border bg-card p-0.5">
+              <button
+                type="button"
+                onClick={() => setOutlineViewMode("preview")}
+                title="预览（Markdown 渲染）"
+                aria-label="预览"
+                className={cn(
+                  "size-6 rounded flex items-center justify-center transition-colors",
+                  outlineViewMode === "preview" ? "bg-foreground/[0.08] text-foreground" : "text-foreground/60 hover:text-foreground",
+                )}
+              >
+                <Eye className="size-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setOutlineViewMode("edit")}
+                title="源码（原始 Markdown，可编辑）"
+                aria-label="源码"
+                className={cn(
+                  "size-6 rounded flex items-center justify-center transition-colors",
+                  outlineViewMode === "edit" ? "bg-foreground/[0.08] text-foreground" : "text-foreground/60 hover:text-foreground",
+                )}
+              >
+                <CodeIcon className="size-3.5" />
+              </button>
+            </div>
             <Button
-              variant={outlineViewMode === "edit" ? "secondary" : "ghost"}
-              size="sm"
-              onClick={() => setOutlineViewMode("edit")}
-              className="h-7 text-xs"
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(outlineText)
+                  toast.success("已复制全文")
+                } catch (e) {
+                  toast.error("复制失败", { description: e instanceof Error ? e.message : String(e) })
+                }
+              }}
+              title="复制全文"
+              aria-label="复制全文"
             >
-              源码
-            </Button>
-            <Button
-              variant={outlineViewMode === "split" ? "secondary" : "ghost"}
-              size="sm"
-              onClick={() => setOutlineViewMode("split")}
-              className="h-7 text-xs"
-            >
-              分屏
-            </Button>
-            <Button
-              variant={outlineViewMode === "preview" ? "secondary" : "ghost"}
-              size="sm"
-              onClick={() => setOutlineViewMode("preview")}
-              className="h-7 text-xs"
-            >
-              预览
+              <Copy className="size-3.5" />
             </Button>
           </div>
-        </CardHeader>
+        </div>
         <CardContent className="p-0 flex-1 overflow-hidden">
-          {outlineViewMode === "split" ? (
-            <div className="grid grid-cols-2 h-full divide-x">
-              <textarea
-                value={outlineText}
-                onChange={e => setOutlineText(e.target.value)}
-                className="w-full h-full bg-transparent p-4 font-mono text-sm leading-relaxed text-foreground outline-none resize-none"
-                spellCheck={false}
-              />
-              <ScrollArea className="h-full">
-                <div className="p-6">
-                  <MarkdownView source={outlineText} />
-                </div>
-              </ScrollArea>
-            </div>
-          ) : outlineViewMode === "edit" ? (
+          {outlineViewMode === "edit" ? (
             <textarea
               value={outlineText}
               onChange={e => setOutlineText(e.target.value)}
@@ -1082,8 +1252,8 @@ function DraftReviewView({ draftContent, setDraftContent, reviewJson, isSubmitti
     <div className="flex flex-col h-full gap-4">
       {/* 草稿编辑恢复 Banner —— 跟 OutlineView 同款 */}
       {draftEditRestoredTs && (
-        <Alert className="border-amber-500/30 bg-amber-500/5 py-2">
-          <RotateCw className="text-amber-500" />
+        <Alert className="border-warning/30 bg-warning/5 py-2">
+          <RotateCw className="text-warning" />
           <AlertTitle className="flex items-center justify-between gap-2 text-sm">
             <span>已恢复 {formatRelativeTime(draftEditRestoredTs)}的本地编辑</span>
             <Button
@@ -1107,7 +1277,7 @@ function DraftReviewView({ draftContent, setDraftContent, reviewJson, isSubmitti
           <AlertTitle className="flex items-center justify-between">
             <span>Step 7 质检系统失效,请人工裁判</span>
             <div className="flex gap-2">
-              <Button onClick={() => onApproveDraft(true)} disabled={isSubmittingDraft || healthOffline} title={offlineTitle} size="sm" className="bg-emerald-600 hover:bg-emerald-500">
+              <Button onClick={() => onApproveDraft(true)} disabled={isSubmittingDraft || healthOffline} title={offlineTitle} size="sm" className="bg-success text-white hover:bg-success/90">
                 {isSubmittingDraft ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <Check data-icon="inline-start" />}
                 接受并以 DRAFT 落盘
               </Button>
@@ -1123,12 +1293,12 @@ function DraftReviewView({ draftContent, setDraftContent, reviewJson, isSubmitti
           </AlertDescription>
         </Alert>
       ) : (
-        <Alert className="border-amber-500/40 bg-amber-500/5">
-          <Award className="text-amber-500" />
+        <Alert className="border-warning/40 bg-warning/5">
+          <Award className="text-warning" />
           <AlertTitle className="flex items-center justify-between">
             <span>Step 7 · 质检人工审批</span>
             <div className="flex gap-2">
-              <Button onClick={() => onApproveDraft(true)} disabled={isSubmittingDraft || healthOffline} title={offlineTitle} size="sm" className="bg-emerald-600 hover:bg-emerald-500">
+              <Button onClick={() => onApproveDraft(true)} disabled={isSubmittingDraft || healthOffline} title={offlineTitle} size="sm" className="bg-success text-white hover:bg-success/90">
                 {isSubmittingDraft ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <Check data-icon="inline-start" />}
                 接受为草稿 (DRAFT)
               </Button>
@@ -1145,35 +1315,70 @@ function DraftReviewView({ draftContent, setDraftContent, reviewJson, isSubmitti
         </Alert>
       )}
 
-      {/* Score card (左) + Draft preview (右) */}
-      <div className="flex-1 grid grid-cols-3 gap-4 overflow-hidden">
+      {/* Score card (左) + Draft preview (右)。
+          注意：grid 不能用 overflow-hidden —— Card 用 ring-1（box-shadow 外溢 1px）当边框，
+          被外层 hidden 裁掉就成了"上下边框消失"的视觉 bug。让 Card 自身 overflow-hidden 兜底内容裁剪。
+          外层用 min-h-0 保证 flex-1 高度能算对。 */}
+      <div className="flex-1 grid grid-cols-3 gap-4 min-h-0">
         {/* Score card */}
         <Card className="col-span-1 overflow-hidden flex flex-col">
           <CardHeader className="pb-3">
-            <CardTitle className="text-base flex items-center justify-between">
+            <CardTitle className="text-body-md flex items-center justify-between">
               <span>质检得分</span>
-              <span className={cn("text-2xl font-bold tabular-nums", parseFailed ? "text-destructive" : "text-amber-400")}>
+              <span className={cn("text-heading-lg font-bold tabular-nums", parseFailed ? "text-destructive" : "text-warning")}>
                 {reviewJson?.total ?? "—"}
               </span>
             </CardTitle>
           </CardHeader>
           <CardContent className="flex-1 overflow-hidden flex flex-col gap-4">
-            {reviewJson && !parseFailed && Object.entries(reviewJson.scores || {}).length > 0 && (
-              <div className="flex flex-col gap-2.5">
-                {Object.entries(reviewJson.scores).map(([dim, score]) => (
-                  <ScoreBar key={dim} dim={dim} score={score} />
-                ))}
-              </div>
-            )}
-            <Separator />
+            {(() => {
+              const hasScores = !!reviewJson && !parseFailed && Object.entries(reviewJson.scores || {}).length > 0
+              if (hasScores) {
+                return (
+                  <>
+                    <div className="flex flex-col gap-2.5">
+                      {Object.entries(reviewJson!.scores).map(([dim, score]) => (
+                        <ScoreBar key={dim} dim={dim} score={score} />
+                      ))}
+                    </div>
+                    <Separator />
+                  </>
+                )
+              }
+              // 无评分时：去掉孤立 Separator + 给用户清晰的状态指引（不再"看似被遮住"）。
+              return (
+                <div className="rounded-md border border-dashed border-border bg-muted/30 px-3 py-2.5 text-xs text-muted-foreground leading-relaxed">
+                  {parseFailed ? (
+                    <>
+                      <div className="font-medium text-foreground/80 mb-1">⚠ 质检结果解析失败</div>
+                      {reviewJson?.raw_markdown
+                        ? "下方原始 markdown 是兜底，可以人工读一眼。"
+                        : "文件存在但 JSON 无法解析，可能引擎版本不匹配。"}
+                    </>
+                  ) : reviewJson === null ? (
+                    <>
+                      <div className="font-medium text-foreground/80 mb-1">质检结果尚未生成</div>
+                      Step 7 还在跑或刚跑完，稍后会自动出现六维评分。
+                    </>
+                  ) : (
+                    <>
+                      <div className="font-medium text-foreground/80 mb-1">本轮无六维评分</div>
+                      可能 LLM 直接给 PASS / 评分字段为空，看下方 Re-Brief 与正文。
+                    </>
+                  )}
+                </div>
+              )
+            })()}
             <div className="flex-1 overflow-hidden flex flex-col">
               <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
                 Re-Brief 改进建议
               </h4>
               <ScrollArea className="flex-1 min-h-0">
                 <div className="text-xs text-foreground/80 leading-relaxed pr-2 whitespace-pre-wrap">
-                  {reviewJson?.rebrief?.trim() || (
-                    <span className="text-muted-foreground italic">无具体反馈。可能 LLM 直接给了 PASS,或质检解析失败正在加载详细原因。</span>
+                  {reviewJson?.rebrief?.trim() || (parseFailed && reviewJson?.raw_markdown?.trim()) || (
+                    <span className="text-muted-foreground italic">
+                      {reviewJson === null ? "正在加载质检详细原因…" : "无具体反馈。"}
+                    </span>
                   )}
                 </div>
               </ScrollArea>
@@ -1181,57 +1386,66 @@ function DraftReviewView({ draftContent, setDraftContent, reviewJson, isSubmitti
           </CardContent>
         </Card>
 
-        {/* Draft 编辑/预览 —— 三档切换,改完接受时一并回写后端 */}
-        <Card className="col-span-2 overflow-hidden flex flex-col">
-          <CardHeader className="py-2.5 px-4 border-b flex-row items-center justify-between space-y-0">
+        {/* Draft 预览/源码 —— 单行 header（仿风格页范文详情）：标签 + 文件名在左，
+            预览/源码 toggle + 复制全文按钮在右；改完接受时一并回写后端。 */}
+        <Card className="col-span-2 overflow-hidden flex flex-col py-0">
+          {/* 用 plain div 而非 CardHeader —— 后者 grid auto-rows-min 会把子项强制分两行。
+              Card 自身 py-0 抹掉默认 16px 外缘，header py-3 自己控制 12px 上下气，
+              视觉上卡顶 → 文字 ≈ 12px（不会让用户感觉 header 上方有大块空白）。 */}
+          <div className="py-3 px-4 flex items-center justify-between gap-2 shrink-0">
             <div className="flex items-center gap-2 min-w-0">
-              <CardTitle className="text-sm font-normal text-muted-foreground">草稿</CardTitle>
-              <code className="text-[10px] text-muted-foreground/60 truncate">draft_v{reviewJson?.version ?? 1}.md</code>
+              <span className="text-sm font-normal text-muted-foreground shrink-0">草稿</span>
+              <code className="text-caption-sm text-muted-foreground/60 truncate">draft_v{reviewJson?.version ?? 1}.md</code>
             </div>
-            <div className="flex items-center gap-1 shrink-0">
+            <div className="flex items-center gap-1.5 shrink-0">
+              <div className="inline-flex rounded-md border bg-card p-0.5">
+                <button
+                  type="button"
+                  onClick={() => setDraftViewMode("preview")}
+                  title="预览（Markdown 渲染）"
+                  aria-label="预览"
+                  className={cn(
+                    "size-6 rounded flex items-center justify-center transition-colors",
+                    draftViewMode === "preview" ? "bg-foreground/[0.08] text-foreground" : "text-foreground/60 hover:text-foreground",
+                  )}
+                >
+                  <Eye className="size-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDraftViewMode("edit")}
+                  title="源码（原始 Markdown，可编辑）"
+                  aria-label="源码"
+                  className={cn(
+                    "size-6 rounded flex items-center justify-center transition-colors",
+                    draftViewMode === "edit" ? "bg-foreground/[0.08] text-foreground" : "text-foreground/60 hover:text-foreground",
+                  )}
+                >
+                  <CodeIcon className="size-3.5" />
+                </button>
+              </div>
               <Button
-                variant={draftViewMode === "edit" ? "secondary" : "ghost"}
-                size="sm"
-                onClick={() => setDraftViewMode("edit")}
-                className="h-7 text-xs"
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(draftContent)
+                    toast.success("已复制全文")
+                  } catch (e) {
+                    toast.error("复制失败", { description: e instanceof Error ? e.message : String(e) })
+                  }
+                }}
+                title="复制全文"
+                aria-label="复制全文"
               >
-                源码
-              </Button>
-              <Button
-                variant={draftViewMode === "split" ? "secondary" : "ghost"}
-                size="sm"
-                onClick={() => setDraftViewMode("split")}
-                className="h-7 text-xs"
-              >
-                分屏
-              </Button>
-              <Button
-                variant={draftViewMode === "preview" ? "secondary" : "ghost"}
-                size="sm"
-                onClick={() => setDraftViewMode("preview")}
-                className="h-7 text-xs"
-              >
-                预览
+                <Copy className="size-3.5" />
               </Button>
             </div>
-          </CardHeader>
+          </div>
           <CardContent className="p-0 flex-1 overflow-hidden">
             {!draftContent ? (
               <div className="px-6 py-5 text-muted-foreground italic text-sm">正在加载初稿...</div>
-            ) : draftViewMode === "split" ? (
-              <div className="grid grid-cols-2 h-full divide-x">
-                <textarea
-                  value={draftContent}
-                  onChange={e => setDraftContent(e.target.value)}
-                  className="w-full h-full bg-transparent p-4 font-mono text-sm leading-relaxed text-foreground outline-none resize-none"
-                  spellCheck={false}
-                />
-                <ScrollArea className="h-full">
-                  <div className="px-6 py-5">
-                    <MarkdownView source={draftContent} />
-                  </div>
-                </ScrollArea>
-              </div>
             ) : draftViewMode === "edit" ? (
               <textarea
                 value={draftContent}
@@ -1261,7 +1475,7 @@ function ScoreBar({ dim, score }: { dim: string; score: number }) {
         <div
           className={cn(
             "h-full rounded-full transition-all",
-            score >= 8 ? "bg-emerald-500" : score >= 5 ? "bg-amber-500" : "bg-destructive",
+            score >= 8 ? "bg-success" : score >= 5 ? "bg-warning" : "bg-destructive",
           )}
           style={{ width: `${(score / 10) * 100}%` }}
         />
@@ -1331,27 +1545,27 @@ function FinalView({ job, onCopy, onOpenInOS }: { job: EngineJob; onCopy: (text:
         <Badge
           variant="outline"
           className={cn(
-            "text-[10px]",
-            isDraft ? "border-amber-500/40 text-amber-500" : "border-emerald-500/40 text-emerald-500",
+            "text-caption-sm",
+            isDraft ? "border-warning/40 text-warning" : "border-success/40 text-success",
           )}
         >
           {isDraft ? "DRAFT 归档" : isHistorical ? "成品归档" : "博文成品"}
         </Badge>
-        {job.pass_score && <Badge variant="outline" className="text-[10px] font-mono">质检 {job.pass_score}</Badge>}
+        {job.pass_score && <Badge variant="outline" className="text-caption-sm font-mono">质检 {job.pass_score}</Badge>}
         {!isHistorical && job.estimated_cost_usd > 0 && (
-          <Badge variant="outline" className="text-[10px] font-mono">${job.estimated_cost_usd.toFixed(4)}</Badge>
+          <Badge variant="outline" className="text-caption-sm font-mono">${job.estimated_cost_usd.toFixed(4)}</Badge>
         )}
         <div className="flex-1" />
         <Button size="sm" variant="outline" onClick={() => content && onCopy(content)} disabled={!content}>
           <Copy data-icon="inline-start" /> 复制全文
         </Button>
         {path && (
-          <Button size="sm" variant="ghost" onClick={() => onOpenInOS(path, "finder")} title="在 Finder 显示">
+          <Button size="sm" variant="ghost" onClick={() => onOpenInOS(path, "finder")} title="在 Finder 显示" aria-label="在 Finder 显示">
             <FolderOpen />
           </Button>
         )}
         {path && (
-          <Button size="sm" variant="ghost" onClick={() => onOpenInOS(path, "editor")} title="用默认编辑器打开">
+          <Button size="sm" variant="ghost" onClick={() => onOpenInOS(path, "editor")} title="用默认编辑器打开" aria-label="用默认编辑器打开">
             <ExternalLink />
           </Button>
         )}
@@ -1379,19 +1593,14 @@ function FinalView({ job, onCopy, onOpenInOS }: { job: EngineJob; onCopy: (text:
             <div className="text-xs text-muted-foreground">这篇用得怎么样？只存本地，帮工具校准质检。</div>
             <div className="flex gap-2 flex-wrap">
               {DISPOSITIONS.map(({ key, label }) => (
-                <button
+                <FilterChip
                   key={key}
-                  type="button"
+                  active={disposition === key}
                   onClick={() => setDispo(key)}
-                  className={cn(
-                    "px-3 py-1.5 text-sm rounded-full border transition-colors",
-                    disposition === key
-                      ? "bg-primary/15 border-primary/40 text-primary font-medium"
-                      : "border-border text-muted-foreground hover:text-foreground hover:border-foreground/30",
-                  )}
+                  className="px-3 py-1.5 text-sm"
                 >
                   {label}
-                </button>
+                </FilterChip>
               ))}
             </div>
           </div>
@@ -1511,13 +1720,14 @@ function ArtifactsView({ job, onCopy, onOpenInOS }: { job: EngineJob; onCopy: (t
     <div className="flex h-full gap-3 min-h-0">
       {/* 左：文件列表 */}
       <div className="w-56 shrink-0 flex flex-col min-h-0 border rounded-lg bg-card/40">
-        <div className="flex items-center justify-between px-3 py-2 border-b">
-          <span className="text-xs font-medium text-muted-foreground">work/{stem}/</span>
-          <Button type="button" variant="ghost" size="icon-sm" onClick={loadList} title="刷新（运行中可随时看最新产物）" className="size-6">
+        <div className="flex items-center justify-between gap-2 px-3 py-2 border-b">
+          <span className="text-xs font-medium text-muted-foreground truncate min-w-0" title={`work/${stem}/`}>work/{stem}/</span>
+          <Button type="button" variant="ghost" size="icon-sm" onClick={loadList} title="刷新（运行中可随时看最新产物）" aria-label="刷新产物列表" className="size-6 shrink-0">
             <RotateCw className="size-3.5" />
           </Button>
         </div>
-        <ScrollArea className="flex-1 min-h-0">
+        {/* viewport 覆盖同 App.tsx：防长产物名撑破 Radix table wrapper 致 truncate 失效 */}
+        <ScrollArea className="flex-1 min-h-0 [&_[data-slot=scroll-area-viewport]>div]:!block [&_[data-slot=scroll-area-viewport]>div]:!w-full">
           <div className="p-1.5 flex flex-col gap-0.5">
             {listErr && <div className="text-xs text-destructive p-2">{listErr}</div>}
             {!listErr && files.length === 0 && <div className="text-xs text-muted-foreground p-3 text-center">还没有产物。任务开始后这里会逐步出现。</div>}
@@ -1528,13 +1738,14 @@ function ArtifactsView({ job, onCopy, onOpenInOS }: { job: EngineJob; onCopy: (t
                 onClick={() => setSelected(f.path)}
                 className={cn(
                   "w-full text-left rounded-md px-2 py-1.5 transition-colors",
-                  f.path === selected ? "bg-primary/10 text-primary" : "hover:bg-muted/60",
+                  // STYLE 表2 唯一选中态（中性玻璃高亮）
+                  f.path === selected ? "bg-foreground/[0.08] text-foreground" : "hover:bg-foreground/[0.05]",
                 )}
               >
                 <div className="text-xs font-medium truncate">{ARTIFACT_META[f.kind]?.label ?? f.kind}</div>
                 <div className="flex items-center justify-between gap-2 mt-0.5">
-                  <span className="text-[10px] text-muted-foreground font-mono truncate">{f.name}</span>
-                  <span className="text-[10px] text-muted-foreground/70 shrink-0">{artifactBytes(f.size)}</span>
+                  <span className="text-caption-sm text-muted-foreground font-mono truncate">{f.name}</span>
+                  <span className="text-caption-sm text-muted-foreground/70 shrink-0">{artifactBytes(f.size)}</span>
                 </div>
               </button>
             ))}
@@ -1547,12 +1758,12 @@ function ArtifactsView({ job, onCopy, onOpenInOS }: { job: EngineJob; onCopy: (t
         {selFile && (
           <div className="flex items-center gap-2 px-4 py-2 border-b">
             <span className="text-sm font-medium">{ARTIFACT_META[selFile.kind]?.label ?? selFile.kind}</span>
-            <code className="text-[11px] text-muted-foreground">{selFile.name}</code>
+            <code className="text-caption-sm text-muted-foreground">{selFile.name}</code>
             <div className="flex-1" />
-            <Button type="button" variant="ghost" size="sm" disabled={content === null} onClick={() => content && onCopy(content)} title="复制内容">
+            <Button type="button" variant="ghost" size="sm" disabled={content === null} onClick={() => content && onCopy(content)} title="复制内容" aria-label="复制内容">
               <Copy className="size-3.5" />
             </Button>
-            <Button type="button" variant="ghost" size="sm" onClick={() => onOpenInOS(selFile.path, "editor")} title="用编辑器打开">
+            <Button type="button" variant="ghost" size="sm" onClick={() => onOpenInOS(selFile.path, "editor")} title="用编辑器打开" aria-label="用编辑器打开">
               <ExternalLink className="size-3.5" />
             </Button>
           </div>
@@ -1586,7 +1797,7 @@ function PathRow({ label, path, onCopy, onOpenInOS }: { label: string; path?: st
         <div className="flex items-center gap-0.5 shrink-0">
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button variant="ghost" size="icon" className="size-7" onClick={() => onCopy(path)}>
+              <Button variant="ghost" size="icon" className="size-7" onClick={() => onCopy(path)} aria-label="复制路径">
                 <Copy />
               </Button>
             </TooltipTrigger>
@@ -1594,7 +1805,7 @@ function PathRow({ label, path, onCopy, onOpenInOS }: { label: string; path?: st
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button variant="ghost" size="icon" className="size-7" onClick={() => onOpenInOS(path, "finder")}>
+              <Button variant="ghost" size="icon" className="size-7" onClick={() => onOpenInOS(path, "finder")} aria-label="在 Finder 中显示">
                 <FolderOpen />
               </Button>
             </TooltipTrigger>
@@ -1602,7 +1813,7 @@ function PathRow({ label, path, onCopy, onOpenInOS }: { label: string; path?: st
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button variant="ghost" size="icon" className="size-7" onClick={() => onOpenInOS(path, "editor")}>
+              <Button variant="ghost" size="icon" className="size-7" onClick={() => onOpenInOS(path, "editor")} aria-label="用默认应用打开">
                 <ExternalLink />
               </Button>
             </TooltipTrigger>

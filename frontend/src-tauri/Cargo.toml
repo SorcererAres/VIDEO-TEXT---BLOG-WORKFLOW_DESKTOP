@@ -29,3 +29,8 @@ tauri-plugin-window-state = "2"
 tauri-plugin-notification = "2"
 # sidecar 启动/握手错误的统一类型
 anyhow = "1"
+# macOS 专属：vibrancy（暂留备用）+ decorum（暂留备用）+ objc（隐藏系统交通灯，改用自绘）
+[target.'cfg(target_os = "macos")'.dependencies]
+window-vibrancy = "0.6"
+tauri-plugin-decorum = "1.1"
+objc = "0.2"

@@ -12,6 +12,7 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { TextInput } from "@/components/form-primitives"
 import { cn } from "@/lib/utils"
 
 interface SourceItem {
@@ -131,13 +132,13 @@ export function SourcePicker({ value, onChange, apiBase, className, transcriptio
   if (manualMode) {
     return (
       <div className={cn("flex gap-2", className)}>
-        <input
+        <TextInput
           type="text"
           required
           placeholder="默认仅支持仓库内路径,如 work/<stem>/raw.txt 或 input/Text/*.txt"
           value={value}
           onChange={e => onChange(e.target.value)}
-          className="flex-1 bg-card border rounded-md py-2 px-3 text-sm font-mono focus:border-primary outline-none transition-colors"
+          className="flex-1 font-mono"
         />
         <Button type="button" variant="outline" size="sm" onClick={() => setManualMode(false)}>
           <Search data-icon="inline-start" />
@@ -182,7 +183,7 @@ export function SourcePicker({ value, onChange, apiBase, className, transcriptio
               )}
               <span className="truncate text-left">{selectedItem?.label ?? value}</span>
               {selectedItem && (
-                <Badge variant="secondary" className="shrink-0 text-[10px] font-normal">
+                <Badge variant="secondary" className="shrink-0 text-caption-sm font-normal">
                   {formatSize(selectedItem.size)}
                 </Badge>
               )}
@@ -248,7 +249,7 @@ export function SourcePicker({ value, onChange, apiBase, className, transcriptio
                 }
               >
                 {!transcriptionAvailable && (
-                  <div className="px-2 pb-1.5 text-[11px] text-muted-foreground leading-relaxed">
+                  <div className="px-2 pb-1.5 text-caption-sm text-muted-foreground leading-relaxed">
                     打包版未内置转录引擎（mlx / whisper.cpp）。请改用下方「视频转录稿 / 文字稿」，
                     或在开发版（<code>make app</code>）里把视频转成文字稿。
                   </div>
@@ -357,9 +358,9 @@ function SourceRow({ item, selected, recent, disabled, onSelect }: { item: Sourc
       )}
       <div className="flex-1 min-w-0">
         <div className="truncate text-sm">{item.label}</div>
-        <div className="truncate text-[10px] text-muted-foreground">{item.path}</div>
+        <div className="truncate text-caption-sm text-muted-foreground">{item.path}</div>
       </div>
-      <Badge variant="secondary" className="shrink-0 text-[10px] font-normal h-5">
+      <Badge variant="secondary" className="shrink-0 text-caption-sm font-normal h-5">
         {formatSize(item.size)}
       </Badge>
       {selected && <Check className="size-4 shrink-0 text-primary" />}

@@ -15,7 +15,42 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* ───── DESIGN.md 借鉴（部分） ─────
+   只注入 DESIGN.md 里当前 token 体系**还没有等价物**的部分。
+   颜色总体保留 Claude 暖纸（:root 那段 oklch），只引入"终端三色灯"作可选装饰色；
+   字号梯度按 DESIGN.md 完整落地（之前散落在各组件里没系统化）；
+   间距复用 Tailwind 默认（0.5/1/2/3/4/6/8/22）即可覆盖 DESIGN.md xxs..section，不重复造。 */
 @theme {
+  /* 终端 mockup 三色灯：DESIGN.md 唯一保留的"语义色" */
+  --color-terminal-red: #ff5f56;
+  --color-terminal-yellow: #ffbd2e;
+  --color-terminal-green: #27c93f;
+
+  /* DESIGN.md 字号梯度（size / line-height / weight） —— 暴露成 text-display-xl 等 utility。
+     字距均为 0；weight 通过 font-{weight} 单独配 utility 时再用。 */
+  --text-display-xl: 36px;
+  --text-display-xl--line-height: 1.11;
+  --text-display-lg: 30px;
+  --text-display-lg--line-height: 1.2;
+  --text-heading-lg: 24px;
+  --text-heading-lg--line-height: 1.33;
+  --text-heading-md: 20px;
+  --text-heading-md--line-height: 1.4;
+  --text-heading-sm: 18px;
+  --text-heading-sm--line-height: 1.56;
+  --text-body-md: 16px;
+  --text-body-md--line-height: 1.5;
+  --text-body-sm: 14px;
+  --text-body-sm--line-height: 1.43;
+  --text-caption-sm: 12px;
+  --text-caption-sm--line-height: 1.33;
+  --text-code-md: 16px;
+  --text-code-md--line-height: 1.5;
+  --text-code-sm: 14px;
+  --text-code-sm--line-height: 1.43;
+  --text-button-md: 14px;
+  --text-button-md--line-height: 1;
+
   --color-brand-50: #eef2ff;
   --color-brand-100: #e0e7ff;
   --color-brand-200: #c7d2fe;
@@ -89,9 +124,14 @@ body {
 }
 
 @theme inline {
-  --font-heading: var(--font-sans);
+  /* DESIGN.md heading 用 SF Pro Rounded（"软化几何"是它唯一的字面个性）。
+     ui-rounded 在 WKWebView/macOS 上解析为 SF Pro Rounded；非 mac 退到 Nunito（DESIGN.md 钦定的 OSS 替代）→ Geist → system-ui。 */
+  --font-heading: ui-rounded, "SF Pro Rounded", -apple-system, "Nunito", "Geist Variable", system-ui, sans-serif;
   /* SF 优先：WKWebView / macOS 上 -apple-system 解析为真 SF Pro；Geist 作非 mac 兜底。 */
   --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, 'Geist Variable', sans-serif;
+  /* DESIGN.md 全系代码/终端面（install-snippet / terminal-card / inline code）。
+     ui-monospace 在 macOS 解析为 SF Mono；OSS 替代是 JetBrains Mono / Fira Code（暂不内置）。 */
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -109,6 +149,12 @@ body {
   --color-input: var(--input);
   --color-border: var(--border);
   --color-destructive: var(--destructive);
+  /* 语义色 token（STYLE.md 表3）：收敛散落的 emerald/amber/blue 裸值。
+     用法 text-success / bg-warning/15 / border-danger 等。 */
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+  --color-info: var(--info);
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
   --color-muted-foreground: var(--muted-foreground);
@@ -132,76 +178,86 @@ body {
   --radius-4xl: calc(var(--radius) * 2.6);
 }
 
-/* ───────── Claude 暖纸 + 珊瑚 配色 ─────────
-   浅色＝暖象牙白纸感，深色＝暖炭褐；强调色＝黏土珊瑚（≈#D97757，极克制）。
-   色相统一走暖区（h≈40-85），避免冷灰。 */
+/* ───────── Ollama 色板（用户提供的色彩规范）─────────
+   纯黑白灰 + 终端三色灯，无品牌色。primary=Pure Black；状态色复用终端三色灯
+   （色板里唯一的彩色，红/黄/绿语义天然契合 失败/进行中/已完成）。
+   浅色精确按图 hex；深色用 Surface Dark #171717 系列 + primary 反白。 */
 :root {
-  --background: oklch(0.971 0.008 85);      /* 暖象牙白 ≈ #FAF9F5 */
-  --foreground: oklch(0.285 0.012 60);      /* 暖近黑 */
-  --card: oklch(0.985 0.006 85);            /* 比底略亮的暖白 */
-  --card-foreground: oklch(0.285 0.012 60);
-  --popover: oklch(0.985 0.006 85);
-  --popover-foreground: oklch(0.285 0.012 60);
-  --primary: oklch(0.64 0.12 40);           /* 黏土珊瑚 ≈ #D97757 */
-  --primary-foreground: oklch(0.985 0.006 85);
-  --secondary: oklch(0.95 0.008 85);        /* 暖浅灰 */
-  --secondary-foreground: oklch(0.32 0.012 60);
-  --muted: oklch(0.952 0.008 85);
-  --muted-foreground: oklch(0.52 0.012 65); /* 暖中灰 */
-  --accent: oklch(0.93 0.012 70);           /* 暖 hover 底 */
-  --accent-foreground: oklch(0.3 0.012 60);
-  --destructive: oklch(0.55 0.2 28);
-  --border: oklch(0.9 0.01 80);             /* 极淡暖灰 hairline */
-  --input: oklch(0.9 0.01 80);
-  --ring: oklch(0.64 0.12 40);              /* 珊瑚 focus 环 */
-  --chart-1: oklch(0.64 0.12 40);
-  --chart-2: oklch(0.6 0.08 60);
-  --chart-3: oklch(0.55 0.06 80);
-  --chart-4: oklch(0.5 0.05 100);
-  --chart-5: oklch(0.45 0.04 50);
-  --radius: 0.75rem;                        /* 更圆润 */
-  --sidebar: oklch(0.955 0.009 85);         /* 侧栏比主区略深的暖纸 */
-  --sidebar-foreground: oklch(0.285 0.012 60);
-  --sidebar-primary: oklch(0.64 0.12 40);
-  --sidebar-primary-foreground: oklch(0.985 0.006 85);
-  --sidebar-accent: oklch(0.93 0.012 70);
-  --sidebar-accent-foreground: oklch(0.3 0.012 60);
-  --sidebar-border: oklch(0.9 0.01 80);
-  --sidebar-ring: oklch(0.64 0.12 40);
+  --background: #ffffff;             /* Canvas：页面本身 */
+  --foreground: #000000;             /* Ink：标题/正文 */
+  --card: #ffffff;                   /* Canvas：卡片面 */
+  --card-foreground: #000000;
+  --popover: #ffffff;
+  --popover-foreground: #000000;
+  --primary: #000000;                /* Pure Black：CTA / 实底按钮 / solid icon */
+  --primary-foreground: #ffffff;     /* on-primary */
+  --secondary: #fafafa;              /* Soft Surface：次级面 */
+  --secondary-foreground: #000000;
+  --muted: #fafafa;                  /* Soft Surface：搜索框/chip 底 */
+  --muted-foreground: #737373;       /* Body：默认正文/次要文字 */
+  --accent: #f5f5f5;                 /* hover 底（Soft 略深） */
+  --accent-foreground: #000000;
+  --destructive: #ff5f56;            /* = Terminal Red */
+  --success: #27c93f;                /* Terminal Green：已完成/在线/通过 */
+  --warning: #ffbd2e;                /* Terminal Yellow：进行中/待审批 */
+  --danger: #ff5f56;                 /* Terminal Red：失败/离线/销毁 */
+  --info: #3b82f6;                   /* 信息蓝：运行中/队列/中性提示（收敛散落 blue-*） */
+  --border: #e5e5e5;                 /* Hairline */
+  --input: #e5e5e5;
+  --ring: rgba(59,130,246,0.5);      /* 浏览器默认蓝 focus（DESIGN.md focus-ring） */
+  --chart-1: #000000;                /* Ink */
+  --chart-2: #525252;                /* Charcoal */
+  --chart-3: #737373;                /* Body */
+  --chart-4: #a3a3a3;                /* Mute */
+  --chart-5: #d4d4d4;                /* Hairline Strong */
+  --radius: 0.75rem;                 /* 12px = DESIGN.md rounded.lg */
+  --sidebar: #ffffff;                /* Canvas，靠 hairline + 阴影区分浮起 */
+  --sidebar-foreground: #000000;
+  --sidebar-primary: #000000;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #f5f5f5;
+  --sidebar-accent-foreground: #000000;
+  --sidebar-border: #e5e5e5;
+  --sidebar-ring: rgba(59,130,246,0.5);
 }
 
 .dark {
-  --background: oklch(0.215 0.006 65);       /* 暖炭褐 ≈ #262624 */
-  --foreground: oklch(0.94 0.005 85);        /* 暖白 */
-  --card: oklch(0.255 0.006 65);             /* 略亮暖炭 */
-  --card-foreground: oklch(0.94 0.005 85);
-  --popover: oklch(0.255 0.006 65);
-  --popover-foreground: oklch(0.94 0.005 85);
-  --primary: oklch(0.68 0.12 40);            /* 珊瑚微提亮 */
-  --primary-foreground: oklch(0.2 0.01 60);
-  --secondary: oklch(0.3 0.006 65);
-  --secondary-foreground: oklch(0.94 0.005 85);
-  --muted: oklch(0.3 0.006 65);
-  --muted-foreground: oklch(0.72 0.008 80);
-  --accent: oklch(0.32 0.008 65);
-  --accent-foreground: oklch(0.94 0.005 85);
-  --destructive: oklch(0.68 0.17 25);
-  --border: oklch(0.96 0.01 85 / 12%);       /* 暖白 hairline */
-  --input: oklch(0.96 0.01 85 / 16%);
-  --ring: oklch(0.68 0.12 40);
-  --chart-1: oklch(0.68 0.12 40);
-  --chart-2: oklch(0.66 0.08 60);
-  --chart-3: oklch(0.62 0.06 80);
-  --chart-4: oklch(0.58 0.05 100);
-  --chart-5: oklch(0.54 0.04 50);
-  --sidebar: oklch(0.19 0.006 65);           /* 侧栏比主区略深 */
-  --sidebar-foreground: oklch(0.94 0.005 85);
-  --sidebar-primary: oklch(0.68 0.12 40);
-  --sidebar-primary-foreground: oklch(0.2 0.01 60);
-  --sidebar-accent: oklch(0.32 0.008 65);
-  --sidebar-accent-foreground: oklch(0.94 0.005 85);
-  --sidebar-border: oklch(0.96 0.01 85 / 12%);
-  --sidebar-ring: oklch(0.68 0.12 40);
+  /* 深色：Surface Dark #171717 系列 + primary 反白（呼应 Ollama 黑白哲学）。 */
+  --background: #171717;             /* Surface Dark */
+  --foreground: #ffffff;
+  --card: #1f1f1f;
+  --card-foreground: #ffffff;
+  --popover: #1f1f1f;
+  --popover-foreground: #ffffff;
+  --primary: #ffffff;                /* 反转：白 pill（on-dark CTA） */
+  --primary-foreground: #000000;
+  --secondary: #262626;
+  --secondary-foreground: #ffffff;
+  --muted: #262626;
+  --muted-foreground: #a3a3a3;       /* Mute */
+  --accent: #2a2a2a;
+  --accent-foreground: #ffffff;
+  --destructive: #ff5f56;
+  --success: #27c93f;
+  --warning: #ffbd2e;
+  --danger: #ff5f56;
+  --info: #60a5fa;                   /* 深色信息蓝（提亮一档，暗底对比） */
+  --border: #303030;                 /* 深色 hairline（实色，避免 /opacity 叠加问题） */
+  --input: #383838;
+  --ring: rgba(59,130,246,0.6);
+  --chart-1: #ffffff;
+  --chart-2: #d4d4d4;
+  --chart-3: #a3a3a3;
+  --chart-4: #737373;
+  --chart-5: #525252;
+  --sidebar: #171717;
+  --sidebar-foreground: #ffffff;
+  --sidebar-primary: #ffffff;
+  --sidebar-primary-foreground: #000000;
+  --sidebar-accent: #2a2a2a;
+  --sidebar-accent-foreground: #ffffff;
+  --sidebar-border: #303030;
+  --sidebar-ring: rgba(59,130,246,0.6);
 }
 
 @layer base {
@@ -213,8 +269,7 @@ body {
   }
   html {
     @apply font-sans;
-    /* 品牌珊瑚强调色：原生 checkbox/radio/select 随之上色，与 Claude 品牌统一
-       （刻意不用系统 AccentColor —— 对齐 Claude 而非纯 HIG）。 */
+    /* Ollama 纯黑哲学：原生 checkbox/radio/select 用品牌黑（primary），不跟随系统强调色。 */
     accent-color: var(--primary);
   }
 
@@ -234,7 +289,7 @@ body {
       scroll-behavior: auto !important;
     }
   }
-  /* 降低透明度：关掉毛玻璃，退回不透明背景（vibrancy 透出时用） */
+  /* 降低透明度：关掉残留毛玻璃，退回不透明背景。 */
   @media (prefers-reduced-transparency: reduce) {
     .vibrancy-surface {
       background: var(--background) !important;

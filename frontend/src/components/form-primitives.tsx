@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import { cn } from '@/lib/utils'
 
 export function Segmented<T extends string>({ value, onChange, options, className }: {
@@ -16,9 +17,10 @@ export function Segmented<T extends string>({ value, onChange, options, classNam
           onClick={() => onChange(o.value)}
           className={cn(
             "rounded px-3 py-1 transition-colors whitespace-nowrap",
+            // STYLE 表2 唯一选中态：中性玻璃高亮，不再用 bg-primary 实底。
             value === o.value
-              ? "bg-primary text-primary-foreground shadow-sm"
-              : "text-muted-foreground hover:text-foreground",
+              ? "bg-foreground/[0.08] text-foreground font-medium"
+              : "text-foreground/80 hover:bg-foreground/[0.05]",
           )}
         >
           {o.label}
@@ -54,5 +56,45 @@ export function Checkbox({ label, hint, checked, onChange }: { label: string; hi
         {hint && <div className="text-xs text-muted-foreground mt-0.5">{hint}</div>}
       </div>
     </label>
+  )
+}
+
+// 统一单行输入框（收敛全项目散落的手写 input）。默认 padding py-2 px-3；
+// 透传所有原生 input 属性（value / onChange / placeholder / type…），className 可叠加/覆盖。
+export function TextInput({ className, ...rest }: React.InputHTMLAttributes<HTMLInputElement>) {
+  return (
+    <input
+      {...rest}
+      className={cn(
+        "bg-card border rounded-md py-2 px-3 text-sm focus:border-primary outline-none transition-colors",
+        className,
+      )}
+    />
+  )
+}
+
+// 过滤 / 选择小 chip（pill）。选中态走 STYLE 表2 中性玻璃高亮。
+export function FilterChip({ active, onClick, children, className, title }: {
+  active: boolean
+  onClick: () => void
+  children: ReactNode
+  className?: string
+  title?: string
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      className={cn(
+        "px-2.5 py-0.5 text-xs rounded-full border transition-colors",
+        active
+          ? "bg-foreground/[0.08] border-foreground/15 text-foreground font-medium"
+          : "border-border text-foreground/80 hover:bg-foreground/[0.05] hover:border-foreground/30",
+        className,
+      )}
+    >
+      {children}
+    </button>
   )
 }

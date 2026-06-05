@@ -22,8 +22,8 @@ export function MarkdownView({ source, className }: MarkdownViewProps) {
       className={cn(
         "prose prose-sm max-w-none",
         "prose-headings:font-semibold prose-headings:text-foreground prose-headings:mt-6 prose-headings:mb-3",
-        "prose-h1:text-2xl prose-h1:mt-2 prose-h1:mb-4 prose-h1:border-b prose-h1:pb-2",
-        "prose-h2:text-lg prose-h3:text-base",
+        "prose-h1:text-heading-lg prose-h1:mt-2 prose-h1:mb-4 prose-h1:border-b prose-h1:pb-2",
+        "prose-h2:text-heading-sm prose-h3:text-body-md",
         "prose-p:text-foreground/90 prose-p:leading-7",
         "prose-strong:text-foreground prose-strong:font-semibold",
         "prose-em:text-foreground/90",

@@ -1,27 +1,37 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
-import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import {
-  Plus,
   AlertCircle,
   X,
-  Settings,
-  Search,
-  PanelLeft,
-  PanelLeftClose,
-  Sparkles,
-  BookOpen,
-  PenLine,
+  Trash,
+  ChevronDown,
+  ChevronRight,
 } from 'lucide-react'
+import {
+  IconToggle,
+  IconSearch,
+  IconNew,
+  IconStart,
+  IconLibrary,
+  IconVoice,
+  IconFilter,
+  IconSettings,
+} from '@/components/icons'
 import { Toaster, toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { cn } from '@/lib/utils'
-import { pushRecentSource } from '@/components/SourcePicker'
+import { SearchModal } from '@/components/SearchModal'
 import { ConfirmDialogHost, confirmAction } from '@/components/ConfirmDialog'
-import { CreateForm } from '@/components/CreateForm'
-import { JobList, HomeView, JobWorkspace } from '@/components/jobs'
+import { HistoricalDeleteDialogHost, confirmHistoricalDelete } from '@/components/HistoricalDeleteDialog'
+import { deleteLiveJob, restoreLiveJob, deleteHistoricalJob } from '@/lib/job-actions'
+import { moveTrashPost, restoreTrashPost, purgeTrashPost, type TrashPost } from '@/lib/trash-actions'
+import { Launcher, type LauncherHandle } from '@/components/Launcher'
+import type { LauncherSubmitPayload } from '@/lib/launcher-command'
+import { TrafficLights } from '@/components/TrafficLights'
+import { JobList, HomeView, JobWorkspace, isNeedsMe, type JobFilter, type JobTimeRange, type JobSortMode } from '@/components/jobs'
 import { LibraryView, VoiceView } from '@/components/places'
 import { SettingsPanel } from '@/components/settings'
 import {
@@ -40,57 +50,21 @@ import {
   type LlmProfile,
 } from '@/lib/settings-store'
 import {
-  COMMON_MODELS,
   type EngineJob,
+  type EngineJobRequest,
   type ReviewJson,
 } from '@/lib/job-types'
 import { pushSessionJobId } from '@/lib/session-jobs'
+// DECOUPLE Round 2：任务 / 作品 / 回收站三套数据源各自成 hook。
+import { useTasks } from '@/lib/use-tasks'
+import { usePosts } from '@/lib/use-posts'
+import { useTrash } from '@/lib/use-trash'
 
 // 任务数据类型 + 跨视图的小工具搬到 lib/job-types.ts，下方按需 import。
 
-// ─── 新建任务表单草稿(localStorage)──
-// 用户在 CreateForm 填到一半切走,回来时不丢内容。提交成功后清掉。
-interface CreateDraft {
-  source: string
-  speaker: string
-  routing: string
-  mode: "full" | "quick"
-  maxRetries: number
-  model: string
-  force: boolean
-  pauseOnOutline: boolean
-  rewriteStrategy: "single" | "sectioned"
-  ts: number
-}
-const CREATE_DRAFT_KEY = "v2b_create_draft"
-
-function readCreateDraft(): CreateDraft | null {
-  try {
-    const raw = localStorage.getItem(CREATE_DRAFT_KEY)
-    if (!raw) return null
-    const d = JSON.parse(raw)
-    if (!d || typeof d !== "object" || !d.source) return null
-    return d as CreateDraft
-  } catch {
-    return null
-  }
-}
-
-function writeCreateDraft(d: CreateDraft) {
-  try {
-    localStorage.setItem(CREATE_DRAFT_KEY, JSON.stringify(d))
-  } catch {
-    /* localStorage 满了 / 隐私模式拒绝,忽略 */
-  }
-}
-
-function clearCreateDraft() {
-  try {
-    localStorage.removeItem(CREATE_DRAFT_KEY)
-  } catch {
-    /* ignore */
-  }
-}
+// 启动时一次性清掉 PR #1 前的 CreateForm 草稿残留（v2b_create_draft）。
+// 现在新建走 Launcher，草稿恢复 banner 体系整套废了。
+try { localStorage.removeItem("v2b_create_draft") } catch { /* ignore */ }
 
 // ─── 大纲编辑器草稿(localStorage,按 jobId 分桶)──
 // paused 状态下用户编辑 outline.md,切走/刷新就丢。这里给一份本地备份。
@@ -161,19 +135,77 @@ function clearDraftEdit(jobId: string) {
   }
 }
 
-// 本会话 job ID 跟踪（readSessionJobIds / pushSessionJobId）搬到 lib/session-jobs.ts，
-// App.tsx 提交时 push、components/jobs.tsx 的 JobList 读取过滤，共用一处。
+// 本会话 job ID 跟踪（pushSessionJobId）搬到 lib/session-jobs.ts。
+// 2026-06 重设计后 JobList 已不读取 sessionIds（scope=session 维度砍掉），但 App.tsx
+// 提交时仍 push —— 给 ⌘K 搜索的"最近提交"加权预留，且写入成本可忽略。
 
 // 是否运行在 Tauri 壳内（决定交通灯留白 / vibrancy 等原生壳专属处理）
 const isTauri = typeof window !== "undefined" && ("__TAURI_INTERNALS__" in window || "__TAURI__" in window)
 
+// 任务 ⚙ popover 里的单段 radio group —— 状态 / 时间 / 排序 三段共用。
+// 显式 generic，避免父级把不同段的 value/onChange 串到同一个联合类型上。
+function FilterRadioGroup<T extends string>({ label, value, onChange, options }: {
+  label: string
+  value: T
+  onChange: (v: T) => void
+  options: readonly (readonly [T, string])[]
+}) {
+  return (
+    <div>
+      <div className="px-2 py-1 text-caption-sm uppercase tracking-wider text-muted-foreground">{label}</div>
+      {options.map(([key, optionLabel]) => {
+        const active = value === key
+        return (
+          <button
+            key={key}
+            type="button"
+            onClick={() => onChange(key)}
+            className={cn(
+              "flex items-center w-full h-7 px-2 rounded-md text-[13px] text-left transition-colors gap-2",
+              active
+                ? "bg-foreground/[0.08] text-foreground font-medium"
+                : "text-foreground/85 hover:bg-foreground/[0.05]",
+            )}
+          >
+            {/* 圆点 radio 指示器：active 实心 / 默认空心环 */}
+            <span className={cn(
+              "size-3 rounded-full shrink-0 flex items-center justify-center",
+              active ? "border-[2px] border-foreground" : "border border-foreground/35",
+            )}>
+              {active && <span className="size-1 rounded-full bg-foreground" />}
+            </span>
+            <span className="flex-1">{optionLabel}</span>
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
 export default function App() {
-  const [jobs, setJobs] = useState<EngineJob[]>([])
-  const [historicalJobs, setHistoricalJobs] = useState<EngineJob[]>([])
+  // DECOUPLE Round 2：三套数据源（任务 / 作品 / 回收站）各自成 hook，App 不再
+  // 内联 state + fetch。别名保留原变量名（jobs / historicalJobs / trashPosts…），
+  // 让下方所有调用处零改动；fetchJobs 内部的状态跃迁通知见 onDataRef 注入。
+  // setJobs / setTrashPosts 原先只在内联 fetch 里用，逻辑下沉 hook 后 App 不再直接
+  // 写它们（任务靠 fetchJobs 轮询、回收站操作后 fetchTrash 重拉），故不解构。
+  // setHistoricalJobs 暂保留 —— handleDeletePost 仍手工补偿，Round 3 删除语义重写后移除。
+  const { tasks: jobs, fetchTasks: fetchJobs, onDataRef: tasksOnDataRef } = useTasks()
+  const { posts: historicalJobs, setPosts: setHistoricalJobs, fetchPosts: fetchHistory } = usePosts()
+  const { trashPosts, fetchTrash } = useTrash()
+  // LibraryView 内部视图：作品集 / 回收站。受控于 App，让 sidebar 底部的「回收站」入口能直接切到 trash。
+  const [libraryView, setLibraryView] = useState<"library" | "trash">("library")
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null)
   const [selectedJob, setSelectedJob] = useState<EngineJob | null>(null)
-  const [isCreating, setIsCreating] = useState(false)
+  const [launcherOpen, setLauncherOpen] = useState(false)
+  // inline Launcher（HomeView 内）—— 拖拽接管 / composer 展开用
+  const launcherRef = useRef<LauncherHandle>(null)
+  // overlay Launcher（⌘N / 侧栏 IconNew / 重跑预填）—— 全局浮层用
+  const overlayLauncherRef = useRef<LauncherHandle>(null)
   const [showSettings, setShowSettings] = useState(false)
+  // Cmd+K 任务搜索模态（顶部 icon 按钮 / 快捷键触发）
+  const [showSearch, setShowSearch] = useState(false)
+  // 「风格」全屏二级页（Figma 样式）：覆盖主界面，返回箭头退出。不走 place 系统。
+  const [showVoice, setShowVoice] = useState(false)
   // 顶层"场所"（IA ④）：无 job/新建/设置时，主区按 place 展示。workshop=选中 job，settings=showSettings。
   const [place, setPlace] = useState<"start" | "library" | "voice">("start")
   // logs = 原始 print 文本流（「原始日志」视图排查用）；
@@ -188,12 +220,106 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(() => localStorage.getItem("v2b_sidebar_open") !== "0")
   useEffect(() => { localStorage.setItem("v2b_sidebar_open", sidebarOpen ? "1" : "0") }, [sidebarOpen])
 
+  // 侧栏宽度（Claude 风格的拖拽）—— min 200 / default 256 / max 440；
+  // 拖到 <180 自动 snap-collapse（松手时正式 setSidebarOpen(false)，避免拖动中抖动）。
+  const SIDEBAR_WIDTH_MIN = 200
+  const SIDEBAR_WIDTH_MAX = 440
+  const SIDEBAR_WIDTH_DEFAULT = 256
+  const SIDEBAR_COLLAPSE_THRESHOLD = 180
+  const readSidebarWidth = (): number => {
+    try {
+      const v = parseInt(localStorage.getItem("v2b_sidebar_width") || "", 10)
+      if (Number.isFinite(v) && v >= SIDEBAR_WIDTH_MIN && v <= SIDEBAR_WIDTH_MAX) return v
+    } catch { /* ignore */ }
+    return SIDEBAR_WIDTH_DEFAULT
+  }
+  const [sidebarWidth, setSidebarWidth] = useState<number>(readSidebarWidth)
+  const sidebarRef = useRef<HTMLElement>(null)
+  const collapseOnDragEndRef = useRef(false)
+  useEffect(() => {
+    // 只把"有效宽度"（≥ min）写回，避免存了一个会触发 auto-collapse 的小值
+    if (sidebarWidth >= SIDEBAR_WIDTH_MIN) {
+      localStorage.setItem("v2b_sidebar_width", String(sidebarWidth))
+    }
+  }, [sidebarWidth])
+
+  const startSidebarDrag = (e: React.MouseEvent) => {
+    e.preventDefault()
+    const aside = sidebarRef.current
+    if (!aside) return
+    const left = aside.getBoundingClientRect().left
+    const widthAtStart = sidebarWidth // 缓存拖前的宽度：snap-collapse 时把它复原，下次展开恢复用户上次的舒服宽度
+    collapseOnDragEndRef.current = false
+    document.body.style.cursor = "col-resize"
+    document.body.style.userSelect = "none"
+    const onMove = (ev: MouseEvent) => {
+      const raw = ev.clientX - left
+      if (raw < SIDEBAR_COLLAPSE_THRESHOLD) {
+        // 视觉上贴 min 不再变窄（给"再窄要 collapse"的清晰反馈），标记 collapseOnDragEnd
+        collapseOnDragEndRef.current = true
+        setSidebarWidth(SIDEBAR_WIDTH_MIN)
+      } else {
+        collapseOnDragEndRef.current = false
+        setSidebarWidth(Math.min(SIDEBAR_WIDTH_MAX, Math.max(SIDEBAR_WIDTH_MIN, raw)))
+      }
+    }
+    const onUp = () => {
+      document.body.style.cursor = ""
+      document.body.style.userSelect = ""
+      window.removeEventListener("mousemove", onMove)
+      window.removeEventListener("mouseup", onUp)
+      if (collapseOnDragEndRef.current) {
+        // 折叠前复原宽度，避免下次展开看到一个被"挤窄"的 200px
+        setSidebarWidth(widthAtStart)
+        collapseSidebar()
+      }
+    }
+    window.addEventListener("mousemove", onMove)
+    window.addEventListener("mouseup", onUp)
+  }
+  const resetSidebarWidth = () => setSidebarWidth(SIDEBAR_WIDTH_DEFAULT)
+
+  // 收起态 hover-preview（Claude Desktop 风）：!sidebarOpen 时 hover hamburger 或 sidebar
+  // 自身 → sidebar 滑出 overlay 主区上方；鼠标离开 150ms 后收回（防抖避开"穿过空白闪烁"）。
+  const [sidebarHovered, setSidebarHovered] = useState(false)
+  const hoverCloseTimerRef = useRef<number | null>(null)
+  const cancelHoverClose = () => {
+    if (hoverCloseTimerRef.current !== null) {
+      window.clearTimeout(hoverCloseTimerRef.current)
+      hoverCloseTimerRef.current = null
+    }
+  }
+  const openHover = () => {
+    cancelHoverClose()
+    setSidebarHovered(true)
+  }
+  const scheduleHoverClose = () => {
+    cancelHoverClose()
+    hoverCloseTimerRef.current = window.setTimeout(() => {
+      setSidebarHovered(false)
+      hoverCloseTimerRef.current = null
+    }, 150)
+  }
+  // 点 hamburger 钉住 sidebar：清掉 hover 态避免 stale；pinning 完成后正常 in-flow 布局
+  const pinSidebar = () => {
+    cancelHoverClose()
+    setSidebarHovered(false)
+    setSidebarOpen(true)
+  }
+  // 收起 sidebar：同步清 hover state，避免点完收起鼠标停在原位 hover 又冒回来
+  const collapseSidebar = () => {
+    cancelHoverClose()
+    setSidebarHovered(false)
+    setSidebarOpen(false)
+  }
+  useEffect(() => cancelHoverClose, []) // unmount 清 timer
+
   // Settings 表单已自包含（自行从后端 GET /api/llm-config 加载 + 保存），父级不再持有 LLM 配置 state。
 
-  // Outline Editing state —— 默认分屏(左编辑右预览),桌面端最高效
+  // Outline Editing state —— 默认预览(渲染后博文),需要改结构再切源码
   const [outlineText, setOutlineText] = useState("")
   const [isSubmittingOutline, setIsSubmittingOutline] = useState(false)
-  const [outlineViewMode, setOutlineViewMode] = useState<"edit" | "preview" | "split">("split")
+  const [outlineViewMode, setOutlineViewMode] = useState<"edit" | "preview">("preview")
   // 如果加载时发现本地有未提交的草稿(跟后端原始不一致),记下时间戳用于显示恢复 banner
   const [outlineDraftRestoredTs, setOutlineDraftRestoredTs] = useState<number | null>(null)
 
@@ -201,40 +327,43 @@ export default function App() {
   const [draftContent, setDraftContent] = useState("")
   const [reviewJson, setReviewJson] = useState<ReviewJson | null>(null)
   const [isSubmittingDraft, setIsSubmittingDraft] = useState(false)
-  const [draftViewMode, setDraftViewMode] = useState<"edit" | "preview" | "split">("split")
+  const [draftViewMode, setDraftViewMode] = useState<"edit" | "preview">("preview")
   const [draftEditRestoredTs, setDraftEditRestoredTs] = useState<number | null>(null)
 
-  // Creation Form state —— 启动时如果有 localStorage 草稿就预填,避免模态切换丢失输入
-  const draftInit = useRef<CreateDraft | null>(readCreateDraft()).current
-  const [source, setSource] = useState(() => draftInit?.source ?? "")
-  // 记住上次用的 speaker —— 这是个高频字段,默认就用上次的值,只有第一次才回退到"我"
-  const [speaker, setSpeaker] = useState(() => draftInit?.speaker ?? (localStorage.getItem("v2b_last_speaker") || "我"))
-  // 演讲人自动识别：提示 + AI 识别中态 + 用户是否手动改过（手动改过就不自动覆盖）
-  const [speakerHint, setSpeakerHint] = useState<{ text: string; tone: "ok" | "warn" } | null>(null)
-  const [detectingSpeaker, setDetectingSpeaker] = useState(false)
-  const speakerTouchedRef = useRef(false)
-  const [routing, setRouting] = useState(() => draftInit?.routing ?? "/lecture")
-  const [mode, setMode] = useState<"full" | "quick">(() => draftInit?.mode ?? "full")
-  const [maxRetries, setMaxRetries] = useState(() => draftInit?.maxRetries ?? 1)
-  const [model, setModel] = useState(() => draftInit?.model ?? "")
-  const [force, setForce] = useState(() => draftInit?.force ?? false)
-  const [pauseOnOutline, setPauseOnOutline] = useState(() => draftInit?.pauseOnOutline ?? true)
-  const [rewriteStrategy, setRewriteStrategy] = useState<"single" | "sectioned">(
-    () => draftInit?.rewriteStrategy ?? "single",
-  )
-  // 视频转录引擎（仅打包版视频源生效；dev 走 auto 忽略）。default = 跟随后端默认（whisper-cpp）。
-  const [transcribeEngine, setTranscribeEngine] = useState<"default" | "whisper-cpp" | "mlx">("default")
-  const [isSubmittingJob, setIsSubmittingJob] = useState(false)
-  const [draftRestoredTs, setDraftRestoredTs] = useState<number | null>(() => draftInit?.ts ?? null)
-
-  // 建任务时用哪个配置档 —— ""=跟随默认；列表与默认从 /api/llm-profiles 拉取
-  const [profileId, setProfileId] = useState<string>("")
+  // 旧 CreateForm state（source/speaker/routing/mode/...）PR #3 已全部下放到 Launcher 内部。
+  // App.tsx 只保留 profile 列表，因为 Launcher 通过 props 接收，且 Settings/重跑等也需要 fetch。
   const [profileOptions, setProfileOptions] = useState<LlmProfile[]>([])
   const [defaultProfileId, setDefaultProfileId] = useState<string | null>(null)
 
-  // 侧栏任务列表过滤 —— 历史归档一多就难找,加搜索 + 状态 chip
+  // 侧栏任务列表过滤（2026-06 重设计）—— scope/filter/search 四个入口压成「⚙ 单 popover」。
+  //   filter:    all / needs_me / active / done       ——「状态」段
+  //   timeRange: any / 7d / 30d                       ——「时间」段
+  //   sortMode:  smart / updated / created             ——「排序」段
+  // jobQuery 仍保留：顶部 ⌘K 模态选中后会清空，但 IPC 侧仍可注入。
   const [jobQuery, setJobQuery] = useState("")
-  const [jobFilter, setJobFilter] = useState<"all" | "active" | "waiting" | "done" | "failed">("all")
+  const [jobFilter, setJobFilter] = useState<JobFilter>(
+    () => (localStorage.getItem("v2b_job_filter") as JobFilter | null) || "all",
+  )
+  const [jobTimeRange, setJobTimeRange] = useState<JobTimeRange>(
+    () => (localStorage.getItem("v2b_job_time_range") as JobTimeRange | null) || "any",
+  )
+  const [jobSort, setJobSort] = useState<JobSortMode>(
+    () => (localStorage.getItem("v2b_job_sort") as JobSortMode | null) || "smart",
+  )
+  // 任务段折叠态（左侧 ⌃ 按钮）：收起后列表 + ⚙ 隐藏，只剩 header 一行；
+  // 等我项 > 0 时标题旁挂红点。
+  const [jobsCollapsed, setJobsCollapsed] = useState<boolean>(
+    () => localStorage.getItem("v2b_jobs_collapsed") === "1",
+  )
+  useEffect(() => { localStorage.setItem("v2b_job_filter", jobFilter) }, [jobFilter])
+  useEffect(() => { localStorage.setItem("v2b_job_time_range", jobTimeRange) }, [jobTimeRange])
+  useEffect(() => { localStorage.setItem("v2b_job_sort", jobSort) }, [jobSort])
+  useEffect(() => { localStorage.setItem("v2b_jobs_collapsed", jobsCollapsed ? "1" : "0") }, [jobsCollapsed])
+  // ⚙ icon 是否高亮：任一段非 default 即视为"列表正在被筛"
+  const jobsFilterActive = jobFilter !== "all" || jobTimeRange !== "any" || jobSort !== "smart"
+  // 等我项数量（paused 等审批 + failed 等修复）—— 收起态时挂红点用。
+  // 仅看 live jobs：historical 一定是 succeeded 终态归档，不会出现在等我桶。
+  const needsMeCount = useMemo(() => jobs.filter(isNeedsMe).length, [jobs])
 
   const sseRef = useRef<EventSource | null>(null)
   // SSE 连接状态机 —— terminal 表示任务已 succeeded/failed,不应再重连
@@ -252,19 +381,6 @@ export default function App() {
 
   // 外观跟随系统：由 main.tsx 的 next-themes ThemeProvider 接管（浅/深/自动），
   // 不再强制 .dark。用户可在 Settings 手动覆盖三态。
-
-  // CreateForm 草稿自动存档 —— source 非空就节流写入 500ms
-  // 没填 source 的"空草稿"不写,避免用户每次开页都看到 banner
-  useEffect(() => {
-    if (!source.trim()) return
-    const timer = window.setTimeout(() => {
-      writeCreateDraft({
-        source, speaker, routing, mode, maxRetries, model, force, pauseOnOutline, rewriteStrategy,
-        ts: Date.now(),
-      })
-    }, 500)
-    return () => window.clearTimeout(timer)
-  }, [source, speaker, routing, mode, maxRetries, model, force, pauseOnOutline, rewriteStrategy])
 
   // OutlineView 编辑器草稿自动存档 —— 仅在 paused 状态下保存,
   // 因为只有这个状态用户才能/才会去编辑 outline。
@@ -296,22 +412,27 @@ export default function App() {
     checkHealth()
     fetchJobs()
     fetchHistory()
+    fetchTrash()
     fetchProfiles()
 
     let healthId: number | null = null
     let jobsId: number | null = null
     let historyId: number | null = null
+    let trashId: number | null = null
 
     const startPolling = () => {
       if (healthId === null) healthId = window.setInterval(checkHealth, 8000)
       if (jobsId === null) jobsId = window.setInterval(fetchJobs, 5000)
       // 历史归档磁盘扫描,频率低一些(磁盘不会频繁变)
       if (historyId === null) historyId = window.setInterval(fetchHistory, 30000)
+      // 回收站轮询频率跟归档同档（用户不会高频删/还原）
+      if (trashId === null) trashId = window.setInterval(fetchTrash, 30000)
     }
     const stopPolling = () => {
       if (healthId !== null) { window.clearInterval(healthId); healthId = null }
       if (jobsId !== null) { window.clearInterval(jobsId); jobsId = null }
       if (historyId !== null) { window.clearInterval(historyId); historyId = null }
+      if (trashId !== null) { window.clearInterval(trashId); trashId = null }
     }
     const handleVisibilityChange = () => {
       if (document.hidden) {
@@ -321,6 +442,7 @@ export default function App() {
         checkHealth()
         fetchJobs()
         fetchHistory()
+        fetchTrash()
         startPolling()
       }
     }
@@ -357,8 +479,7 @@ export default function App() {
       if (isMod && e.key.toLowerCase() === "n" && !inInput && !isTauri) {
         e.preventDefault()
         if (healthStatus !== "offline") {
-          setIsCreating(true)
-          setSelectedJobId(null)
+          setLauncherOpen(true)
           setShowSettings(false)
         }
         return
@@ -367,16 +488,14 @@ export default function App() {
       if (isMod && e.key === "," && !isTauri) {
         e.preventDefault()
         setShowSettings(true)
-        setIsCreating(false)
+        setLauncherOpen(false)
         setSelectedJobId(null)
         return
       }
 
       if (isMod && e.key.toLowerCase() === "k") {
         e.preventDefault()
-        const input = document.querySelector<HTMLInputElement>("input[placeholder^='搜索 stem']")
-        input?.focus()
-        input?.select()
+        setShowSearch(true)
         return
       }
 
@@ -387,19 +506,27 @@ export default function App() {
       }
 
       if (e.key === "Escape" && !inInput) {
-        if (isCreating) {
-          setIsCreating(false)
+        if (showSearch) {
+          setShowSearch(false)
+          return
+        }
+        if (launcherOpen) {
+          setLauncherOpen(false)
           return
         }
         if (showSettings) {
           setShowSettings(false)
           return
         }
+        if (showVoice) {
+          setShowVoice(false)
+          return
+        }
       }
     }
     document.addEventListener("keydown", handler)
     return () => document.removeEventListener("keydown", handler)
-  }, [healthStatus, isCreating, showSettings])
+  }, [healthStatus, launcherOpen, showSettings, showVoice, showSearch])
 
   // Tauri 壳：监听原生菜单事件（新建任务）+ 设置窗改了配置档后回灌
   useEffect(() => {
@@ -407,79 +534,25 @@ export default function App() {
     const uns: Array<Promise<() => void>> = []
     uns.push(listen("menu:new", () => {
       if (healthStatus !== "offline") {
-        setIsCreating(true); setSelectedJobId(null); setShowSettings(false)
+        setLauncherOpen(true); setShowSettings(false)
       }
     }))
+    // Cmd+, / 菜单「设置…」→ 弹出设置 modal（不再开独立窗口）
+    uns.push(listen("menu:settings", () => { setShowSettings(true) }))
     uns.push(listen("profiles:changed", () => { fetchProfiles() }))
     return () => { uns.forEach(p => p.then(f => f()).catch(() => {})) }
   }, [healthStatus])
 
-  // 演讲人手输：标记"用户改过"，自动识别不再覆盖
-  const handleSpeakerInput = (v: string) => { speakerTouchedRef.current = true; setSpeaker(v) }
+  // 演讲人识别（启发式 + AI）已搬到 Launcher 内部 —— 它持有 source/speaker state，链路更短。
 
-  // 选源后自动跑免费启发式识别演讲人；命中且用户没手动改过则回填，否则提示兜底
-  useEffect(() => {
-    speakerTouchedRef.current = false
-    setSpeakerHint(null)
-    if (!source.trim() || healthStatus === "offline") return
-    let cancelled = false
-    fetch(API_BASE + "/api/detect-speaker", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ source, use_llm: false }),
-    })
-      .then(r => (r.ok ? r.json() : null))
-      .then((d: { speaker: string | null; reason?: string } | null) => {
-        if (cancelled || !d) return
-        if (d.speaker && !speakerTouchedRef.current) {
-          setSpeaker(d.speaker)
-          setSpeakerHint({ text: `已自动识别：${d.speaker}（可改）`, tone: "ok" })
-        } else if (!d.speaker) {
-          setSpeakerHint({ text: `${d.reason ? d.reason + "；" : "未自动识别出演讲人，"}已沿用上次，请确认或点「AI 识别」`, tone: "warn" })
-        }
-      })
-      .catch(() => {})
-    return () => { cancelled = true }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [source])
-
-  // AI 识别演讲人（用默认/所选配置档，一次很便宜）
-  const detectSpeakerAI = async () => {
-    if (!source.trim() || !requireOnline("识别演讲人")) return
-    setDetectingSpeaker(true)
-    try {
-      const r = await fetch(API_BASE + "/api/detect-speaker", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ source, profile_id: profileId || undefined, use_llm: true }),
-      })
-      const d: { speaker: string | null; reason?: string } = await r.json()
-      if (d.speaker) {
-        speakerTouchedRef.current = false
-        setSpeaker(d.speaker)
-        setSpeakerHint({ text: `AI 识别：${d.speaker}（可改）`, tone: "ok" })
-      } else {
-        setSpeakerHint({ text: `${d.reason || "AI 未能识别"}，请手填或沿用「${speaker}」`, tone: "warn" })
-      }
-    } catch (e) {
-      setSpeakerHint({ text: `识别失败：${String(e)}`, tone: "warn" })
-    } finally {
-      setDetectingSpeaker(false)
-    }
-  }
-
-  // 开始新建任务（离线时拦截）
+  // 开始新建任务 —— 唯一入口：overlay Launcher。离线时拦截。
   const startCreate = () => {
     if (healthStatus === "offline") { toast.error("后端服务离线", { description: "请先启动后端，再新建任务" }); return }
-    setIsCreating(true); setSelectedJobId(null); setShowSettings(false)
+    setLauncherOpen(true); setShowSettings(false)
   }
 
-  // 打开设置：Tauri 壳里开独立窗口（macOS 规范），浏览器里退回主窗口内嵌视图
-  const openSettings = () => {
-    if (isTauri) {
-      invoke("open_settings").catch(() => {})
-    } else {
-      setShowSettings(true); setIsCreating(false); setSelectedJobId(null)
-    }
-  }
+  // 打开设置：in-app modal（Claude Desktop 风格）—— 居中弹层浮在当前界面上，不切走主区、不开独立窗口。
+  const openSettings = () => { setShowSettings(true) }
 
   // Select job update & SSE trigger
   useEffect(() => {
@@ -497,6 +570,7 @@ export default function App() {
     const job = jobs.find(j => j.id === selectedJobId) ?? historicalJobs.find(j => j.id === selectedJobId)
     if (job) {
       const prevStatus = selectedJob?.status
+      const isFreshSelect = job.id !== selectedJob?.id
       setSelectedJob(job)
 
       // 历史归档:不打 SSE,不拉 work/* 产物,直接挂"成品及报告"tab
@@ -506,32 +580,36 @@ export default function App() {
         setSseStatus("idle")
         setLogs([])
         setProgressEvents([])
-        setActiveTab("final")
+        if (isFreshSelect) setActiveTab("final")  // 只在初次选中时切，否则用户切 tab 又被拽回
         return
       }
 
       if (job.status === "paused") {
-        // 关键：用后端的 paused_state 决定加载 outline 还是 draft，**不再盲调两个**。
-        // 之前是 loadDraftAndReview 末尾 setActiveTab("review") 永远赢，把 WAITING_USER_OUTLINE
-        // 的任务硬切到 review tab + 显示上一轮残留的 draft —— 5/28 撞了 3 次的同一类 bug。
-        fetch(API_BASE + `/jobs/${job.id}`)
-          .then(res => res.json())
-          .then(data => {
-            if (data.status !== "paused") return
-            if (data.paused_state === "WAITING_USER_OUTLINE") {
-              loadOutline(job.id)
-            } else if (data.paused_state === "WAITING_USER_REVIEW") {
-              loadDraftAndReview(job.id)
-            } else {
-              // 老后端兼容：缺 paused_state 字段时按"outline 永远先于 draft"试
-              loadOutline(job.id)
-              loadDraftAndReview(job.id)
-            }
-          })
+        const justEnteredPaused = prevStatus !== "paused"
+        // 只在初次选中或刚进入 paused 时拉数据 + 切 tab —— 否则 jobs 轮询每 5s 都会把用户拽回审批 tab。
+        // 关键：用后端的 paused_state 决定加载 outline 还是 draft，**不再盲调两个**（5/28 撞 3 次同 bug）。
+        if (isFreshSelect || justEnteredPaused) {
+          fetch(API_BASE + `/jobs/${job.id}`)
+            .then(res => res.json())
+            .then(data => {
+              if (data.status !== "paused") return
+              if (data.paused_state === "WAITING_USER_OUTLINE") {
+                loadOutline(job.id)
+                setActiveTab("outline")
+              } else if (data.paused_state === "WAITING_USER_REVIEW") {
+                loadDraftAndReview(job.id)
+                setActiveTab("review")
+              } else {
+                // 老后端兼容：缺 paused_state 字段时按"outline 永远先于 draft"试
+                loadOutline(job.id)
+                loadDraftAndReview(job.id)
+                setActiveTab("outline")
+              }
+            })
+        }
       } else if (job.status === "succeeded") {
         // 成品前置：跑完那一刻（running→succeeded）或新选中一个已完成任务时，默认落到成品阅读视图。
         // 但不在后续每次 jobs 刷新时强切 —— 否则用户手点"运行日志"看一眼又被拽回成品。
-        const isFreshSelect = job.id !== selectedJob?.id
         const justFinished = job.id === selectedJob?.id && prevStatus !== "succeeded"
         if (isFreshSelect || justFinished || activeTab === "outline" || activeTab === "review") {
           setActiveTab("final")
@@ -616,40 +694,19 @@ export default function App() {
     jobsNotifyInitRef.current = true
   }
 
-  const fetchJobs = async () => {
-    try {
-      const res = await fetch(API_BASE + "/jobs")
-      if (res.ok) {
-        const data: EngineJob[] = await res.json()
-        data.reverse()
-        detectStatusTransitions(data)
-        setJobs(data)
-      }
-    } catch (e) {
-      console.error("Failed to fetch jobs list", e)
-    }
-  }
+  // DECOUPLE Round 2：fetchJobs / fetchHistory / fetchTrash 已下沉到
+  // useTasks / usePosts / useTrash。这里把"列表状态跃迁通知"注入任务 store：
+  // detectStatusTransitions 定义在 hook 调用点之后，用 ref 注入规避 TDZ，
+  // 每次 render 刷新为最新闭包，fetchTasks 拉到新数据时即会调用它。
+  tasksOnDataRef.current = detectStatusTransitions
 
-  const fetchHistory = async () => {
-    try {
-      const res = await fetch(API_BASE + "/jobs/history")
-      if (res.ok) {
-        const data: EngineJob[] = await res.json()
-        setHistoricalJobs(data)
-      }
-    } catch (e) {
-      console.error("Failed to fetch history", e)
-    }
-  }
-
-  // 拉配置档列表 —— 建任务的「配置档」选择器用；SettingsForm 改动后也会回调刷新
+  // 拉配置档列表 —— Launcher 通过 props 接收；SettingsForm 改动后也会回调刷新。
+  // "当前选档已禁用 → 回退" 现在由 Launcher 内部处理（它持有自己的 profileId）。
   const fetchProfiles = async () => {
     try {
       const snap = await listProfiles()
       setProfileOptions(snap.profiles)
       setDefaultProfileId(snap.defaultProfileId)
-      // 选中的档若已被删/停用，回退到「跟随默认」，避免 <select> 值悬空
-      setProfileId(prev => (prev && snap.profiles.some(p => p.id === prev && p.enabled) ? prev : ""))
     } catch (e) {
       console.error("Failed to fetch llm profiles", e)
     }
@@ -795,14 +852,13 @@ export default function App() {
         if (draft && draft.content !== fetched) {
           setOutlineText(draft.content)
           setOutlineDraftRestoredTs(draft.ts)
-          setActiveTab("outline")
           return
         }
       }
       setOutlineText(fetched)
       setOutlineDraftRestoredTs(null)
       clearOutlineDraft(jobId)
-      setActiveTab("outline")
+      // tab 切换由 selectedJob useEffect 统一管，loader 不再 setActiveTab —— 避免异步完成后覆盖用户手切的 tab。
     } catch (e) {
       console.warn("No outline.md yet", e)
     }
@@ -830,12 +886,31 @@ export default function App() {
           clearDraftEdit(jobId)
         }
         setDraftContent(used)
-        setActiveTab("review")
+        // tab 切换由 selectedJob useEffect 统一管，loader 不再 setActiveTab
       }
       const reviewRes = await fetch(API_BASE + `/jobs/${jobId}/files/review_json`)
       if (reviewRes.ok) {
-        const reviewData = await reviewRes.json()
-        setReviewJson(reviewData)
+        // 后端 /jobs/{id}/files/{key} 返回 { content: "<file text>", path }，
+        // review_json 的 content 是 JSON 字符串 —— 必须 parse 出来才是真正的 ReviewJson。
+        // 之前直接 setReviewJson(reviewData)，导致 reviewJson.scores 是 undefined，
+        // 触发"本轮无六维评分"假阳性（disk 上 6 维分数齐全也不显示）。
+        const reviewWrapper: { content: string; path?: string } = await reviewRes.json()
+        try {
+          const inner = JSON.parse(reviewWrapper.content) as ReviewJson
+          setReviewJson(inner)
+        } catch (parseErr) {
+          // JSON 损坏 —— 落 parse_failed 标志，让 UI 走"解析失败"分支 + 显示 raw_markdown 兜底
+          setReviewJson({
+            version: 0,
+            verdict: "REVIEW",
+            scores: {},
+            total: "—",
+            rebrief: "",
+            raw_markdown: reviewWrapper.content,
+            parse_failed: true,
+          })
+          console.warn("review_json 解析失败", parseErr)
+        }
       }
     } catch (e) { console.warn("No draft / review_json found", e) }
   }
@@ -849,50 +924,27 @@ export default function App() {
     return true
   }
 
-  const handleCreateJob = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!source.trim()) return
-    if (!requireOnline("提交任务")) return
-
-    // 提交前 sanity check —— 仅当用户**显式填了** per-job 模型覆盖、且不在白名单时才拦
-    // （留空走配置档的模型，配置档的模型已在 Settings 里验证过，无需再拦）
-    const finalModelName = model.trim()
-    if (finalModelName && !(COMMON_MODELS as readonly string[]).includes(finalModelName)) {
-      const ok = await confirmAction({
-        title: `模型名 "${finalModelName}" 不在常见列表里`,
-        description: (
-          <>
-            常见模型: <code className="text-xs">{COMMON_MODELS.join(" / ")}</code>
-            <br />
-            如果模型名写错,任务可能会跑 5 分钟才超时失败。
-            <b className="text-foreground">建议先到 Settings 用「测试连接」验证,避免浪费时间。</b>
-          </>
-        ),
-        confirmText: "我确定,直接提交",
-        cancelText: "我想先去 Settings 测一下",
-        variant: "destructive",
-      })
-      if (!ok) return
+  // Launcher 提交路径 —— LauncherSubmitPayload → 后端 EngineJobRequest。
+  // PR #3 起：唯一新建入口（CreateForm 路径已废）。
+  // Launcher 内部已 pushRecentSource + setLastSpeaker，App.tsx 不重复。
+  const handleLauncherSubmit = async (lp: LauncherSubmitPayload): Promise<boolean> => {
+    if (!requireOnline("提交任务")) return false
+    const mode = lp.mode ?? "full"
+    const payload: Record<string, unknown> = {
+      source: lp.source,
+      speaker: lp.speaker,
+      routing: lp.routing,
+      mode,
+      max_retries: lp.max_retries ?? 1,
+      force: lp.force ?? false,
+      pause_on_outline: lp.pause_on_outline,
     }
+    // §9-C：sectioned 仅 full 有效；quick 强制回 single 避免后端拒收
+    payload.rewrite_strategy = mode === "full" ? (lp.rewrite_strategy ?? "single") : "single"
+    if (lp.transcribe_engine && lp.transcribe_engine !== "default") payload.transcribe_engine = lp.transcribe_engine
+    if (lp.profile_id) payload.profile_id = lp.profile_id
 
-    setIsSubmittingJob(true)
     try {
-      const payload: Record<string, unknown> = {
-        source, speaker, routing, mode,
-        max_retries: maxRetries,
-        force,
-        pause_on_outline: pauseOnOutline,
-      }
-      // §9-C：sectioned 仅在 full 模式有效，quick 时强制回 single 避免后端拒收。
-      payload.rewrite_strategy = mode === "full" ? rewriteStrategy : "single"
-      // 转录引擎：非 default 才带（仅打包版视频源生效；dev 忽略）。
-      if (transcribeEngine !== "default") payload.transcribe_engine = transcribeEngine
-      // 配置档：选了就带 profile_id，否则后端用默认档。api_key / api_base 不由前端发送。
-      if (profileId) payload.profile_id = profileId
-      // model 仅作为本任务对该档的临时覆盖：填了才带，否则用档里的模型。
-      const finalModel = model.trim()
-      if (finalModel) payload.model = finalModel
-
       const res = await fetch(API_BASE + "/jobs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -900,26 +952,20 @@ export default function App() {
       })
       if (res.ok) {
         const data = await res.json()
-        pushRecentSource(source) // 记入 localStorage,下次新建任务时排在最前面
-        localStorage.setItem("v2b_last_speaker", speaker.trim() || "我")
-        pushSessionJobId(data.id) // 标记本会话主动提交，sidebar"本会话"区只显示这些
-        // 任务提交成功 —— 清掉表单草稿,下次回 CreateForm 是干净状态
-        clearCreateDraft()
-        setDraftRestoredTs(null)
-        setIsCreating(false)
-        setSource("")
+        pushSessionJobId(data.id)
         fetchJobs()
         setSelectedJobId(data.id)
         setActiveTab("console")
         toast.success("任务已提交", { description: `Job ${data.id.substring(0, 8)}` })
+        return true
       } else {
         const err = await res.json()
         toast.error("创建失败", { description: err.detail || "未知错误" })
+        return false
       }
     } catch (err) {
       toast.error("网络错误", { description: String(err) })
-    } finally {
-      setIsSubmittingJob(false)
+      return false
     }
   }
 
@@ -1076,267 +1122,531 @@ export default function App() {
     // 否则触发 "Existing memoization could not be preserved" 编译失败。
   }, [selectedJob, outlineText, draftContent])
 
-  // 用相同参数重跑失败任务 —— 把 job.request 灌回 CreateForm 并切到新建视图。
-  // 关键:支持 modelOverride,失败 Banner 的"换 deepseek-chat 重跑"这种快速修复就走这一条。
-  const handleRetryFromJob = (job: EngineJob, modelOverride?: string) => {
-    const req = job.request
-    setSource(req.source)
-    setSpeaker(req.speaker)
-    setRouting(req.routing)
-    setMode(req.mode as "full" | "quick")
-    setMaxRetries(req.max_retries)
-    setModel(modelOverride ?? req.model ?? "")
-    setForce(req.force)
-    setPauseOnOutline(req.pause_on_outline)
-    setRewriteStrategy((req.rewrite_strategy as "single" | "sectioned") ?? "single")
-    // 这是"用相同参数重跑",不是"恢复未提交草稿",所以隐藏 banner
-    setDraftRestoredTs(null)
-    setIsCreating(true)
-    setSelectedJobId(null)
+  // 把 EngineJobRequest 翻译成 LauncherSubmitPayload（重跑场景的公共构造）。
+  // 注意 profile_id 后端不存（解析为 model+api_base 后丢弃），回填时让 launcher 走默认档；
+  // 用户原本档可能已删除/改名，强行猜映射反而误导。
+  const jobToLauncherPayload = (req: EngineJobRequest): LauncherSubmitPayload => ({
+    source: req.source,
+    speaker: req.speaker,
+    routing: req.routing,
+    pause_on_outline: req.pause_on_outline,
+    max_retries: req.max_retries,
+    force: req.force,
+    rewrite_strategy: (req.rewrite_strategy as "single" | "sectioned" | undefined) ?? "single",
+    mode: req.mode === "quick" ? "quick" : undefined,
+  })
+
+  // 「改参数重跑」—— 浮出 overlay Launcher 预填字段，用户改完再提交。
+  const handleRetryFromJob = (job: EngineJob) => {
+    overlayLauncherRef.current?.prefill(jobToLauncherPayload(job.request))
+    setLauncherOpen(true)
     setShowSettings(false)
-    if (modelOverride) {
-      toast.success(`已换模型为 ${modelOverride}`, { description: "其他参数保持不变,确认后提交" })
+  }
+
+  // 「再跑一遍」—— 不弹 launcher，用 job.request 原参数直接 POST /jobs。
+  // 离线由 handleLauncherSubmit 内部 requireOnline 守卫拦截。
+  const handleRerunSameJob = (job: EngineJob) => {
+    handleLauncherSubmit(jobToLauncherPayload(job.request))
+  }
+
+  // ── PR #5: 任务删除 ────────────────────────────────────────────────
+  // Live job：直删 + 6s Undo Toast（sonner action 按钮）。被删 job 若是当前 selected，落回 HomeView。
+  const handleDeleteLiveJob = async (job: EngineJob) => {
+    if (!requireOnline("删除任务")) return
+    const stemShort = job.stem.length > 20 ? job.stem.slice(0, 20) + "…" : job.stem
+    try {
+      await deleteLiveJob(job.id)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      // 后端 ID 已不存在（disk-xxx 在 sidecar 重启 / repo_root 切换时会重算）→ stale state，
+      // 静默刷新列表即可，不打断用户。
+      if (/未知任务 ID/.test(msg)) {
+        if (selectedJobId === job.id) setSelectedJobId(null)
+        fetchJobs()
+        return
+      }
+      toast.error("删除失败", { description: msg })
+      return
+    }
+    // 若被删的就是当前 selected，落回 HomeView
+    if (selectedJobId === job.id) {
+      setSelectedJobId(null)
+    }
+    fetchJobs()
+    // 6s Undo Toast —— 点撤销则 POST /jobs/{id}/restore；不点 6s 后后端 finalize（删 work/）
+    toast.success("任务已删除", {
+      description: stemShort,
+      duration: 6000,
+      action: {
+        label: "撤销",
+        onClick: async () => {
+          try {
+            await restoreLiveJob(job.id)
+            fetchJobs()
+            toast.success("已撤销删除")
+          } catch (e) {
+            toast.error("撤销失败", { description: e instanceof Error ? e.message : String(e) })
+          }
+        },
+      },
+    })
+  }
+
+  // Historical job：弹多选面板 → DELETE /jobs/history?post_path=...
+  const handleDeleteHistoricalJobAction = async (job: EngineJob) => {
+    if (!requireOnline("删除归档任务")) return
+    const postPath = job.final_post_path
+    if (!postPath) {
+      toast.error("无法删除", { description: "该归档任务缺少 final_post_path，无法定位文件" })
+      return
+    }
+    const sel = await confirmHistoricalDelete({ stem: job.stem, postPath })
+    if (!sel) return
+    try {
+      const result = await deleteHistoricalJob({ post_path: postPath, ...sel })
+      if (selectedJobId === job.id) {
+        setSelectedJobId(null)
+      }
+      fetchHistory()
+      fetchJobs()
+      const msg = result.deleted.length
+        ? `已删除 ${result.deleted.length} 项`
+        : "无内容被删除"
+      const errs = result.errors.length ? ` · ${result.errors.length} 项失败` : ""
+      toast.success("归档删除完成", { description: msg + errs })
+    } catch (e) {
+      toast.error("删除失败", { description: e instanceof Error ? e.message : String(e) })
     }
   }
 
-  // 用户点"放弃恢复" —— 重置表单到默认值并清掉本地草稿
-  const handleDiscardDraft = () => {
-    setSource("")
-    setSpeaker(localStorage.getItem("v2b_last_speaker") || "我")
-    setRouting("/lecture")
-    setMode("full")
-    setMaxRetries(1)
-    setModel("")
-    setForce(false)
-    setPauseOnOutline(true)
-    setRewriteStrategy("single")
-    clearCreateDraft()
-    setDraftRestoredTs(null)
+  // 统一入口：live → handleDeleteLiveJob；historical → handleDeleteHistoricalJobAction
+  const handleDeleteJob = (job: EngineJob) => {
+    if (job.kind === "historical") {
+      void handleDeleteHistoricalJobAction(job)
+    } else {
+      void handleDeleteLiveJob(job)
+    }
   }
+
+  // ── PR #6: 作品集回收站 ─────────────────────────────────────────────
+  // 作品集卡片点 × → 移到 .trash/posts/（30 天可恢复）+ Undo Toast 立即撤销。
+  const handleDeletePost = async (job: EngineJob) => {
+    if (!requireOnline("删除作品")) return
+    const postPath = job.final_post_path
+    if (!postPath) {
+      toast.error("无法删除", { description: "该作品缺少 final_post_path" })
+      return
+    }
+    let trashId: string
+    try {
+      const result = await moveTrashPost(postPath)
+      trashId = result.trash_id
+    } catch (e) {
+      toast.error("删除失败", { description: e instanceof Error ? e.message : String(e) })
+      return
+    }
+    if (selectedJobId === job.id) setSelectedJobId(null)
+    // 立刻把 historical 列表里这条隐藏（轮询要 30s 才会刷新到），刷新 trash 列表
+    setHistoricalJobs(prev => prev.filter(h => h.final_post_path !== postPath))
+    fetchTrash()
+    fetchHistory()
+    const stemShort = job.stem.length > 24 ? job.stem.slice(0, 24) + "…" : job.stem
+    toast.success("已移到回收站", {
+      description: `${stemShort} · 30 天后自动清空`,
+      duration: 8000,
+      action: {
+        label: "撤销",
+        onClick: async () => {
+          try {
+            await restoreTrashPost(trashId)
+            fetchHistory()
+            fetchTrash()
+            toast.success("已撤销删除")
+          } catch (e) {
+            toast.error("撤销失败", { description: e instanceof Error ? e.message : String(e) })
+          }
+        },
+      },
+    })
+  }
+
+  // 回收站还原。目标已存在 → 409，弹 confirm 让用户去原位置改名/删旧件再来。
+  const handleRestoreTrash = async (t: TrashPost) => {
+    if (!requireOnline("还原")) return
+    try {
+      await restoreTrashPost(t.trash_id)
+      fetchTrash()
+      fetchHistory()
+      toast.success("已还原", { description: `output/Posts/${t.year}/${t.original_name}` })
+    } catch (e) {
+      const status = (e as Error & { status?: number }).status
+      const msg = e instanceof Error ? e.message : String(e)
+      if (status === 409) {
+        toast.error("还原冲突", {
+          description: `原位置已有同名文件：output/Posts/${t.year}/${t.original_name}。请先处理它再还原。`,
+          duration: 8000,
+        })
+      } else {
+        toast.error("还原失败", { description: msg })
+      }
+    }
+  }
+
+  // 永久删（不可恢复，二次确认）
+  const handlePurgeTrash = async (t: TrashPost) => {
+    if (!requireOnline("永久删除")) return
+    const ok = await confirmAction({
+      title: `永久删除 "${t.original_name}"？`,
+      description: <>该操作<b>不可恢复</b>。删除后回收站、原位置都将彻底没有这篇。</>,
+      confirmText: "永久删除",
+      cancelText: "取消",
+      variant: "destructive",
+    })
+    if (!ok) return
+    try {
+      await purgeTrashPost(t.trash_id)
+      fetchTrash()
+      toast.success("已永久删除", { description: t.original_name })
+    } catch (e) {
+      toast.error("永久删除失败", { description: e instanceof Error ? e.message : String(e) })
+    }
+  }
+
+  // handleDiscardDraft / 草稿恢复 banner 体系整套已废（PR #3）。Launcher 不弹恢复 banner。
 
   // 切到某个顶层场所：清掉 job/新建/设置，让主区落到该 place。
   const goPlace = (p: "start" | "library" | "voice") => {
     setPlace(p)
     setSelectedJobId(null)
-    setIsCreating(false)
     setShowSettings(false)
   }
   // 当前主区在显示什么 —— 驱动侧栏导航高亮。job/新建/设置 优先于 place。
-  const currentView: "create" | "settings" | "workshop" | "start" | "library" | "voice" =
-    isCreating ? "create" : showSettings ? "settings" : selectedJob ? "workshop" : place
+  // currentView 用于侧栏导航高亮。launcherOpen 浮在主区上方不切走主区，所以不纳入这里 ——
+  // 侧栏 IconNew 的 active 单独由 launcherOpen 决定（见下方 nav）。
+  const currentView: "settings" | "workshop" | "start" | "library" | "voice" =
+    showSettings ? "settings" : selectedJob ? "workshop" : place
 
   return (
     <TooltipProvider delayDuration={200}>
       <Toaster position="top-right" theme="system" />
       <ConfirmDialogHost />
-      <div className="app-root flex flex-col h-screen bg-background text-foreground overflow-hidden font-sans">
-        {/* Tauri 壳：顶部 28px 拖拽条，给左上角交通灯留位（浏览器不渲染） */}
-        {isTauri && <div className="h-7 shrink-0" data-tauri-drag-region />}
-        {healthStatus === "offline" && (
-          <div className="shrink-0 bg-destructive/15 border-b border-destructive/30 px-4 py-2 text-sm flex items-center gap-2 text-destructive">
-            <AlertCircle className="size-4 shrink-0" />
-            <span className="font-medium">后端服务离线</span>
-            <span className="text-destructive/80">
-              ·任务提交、批准、取消等操作已暂停。请运行
-              <code className="mx-1 text-xs bg-destructive/10 px-1 rounded">scripts/run_engine_server.py</code>
-              启动 FastAPI 服务。
-            </span>
-          </div>
-        )}
+      <HistoricalDeleteDialogHost />
+      {/* 中性 Tahoe：实底窗口底色（中性浅灰）衬托浮起的 sidebar 卡片。玻璃透出已撤销。 */}
+      <div className="app-root flex flex-col h-screen text-foreground overflow-hidden font-sans bg-background">
+        {/* 不再有横跨顶部的 toolbar：sidebar 卡片自己顶到窗口上沿（含交通灯），
+            主区单独留拖拽条。offline banner 移进主区顶部。 */}
         <div className="relative flex flex-1 overflow-hidden">
-        {/* 侧栏收起时：左上角浮出一个安静的展开按钮（避开交通灯，故 top 留白） */}
-        {!sidebarOpen && (
-          <div className={cn("absolute left-2 z-20", isTauri ? "top-9" : "top-2")}>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button variant="ghost" size="icon" onClick={() => setSidebarOpen(true)} className="size-8 bg-card/80 border shadow-sm">
-                  <PanelLeft />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="right">展开侧栏 (Cmd/Ctrl + \\)</TooltipContent>
-            </Tooltip>
-          </div>
-        )}
-        {/* ─────── Sidebar ─────── */}
-        <aside className={cn("app-sidebar w-80 flex flex-col border-r bg-sidebar min-h-0 overflow-hidden", !sidebarOpen && "hidden")}>
-          {/* Brand + status */}
-          <div className="p-4 border-b flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <div className={cn(
-                "size-2.5 rounded-full",
-                healthStatus === "online" ? "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.6)]" : "bg-destructive",
-              )} />
-              <h1 className="text-base font-semibold tracking-tight text-foreground">
-                Video2Blog
-              </h1>
-            </div>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button variant="ghost" size="icon" onClick={() => setSidebarOpen(false)} className="size-8">
-                  <PanelLeftClose />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom">收起侧栏 (Cmd/Ctrl + \\)</TooltipContent>
-            </Tooltip>
-          </div>
-
-          {/* New job button */}
-          <div className="p-3">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  className="w-full rounded-full"
-                  onClick={startCreate}
-                  disabled={healthStatus === "offline"}
-                >
-                  <Plus data-icon="inline-start" />
-                  新建改写任务
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom">
-                {healthStatus === "offline" ? "后端离线时无法提交新任务" : "新建改写任务 (Cmd/Ctrl + N)"}
-              </TooltipContent>
-            </Tooltip>
-          </div>
-
-          {/* 顶层场所导航（IA ④）：开始 / 作品集 / 风格。下方 recents 是「工作台」入口（选 job 即进）。 */}
-          <nav className="px-3 pb-2 flex flex-col gap-0.5">
-            {([
-              ["start", "开始", Sparkles],
-              ["library", "作品集", BookOpen],
-              ["voice", "风格", PenLine],
-            ] as const).map(([key, label, Icon]) => (
-              <button
-                key={key}
-                type="button"
-                onClick={() => goPlace(key)}
-                className={cn(
-                  "flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm transition-colors text-left",
-                  currentView === key
-                    ? "bg-primary/12 text-primary font-medium"
-                    : "text-muted-foreground hover:text-foreground hover:bg-muted/50",
-                )}
+        {/* 自绘交通灯（仅 Tauri 壳）：固定在窗口左上，不随 sidebar 收起而消失；聚焦红黄绿 / 失焦灰。 */}
+        {isTauri && <TrafficLights />}
+        {/* 单一 sidebar toggle：位置固定（交通灯右边 + gap），icon 跟状态切换。
+            收起态 = Menu hamburger；展开态 = PanelLeftClose；收起态 hover 触发 hover-preview。
+            按钮 24x24：top-[14px] 让中心 = 14+12 = 26px，与自绘交通灯中心
+            （容器 top18 + p-px 1 + 半径7 = 26）对齐。 */}
+        <div
+          className={cn("absolute z-40 flex items-center gap-0.5", isTauri ? "top-[14px] left-[92px]" : "top-2 left-2")}
+          onMouseEnter={!sidebarOpen ? openHover : undefined}
+          onMouseLeave={!sidebarOpen ? scheduleHoverClose : undefined}
+        >
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={sidebarOpen ? collapseSidebar : pinSidebar}
+                aria-label={sidebarOpen ? "收起侧栏" : "展开侧栏"}
+                className="size-6 hover:bg-foreground/[0.06]"
+                data-tauri-drag-region={false}
               >
-                <Icon className="size-4 shrink-0" />
-                {label}
-              </button>
-            ))}
-          </nav>
+                <IconToggle />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">
+              {sidebarOpen ? "收起侧栏 (Cmd/Ctrl + \\)" : "展开侧栏 (Cmd/Ctrl + \\)"}
+            </TooltipContent>
+          </Tooltip>
+          {/* 搜索按钮（顶部一级入口，取代原内嵌搜索框）：点开弹出全屏模态。 */}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setShowSearch(true)}
+                aria-label="搜索任务"
+                className="size-6 hover:bg-foreground/[0.06]"
+                data-tauri-drag-region={false}
+              >
+                <IconSearch />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">搜索任务 (Cmd/Ctrl + K)</TooltipContent>
+          </Tooltip>
+        </div>
+        {/* ─────── Sidebar ─────── */}
+        {/* 浮起的圆角导航面板：亮底 + 细边框 + 轻阴影，顶到窗口上沿把交通灯包进卡片内。
+            圆角 12px 对齐 DESIGN.md rounded.lg —— 卡片几何在借鉴系里统一这一档。
+            宽度由 sidebarWidth state 控制（拖拽 + localStorage 持久化）。
+            三态：
+              · sidebarOpen=true → in-flow，挤主区（pinned）
+              · !sidebarOpen && sidebarHovered → absolute overlay 浮在主区上方（hover-preview）
+              · !sidebarOpen && !sidebarHovered → absolute + translateX(-100%) 移出视口（hidden） */}
+        <aside
+          ref={sidebarRef}
+          onMouseEnter={!sidebarOpen ? openHover : undefined}
+          onMouseLeave={!sidebarOpen ? scheduleHoverClose : undefined}
+          style={{
+            width: sidebarWidth,
+            transform: (sidebarOpen || sidebarHovered) ? "translateX(0)" : "translateX(calc(-100% - 16px))",
+          }}
+          className={cn(
+            // sidebar 实底中性浅灰（放弃玻璃透出，可用性优先）：浮起圆角卡片 + 细 hairline + 轻阴影。
+            "app-sidebar flex flex-col rounded-xl border border-border/60 bg-card shadow-sm min-h-0 overflow-hidden transition-transform duration-200 ease-out",
+            sidebarOpen
+              ? "relative shrink-0 ml-2 mt-2 mb-2"               // pinned：占布局
+              : "absolute top-2 bottom-2 left-2 z-30",          // overlay：浮在主区上方
+          )}
+        >
+          {/* 顶行 40px：仅作为交通灯承载 + drag region。toggle 按钮上移到窗口左上
+              （交通灯旁），单一按钮表达"展开/收起"两种状态——见上方 sidebarOpen 分支的 toggle。 */}
+          <div className="h-10 shrink-0" data-tauri-drag-region={isTauri || undefined} />
 
-          <div className="px-3 pb-1.5">
-            <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/60 px-1">最近</div>
-          </div>
-
-          {/* 搜索 + 状态 chip —— 历史归档多了用来快速定位 */}
-          <div className="px-3 pb-2 flex flex-col gap-2">
-            <div className="relative">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground/70 pointer-events-none" />
-              <input
-                type="text"
-                value={jobQuery}
-                onChange={e => setJobQuery(e.target.value)}
-                placeholder="搜索 stem / 演讲人 / 路由…"
-                title="聚焦搜索 (Cmd/Ctrl + K)"
-                className="w-full bg-card border rounded-md py-1.5 pl-8 pr-7 text-xs outline-none focus:border-primary transition-colors"
-              />
-              {jobQuery && (
-                <button
-                  type="button"
-                  onClick={() => setJobQuery("")}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 size-4 rounded-sm hover:bg-muted flex items-center justify-center"
-                  aria-label="清空搜索"
-                >
-                  <X className="size-3 text-muted-foreground" />
-                </button>
-              )}
-            </div>
-            <div className="flex items-center gap-1 flex-wrap">
-              {([
-                ["all", "全部"],
-                ["active", "进行中"],
-                ["waiting", "待审批"],
-                ["done", "已完成"],
-                ["failed", "失败"],
-              ] as const).map(([key, label]) => (
+          {/* 顶层导航（设计稿对齐）：32px 行高列表项，外 px-2.5 让激活底色保留 10px 侧边留白；
+              内 flex 容器承载圆角 6px 的激活底。颜色用 foreground/* token 走主题反转
+              （之前硬码 #f0f1f2 在 dark mode 成白亮块、文字鬼影；token 化后两态都对）。 */}
+          <nav className="px-0 pt-1 pb-1 flex flex-col gap-1">
+            {([
+              ["new", "新任务", IconNew],
+              ["start", "开始", IconStart],
+              ["library", "作品集", IconLibrary],
+              ["voice", "风格", IconVoice],
+            ] as const).map(([key, label, Icon]) => {
+              // 作品集激活态需排除"已切到回收站"的情况 —— 那时侧栏高亮归 回收站 项
+              const active = key === "new" ? launcherOpen
+                : key === "voice" ? showVoice
+                : key === "library" ? (currentView === "library" && libraryView === "library")
+                : currentView === key
+              const disabled = key === "new" && healthStatus === "offline"
+              return (
                 <button
                   key={key}
                   type="button"
-                  onClick={() => setJobFilter(key)}
+                  disabled={disabled}
+                  onClick={() => {
+                    if (key === "new") return startCreate()
+                    if (key === "voice") return setShowVoice(true)
+                    // 点「作品集」时把内部视图复位为 library（不然从回收站切走又切回还停在 trash）
+                    if (key === "library") setLibraryView("library")
+                    goPlace(key)
+                  }}
+                  title={key === "new" && disabled ? "后端离线时无法新建任务" : undefined}
                   className={cn(
-                    "px-2 py-0.5 text-[10px] rounded-full border transition-colors",
-                    jobFilter === key
-                      ? "bg-primary/15 border-primary/40 text-primary"
-                      : "bg-transparent border-border text-muted-foreground hover:text-foreground hover:border-foreground/30",
+                    "group flex items-center h-8 px-2.5 w-full text-left",
+                    disabled && "opacity-50 cursor-not-allowed",
                   )}
                 >
-                  {label}
+                  <span
+                    className={cn(
+                      "flex flex-1 items-center gap-1.5 h-full pl-2 pr-2.5 py-1 rounded-md min-w-0 transition-colors",
+                      active
+                        ? "bg-foreground/[0.08]"
+                        : "group-hover:bg-foreground/[0.04]",
+                    )}
+                  >
+                    <Icon className="size-4 shrink-0 text-foreground/85" />
+                    <span className="text-[13px] leading-4 font-medium text-foreground/85 truncate flex-1">
+                      {label}
+                    </span>
+                  </span>
                 </button>
-              ))}
-            </div>
+              )
+            })}
+          </nav>
+
+          {/* Sidebar 任务段头（2026-06 重设计）——
+              「任务」纯标题 + 紧邻的 ⌃/⌄ 收起按钮（含等我红点）；
+              ⚙ 永远钉在最右，收起态下也可见，供用户预设筛选。
+              旧的 scope dropdown + 内嵌搜索全部砍掉。 */}
+          <div className="flex items-center pl-[14px] pr-3 pt-[15px] pb-[5px] gap-1">
+            <span className="text-[11px] leading-[14px] text-foreground/70 select-none">任务</span>
+            <button
+              type="button"
+              onClick={() => setJobsCollapsed(c => !c)}
+              title={jobsCollapsed ? "展开任务列表" : "收起任务列表"}
+              aria-expanded={!jobsCollapsed}
+              aria-label={jobsCollapsed ? "展开任务列表" : "收起任务列表"}
+              className="size-5 rounded-md flex items-center justify-center text-foreground/70 hover:bg-foreground/[0.05] hover:text-foreground transition-colors"
+            >
+              {jobsCollapsed
+                ? <ChevronRight className="size-3 opacity-70" />
+                : <ChevronDown className="size-3 opacity-70" />}
+            </button>
+            {/* 收起态 + 等我项 > 0 时挂红点 —— 列表不可见时唯一的催办锚点。
+                展开态不挂：列表自身的智能置顶 + 黄/红状态点已经够强。 */}
+            {jobsCollapsed && needsMeCount > 0 && (
+              <span
+                className="size-1.5 rounded-full bg-destructive shrink-0"
+                title={`${needsMeCount} 个任务等你处理`}
+              />
+            )}
+            <div className="flex-1" />
+            <Popover>
+              <PopoverTrigger asChild>
+                <button
+                  type="button"
+                  aria-label="筛选与排序"
+                  title="筛选与排序"
+                  className={cn(
+                    // 默认透明；任一段非默认 → 灰底 + ring 提示"列表被筛过"。
+                    "size-6 rounded-md flex items-center justify-center transition-colors text-foreground/70",
+                    jobsFilterActive
+                      ? "bg-foreground/[0.08] text-foreground hover:bg-foreground/[0.1] ring-1 ring-foreground/15"
+                      : "hover:bg-foreground/[0.06]",
+                  )}
+                >
+                  <IconFilter className="size-3" />
+                </button>
+              </PopoverTrigger>
+              <PopoverContent align="end" sideOffset={4} className="w-44 p-1.5 gap-0">
+                <FilterRadioGroup
+                  label="状态"
+                  value={jobFilter}
+                  onChange={setJobFilter}
+                  options={[
+                    ["all", "全部"],
+                    ["needs_me", "仅等我"],
+                    ["active", "仅进行中"],
+                    ["done", "仅已完成"],
+                  ]}
+                />
+                <div className="my-1.5 border-t border-foreground/10" />
+                <FilterRadioGroup
+                  label="时间"
+                  value={jobTimeRange}
+                  onChange={setJobTimeRange}
+                  options={[
+                    ["any", "不限"],
+                    ["7d", "近 7 天"],
+                    ["30d", "近 30 天"],
+                  ]}
+                />
+                <div className="my-1.5 border-t border-foreground/10" />
+                <FilterRadioGroup
+                  label="排序"
+                  value={jobSort}
+                  onChange={setJobSort}
+                  options={[
+                    ["smart", "智能（推荐）"],
+                    ["updated", "最近更新"],
+                    ["created", "创建时间"],
+                  ]}
+                />
+              </PopoverContent>
+            </Popover>
           </div>
 
-          {/* Job list — live + historical 两段,历史按 path 去重避免和 live succeeded 重复 */}
-          <ScrollArea className="flex-1 min-h-0 px-2 pb-2">
-            <JobList
-              liveJobs={jobs}
-              historicalJobs={historicalJobs}
-              selectedId={selectedJobId}
-              query={jobQuery}
-              filter={jobFilter}
-              onSelect={(id) => { setSelectedJobId(id); setIsCreating(false); setShowSettings(false) }}
-            />
-          </ScrollArea>
+          {/* Job list — 展开态渲染；收起态用同位置的 flex-1 占位 div 吃掉剩余高度，
+              保证回收站 / 设置始终钉在 sidebar 底部，不随任务展开收起上下漂移。
+              `[&_[data-slot=scroll-area-viewport]>div]:!block` —— 覆盖 Radix viewport 内 inline
+              `display: table` 的横向膨胀 hack：侧栏只要竖滚，table 模式让长 stem 反向撑爆 sidebar 可视宽。 */}
+          {jobsCollapsed ? (
+            <div className="flex-1 min-h-0" aria-hidden />
+          ) : (
+            <ScrollArea className="flex-1 min-h-0 px-2 pb-2 [&_[data-slot=scroll-area-viewport]>div]:!block [&_[data-slot=scroll-area-viewport]>div]:!w-full">
+              <JobList
+                liveJobs={jobs}
+                historicalJobs={historicalJobs}
+                selectedId={selectedJobId}
+                query={jobQuery}
+                filter={jobFilter}
+                timeRange={jobTimeRange}
+                sortMode={jobSort}
+                onSelect={(id) => { setSelectedJobId(id); setShowSettings(false) }}
+                onDelete={handleDeleteJob}
+              />
+            </ScrollArea>
+          )}
 
-          {/* 用户/连接 页脚（Claude 侧栏底部气质，本地工具不伪造身份） */}
+          {/* 回收站全局入口 —— 跟「设置」同款 h-9 / 11px 字号视觉。上方 mt-2 与近期任务列表分组。
+              永远显示（空时不带 badge）；点击 → goPlace("library") + libraryView="trash"。 */}
+          {(() => {
+            const trashActive = currentView === "library" && libraryView === "trash"
+            return (
+              <button
+                type="button"
+                onClick={() => { setLibraryView("trash"); goPlace("library") }}
+                title={`回收站 · ${trashPosts.length} 篇待清理（30 天后自动清空）`}
+                className="group shrink-0 mt-2 mb-1 flex items-center h-9 px-2.5 w-full text-left"
+              >
+                <span className={cn(
+                  "flex flex-1 items-center gap-1.5 h-full pl-2 pr-2.5 py-1 rounded-md min-w-0 transition-colors",
+                  trashActive ? "bg-foreground/[0.08]" : "group-hover:bg-foreground/[0.04]",
+                )}>
+                  <Trash className="size-4 shrink-0 text-foreground/85" />
+                  <span className="text-[11px] leading-4 text-foreground/85 truncate flex-1">回收站</span>
+                  {trashPosts.length > 0 && (
+                    <span className="shrink-0 text-[10px] leading-none px-1.5 py-0.5 rounded-full bg-foreground/[0.08] text-foreground/70 font-medium">
+                      {trashPosts.length}
+                    </span>
+                  )}
+                </span>
+              </button>
+            )
+          })()}
+
+          {/* 页脚：极简「设置」行 —— 设计稿 24px 行高 / 11px label / 右侧连接指示灯 */}
           <button
             type="button"
             onClick={openSettings}
-            className="shrink-0 border-t px-2.5 py-2.5 flex items-center gap-2.5 text-left hover:bg-muted/40 transition-colors"
+            title={healthStatus === "online" ? `已连接 · ${API_BASE.replace(/^https?:\/\//, "")}` : "后端离线"}
+            className="group shrink-0 mb-2 flex items-center h-9 px-2.5 w-full text-left"
           >
-            <div className="size-7 shrink-0 rounded-full bg-primary/15 text-primary text-[11px] font-semibold flex items-center justify-center">
-              V2B
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="text-sm font-medium truncate">本地工作台</div>
-              <div className="text-[10px] text-muted-foreground flex items-center gap-1">
-                <span className={cn("size-1.5 rounded-full", healthStatus === "online" ? "bg-emerald-500" : "bg-destructive")} />
-                {healthStatus === "online" ? `已连接 · ${API_BASE.replace(/^https?:\/\//, "")}` : "后端离线"}
-              </div>
-            </div>
-            <Settings className="size-4 text-muted-foreground shrink-0" />
+            <span className="flex flex-1 items-center gap-1.5 h-full pl-2 pr-2.5 py-1 rounded-md min-w-0 transition-colors group-hover:bg-foreground/[0.04]">
+              <IconSettings className="size-4 shrink-0 text-foreground/85" />
+              <span className="text-[11px] leading-4 text-foreground/85 truncate flex-1">设置</span>
+              <span
+                aria-label={healthStatus === "online" ? "在线" : "离线"}
+                className={cn("size-1.5 rounded-full shrink-0", healthStatus === "online" ? "bg-success" : "bg-destructive")}
+              />
+            </span>
           </button>
+
+          {/* 拖拽手柄：右边缘 6px 命中区，idle 透明，hover 显细线，active 显主色；
+              双击复位到默认 256；拖到 <180 自动 snap-collapse（见 startSidebarDrag）。
+              仅在 pinned 状态下显示——hover-preview 是临时预览，调宽要求先 pin。 */}
+          {sidebarOpen && (
+            <div
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="调整侧栏宽度"
+              title="拖动调整宽度 · 双击复位"
+              onMouseDown={startSidebarDrag}
+              onDoubleClick={resetSidebarWidth}
+              className="group absolute top-1 bottom-1 -right-0.5 w-1.5 cursor-col-resize z-30"
+            >
+              <div className="absolute right-0 top-0 bottom-0 w-px bg-transparent group-hover:bg-foreground/20 group-active:bg-primary/50 transition-colors" />
+            </div>
+          )}
         </aside>
 
         {/* ─────── Main area ─────── */}
-        <main className="app-main flex-1 flex flex-col overflow-hidden">
-          {isCreating ? (
-            <CreateForm
-              source={source} setSource={setSource}
-              speaker={speaker} setSpeaker={handleSpeakerInput}
-              onDetectSpeaker={detectSpeakerAI} speakerHint={speakerHint} detectingSpeaker={detectingSpeaker}
-              routing={routing} setRouting={setRouting}
-              mode={mode} setMode={setMode}
-              maxRetries={maxRetries} setMaxRetries={setMaxRetries}
-              model={model} setModel={setModel}
-              force={force} setForce={setForce}
-              pauseOnOutline={pauseOnOutline} setPauseOnOutline={setPauseOnOutline}
-              rewriteStrategy={rewriteStrategy} setRewriteStrategy={setRewriteStrategy}
-              transcribeEngine={transcribeEngine} setTranscribeEngine={setTranscribeEngine}
-              profileId={profileId} setProfileId={setProfileId}
-              profileOptions={profileOptions}
-              defaultProfileId={defaultProfileId}
-              onOpenSettings={openSettings}
-              isSubmitting={isSubmittingJob}
-              healthOffline={healthStatus === "offline"}
-              transcriptionAvailable={transcriptionAvailable}
-              draftRestoredTs={draftRestoredTs}
-              onDiscardDraft={handleDiscardDraft}
-              onSubmit={handleCreateJob}
-              onCancel={() => setIsCreating(false)}
-            />
-          ) : showSettings ? (
-            <SettingsPanel onProfilesChanged={fetchProfiles} />
-          ) : selectedJob ? (
+        {/* Tahoe master-detail：主内容区是**实底**（中性浅灰），保证长文/表单可读；
+            玻璃只给 sidebar/控件（content over chrome ≠ 内容飘在桌面上）。
+            浏览器与 Tauri 都用 bg-background 实底。 */}
+        <main className="app-main flex-1 flex flex-col overflow-hidden bg-background">
+          {/* 主区顶部拖拽条：sidebar 卡片自带顶行后，这里补一条让主区也能拖动窗口 */}
+          {isTauri && <div className="h-7 shrink-0" data-tauri-drag-region />}
+          {healthStatus === "offline" && (
+            <div className="shrink-0 bg-destructive/15 border-y border-destructive/30 px-4 py-2 text-sm flex items-center gap-2 text-destructive">
+              <AlertCircle className="size-4 shrink-0" />
+              <span className="font-medium">后端服务离线</span>
+              <span className="text-destructive/80">
+                ·任务提交、批准、取消等操作已暂停。请运行
+                <code className="mx-1 text-xs bg-destructive/10 px-1 rounded">scripts/run_engine_server.py</code>
+                启动 FastAPI 服务。
+              </span>
+            </div>
+          )}
+          <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+          {selectedJob ? (
             <JobWorkspace
               job={selectedJob}
               activeTab={activeTab}
@@ -1360,6 +1670,8 @@ export default function App() {
               onCancel={handleCancelJob}
               onOpenInOS={openInOS}
               onRetry={handleRetryFromJob}
+              onRerunSame={handleRerunSameJob}
+              onDelete={handleDeleteJob}
               healthOffline={healthStatus === "offline"}
               sseStatus={sseStatus}
               lastEventAt={lastEventAt}
@@ -1375,10 +1687,13 @@ export default function App() {
           ) : place === "library" ? (
             <LibraryView
               historicalJobs={historicalJobs}
-              onOpenJob={(id) => { setSelectedJobId(id); setIsCreating(false); setShowSettings(false) }}
+              trashPosts={trashPosts}
+              onOpenJob={(id) => { setSelectedJobId(id); setShowSettings(false) }}
+              onDeletePost={handleDeletePost}
+              onRestoreTrash={handleRestoreTrash}
+              onPurgeTrash={handlePurgeTrash}
+              initialView={libraryView}
             />
-          ) : place === "voice" ? (
-            <VoiceView />
           ) : (
             <HomeView
               historicalJobs={historicalJobs}
@@ -1387,11 +1702,79 @@ export default function App() {
               onOpenSettings={openSettings}
               needsKey={!profileOptions.some(p => p.has_key)}
               healthOffline={healthStatus === "offline"}
-              defaultProfileName={profileOptions.find(p => p.id === defaultProfileId)?.name ?? null}
+              composer={
+                <Launcher
+                  variant="inline"
+                  ref={launcherRef}
+                  transcriptionAvailable={transcriptionAvailable}
+                  profileOptions={profileOptions}
+                  defaultProfileId={defaultProfileId}
+                  healthOffline={healthStatus === "offline"}
+                  onSubmit={handleLauncherSubmit}
+                  onOpenSettings={openSettings}
+                />
+              }
+              onFileDrop={(file) => { launcherRef.current?.uploadFile(file) }}
             />
           )}
+          </div>
         </main>
         </div>
+
+        {/* 搜索 modal：Cmd+K / 顶部 Search 按钮触发，命中后选中目标 job。 */}
+        <SearchModal
+          open={showSearch}
+          onClose={() => setShowSearch(false)}
+          jobs={jobs}
+          historicalJobs={historicalJobs}
+          onSelect={(id) => { setSelectedJobId(id); setShowSettings(false) }}
+        />
+
+        {/* 新建任务 overlay Launcher —— ⌘N / Tauri 菜单 / 侧栏 IconNew / HomeView composer / 重跑预填 都走这里。 */}
+        <Launcher
+          variant="overlay"
+          ref={overlayLauncherRef}
+          open={launcherOpen}
+          onClose={() => setLauncherOpen(false)}
+          transcriptionAvailable={transcriptionAvailable}
+          profileOptions={profileOptions}
+          defaultProfileId={defaultProfileId}
+          healthOffline={healthStatus === "offline"}
+          onSubmit={handleLauncherSubmit}
+          onOpenSettings={openSettings}
+        />
+
+        {/* 设置 modal（Claude Desktop 风）：半透明遮罩 + 居中卡片，浮在当前界面上。
+            点遮罩 / 右上 × / Esc 关闭；不切走主区。 */}
+        {showSettings && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6 animate-in fade-in duration-150"
+            onClick={() => setShowSettings(false)}
+          >
+            <div
+              className="relative bg-card rounded-xl border shadow-2xl w-full max-w-5xl h-[80vh] max-h-[760px] overflow-hidden flex flex-col"
+              onClick={e => e.stopPropagation()}
+            >
+              <button
+                type="button"
+                onClick={() => setShowSettings(false)}
+                aria-label="关闭设置"
+                className="absolute top-3 right-3 z-10 size-8 rounded-md flex items-center justify-center text-muted-foreground hover:bg-foreground/[0.06] hover:text-foreground transition-colors"
+              >
+                <X className="size-4" />
+              </button>
+              <SettingsPanel onProfilesChanged={fetchProfiles} />
+            </div>
+          </div>
+        )}
+
+        {/* 「风格」全屏二级页（Figma 样式）：覆盖主界面，自带 header（交通灯位 + 返回 + 标题）。
+            z-40 低于自绘交通灯(z-50)，交通灯浮在其 header 左上；返回箭头 / Esc 退出。 */}
+        {showVoice && (
+          <div className="fixed inset-0 z-40 bg-background animate-in fade-in duration-150">
+            <VoiceView onBack={() => setShowVoice(false)} />
+          </div>
+        )}
       </div>
     </TooltipProvider>
   )

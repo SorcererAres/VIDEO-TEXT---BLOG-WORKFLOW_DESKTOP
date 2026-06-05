@@ -1,16 +1,21 @@
 // 顶层"场所"视图：作品集 Library / 风格 Voice。
 // ④ 先立骨架（可用但简单），③ 把 Library 做成富作品墙、⑤ 把 Voice 做成文风表单 + 指纹画像。
 
-import { useEffect, useState, type ReactNode } from "react"
-import { Award, BookOpen, FileText, Gauge, PenLine, Sparkles } from "lucide-react"
+import { useEffect, useState } from "react"
+import { ArrowLeft, Award, BookOpen, FileText, Gauge, Sparkles, Trash2, RotateCcw, Trash } from "lucide-react"
 import { Empty, EmptyHeader, EmptyMedia, EmptyTitle, EmptyDescription } from "@/components/ui/empty"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { FilterChip } from "@/components/form-primitives"
 import { cn } from "@/lib/utils"
 import { API_BASE } from "@/lib/api"
-import { OverviewPanel } from "@/components/jobs"
 import { KnowledgeEditor } from "@/components/settings"
 import { formatRelativeOrAbsolute, type EngineJob } from "@/lib/job-types"
+import type { TrashPost } from "@/lib/trash-actions"
+
+// 运行在 Tauri 壳内（决定二级页 header 是否给浮入的交通灯留位）
+const isTauri = typeof window !== "undefined" && ("__TAURI_INTERNALS__" in window || "__TAURI__" in window)
 
 // ═══════════════════ 作品集 Library ═══════════════════
 
@@ -22,32 +27,15 @@ function libTime(j: EngineJob): number {
   return new Date((j.created_at || "").replace(" ", "T")).getTime() || 0
 }
 
-function FilterChip({ active, onClick, children }: { active: boolean; onClick: () => void; children: ReactNode }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        "px-2.5 py-0.5 text-xs rounded-full border transition-colors",
-        active
-          ? "bg-primary/15 border-primary/40 text-primary"
-          : "border-border text-muted-foreground hover:text-foreground hover:border-foreground/30",
-      )}
-    >
-      {children}
-    </button>
-  )
-}
-
 // 质检校准：用 P7 处置（直接用/改了/重写）当 ground truth，反查 Step 7 自评分是否过于自信。
 // 纯前端 join：dispositions(/api/dispositions) × historicalJobs.pass_score，按处置分桶算质检均值。
 const CALIB_ROWS: { key: string; label: string; tone: string }[] = [
-  { key: "used", label: "👍 直接用了", tone: "bg-emerald-500" },
-  { key: "edited", label: "✍️ 改了改", tone: "bg-amber-500" },
-  { key: "rewrote", label: "🔁 重写了", tone: "bg-rose-500" },
+  { key: "used", label: "👍 直接用了", tone: "bg-success" },
+  { key: "edited", label: "✍️ 改了改", tone: "bg-warning" },
+  { key: "rewrote", label: "🔁 重写了", tone: "bg-danger" },
 ]
 
-function CalibrationPanel({ historicalJobs }: { historicalJobs: EngineJob[] }) {
+export function CalibrationPanel({ historicalJobs }: { historicalJobs: EngineJob[] }) {
   const [dispo, setDispo] = useState<Record<string, { value?: string } | undefined> | null>(null)
   useEffect(() => {
     let alive = true
@@ -124,13 +112,28 @@ function CalibrationPanel({ historicalJobs }: { historicalJobs: EngineJob[] }) {
 
 export function LibraryView({
   historicalJobs,
+  trashPosts,
   onOpenJob,
+  onDeletePost,
+  onRestoreTrash,
+  onPurgeTrash,
+  initialView = "library",
 }: {
   historicalJobs: EngineJob[]
+  trashPosts: TrashPost[]
   onOpenJob: (id: string) => void
+  // PR #6：作品集卡片 hover × → 移到回收站
+  onDeletePost: (job: EngineJob) => void
+  onRestoreTrash: (trash: TrashPost) => void
+  onPurgeTrash: (trash: TrashPost) => void
+  // 受控：sidebar 底部「回收站」入口切到 trash 时由 App.tsx 推过来
+  initialView?: "library" | "trash"
 }) {
   const [filter, setFilter] = useState<"all" | "formal" | "draft">("all")
   const [sort, setSort] = useState<"new" | "old" | "score">("new")
+  // 二级视图：作品集墙 ↔ 回收站；跟 initialView 同步（外部改时一并切）
+  const [view, setView] = useState<"library" | "trash">(initialView)
+  useEffect(() => { setView(initialView) }, [initialView])
 
   const all = historicalJobs.filter(j => j.kind === "historical")
   const posts = all
@@ -144,21 +147,33 @@ export function LibraryView({
   return (
     <div className="flex-1 overflow-hidden flex flex-col">
       <div className="px-8 pt-8 pb-4 shrink-0 flex flex-col gap-4">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight flex items-center gap-2">
-            <BookOpen className="size-5 text-primary" />
-            作品集
-          </h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            你攒下的全部成品 · 共 {all.length} 篇。点开任意一篇重读。
-          </p>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h1 className="text-heading-md font-semibold tracking-tight flex items-center gap-2 font-heading">
+              {view === "trash" ? (
+                <>
+                  <Trash className="size-5 text-foreground/70" />
+                  回收站
+                </>
+              ) : (
+                <>
+                  <BookOpen className="size-5 text-primary" />
+                  作品集
+                </>
+              )}
+            </h1>
+            <p className="text-sm text-muted-foreground mt-1">
+              {view === "trash"
+                ? `${trashPosts.length} 篇待清理 · 删除后 30 天内可还原，过期自动清空。`
+                : `你攒下的全部成品 · 共 ${all.length} 篇。点开任意一篇重读。`}
+            </p>
+          </div>
+          {/* 回收站入口已搬到 sidebar 底部（全局可达）。trash 视图下点 sidebar 「作品集」即可回作品集墙。 */}
         </div>
 
-        <OverviewPanel historicalJobs={historicalJobs} />
+        {view === "library" && <FingerprintPanel />}
 
-        {all.length > 0 && <CalibrationPanel historicalJobs={historicalJobs} />}
-
-        {all.length > 0 && (
+        {view === "library" && all.length > 0 && (
           <div className="flex items-center gap-3 flex-wrap">
             <div className="flex items-center gap-1">
               {([["all", "全部"], ["formal", "正式"], ["draft", "草稿"]] as const).map(([k, l]) => (
@@ -175,7 +190,14 @@ export function LibraryView({
         )}
       </div>
 
-      {all.length === 0 ? (
+      {/* view 分支：作品集墙 vs 回收站 */}
+      {view === "trash" ? (
+        <TrashContent
+          trashPosts={trashPosts}
+          onRestoreTrash={onRestoreTrash}
+          onPurgeTrash={onPurgeTrash}
+        />
+      ) : all.length === 0 ? (
         <div className="flex-1 flex items-center justify-center">
           <Empty>
             <EmptyHeader>
@@ -193,33 +215,130 @@ export function LibraryView({
         <ScrollArea className="flex-1 min-h-0">
           <div className="px-8 pb-8 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
             {posts.map(job => (
-              <button
-                key={job.id}
-                type="button"
-                onClick={() => onOpenJob(job.id)}
-                className="text-left rounded-lg border bg-card hover:border-primary/40 hover:shadow-sm transition-all p-4 flex flex-col gap-2 min-h-[7rem]"
-              >
-                <div className="flex items-start justify-between gap-2">
-                  <FileText className="size-4 text-muted-foreground shrink-0 mt-0.5" />
-                  {job.is_draft ? (
-                    <Badge variant="outline" className="text-[10px] shrink-0">DRAFT</Badge>
-                  ) : job.pass_score ? (
-                    <span className="text-[10px] text-emerald-600 flex items-center gap-0.5 shrink-0">
-                      <Award className="size-3" />{job.pass_score}
-                    </span>
-                  ) : null}
-                </div>
-                <div className="text-sm font-medium leading-snug line-clamp-3 flex-1">{job.stem}</div>
-                <div className="text-[11px] text-muted-foreground flex items-center gap-1.5">
-                  <span>{formatRelativeOrAbsolute(job.created_at)}</span>
-                  {job.request?.routing && <span className="text-muted-foreground/50">· {job.request.routing}</span>}
-                </div>
-              </button>
+              <div key={job.id} className="relative group">
+                <button
+                  type="button"
+                  onClick={() => onOpenJob(job.id)}
+                  className="text-left w-full rounded-lg border bg-card hover:border-primary/40 hover:shadow-sm transition-all p-4 flex flex-col gap-2 min-h-[7rem]"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <FileText className="size-4 text-muted-foreground shrink-0 mt-0.5" />
+                    {job.is_draft ? (
+                      <Badge variant="outline" className="text-caption-sm shrink-0">DRAFT</Badge>
+                    ) : job.pass_score ? (
+                      <span className="text-caption-sm text-success flex items-center gap-0.5 shrink-0">
+                        <Award className="size-3" />{job.pass_score}
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="text-sm font-medium leading-snug line-clamp-3 flex-1">{job.stem}</div>
+                  <div className="text-caption-sm text-muted-foreground flex items-center gap-1.5">
+                    <span>{formatRelativeOrAbsolute(job.created_at)}</span>
+                    {job.request?.routing && <span className="text-muted-foreground/50">· {job.request.routing}</span>}
+                  </div>
+                </button>
+                {/* PR #6 · hover 出红垃圾桶 → 移到回收站。stopPropagation 避免触发外层 onOpenJob。
+                    位置改 bottom-right：top-right 留给质检 badge / DRAFT 标，物理分区不再重叠
+                    （GitHub / Apple Files / Fitts's Law 派——破坏性低频远离视觉锚点）。 */}
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); onDeletePost(job) }}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  title="移到回收站（30 天可恢复）"
+                  aria-label="删除文章"
+                  className={cn(
+                    "absolute bottom-2 right-2 size-7 rounded-md flex items-center justify-center",
+                    "text-foreground/50 hover:text-destructive hover:bg-destructive/15",
+                    "opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
+                    "transition-opacity transition-colors outline-none focus-visible:ring-2 focus-visible:ring-destructive/40",
+                  )}
+                >
+                  <Trash2 className="size-4" />
+                </button>
+              </div>
             ))}
           </div>
         </ScrollArea>
       )}
     </div>
+  )
+}
+
+// ─── 回收站内容（Library 内部二级视图） ──────────────────────────────
+function TrashContent({ trashPosts, onRestoreTrash, onPurgeTrash }: {
+  trashPosts: TrashPost[]
+  onRestoreTrash: (t: TrashPost) => void
+  onPurgeTrash: (t: TrashPost) => void
+}) {
+  if (trashPosts.length === 0) {
+    return (
+      <div className="flex-1 flex items-center justify-center">
+        <Empty>
+          <EmptyHeader>
+            <EmptyMedia variant="icon"><Trash /></EmptyMedia>
+            <EmptyTitle>回收站是空的</EmptyTitle>
+            <EmptyDescription>删除的作品会先到这里，30 天后自动清空。</EmptyDescription>
+          </EmptyHeader>
+        </Empty>
+      </div>
+    )
+  }
+  return (
+    <ScrollArea className="flex-1 min-h-0">
+      <div className="px-8 pb-8 flex flex-col gap-2">
+        {trashPosts.map(t => {
+          const deletedAt = new Date(t.deleted_at * 1000)
+          const urgent = t.days_until_purge <= 3
+          // 原文件名去掉日期前缀（output/Posts 命名约定：YYYY-MM-DD-中文标题.md）后显示
+          const titleOnly = t.original_name
+            .replace(/\.md$/, "")
+            .replace(/^(DRAFT-)?(\d{4}-\d{2}-\d{2}-)/, "$1")
+          return (
+            <div
+              key={t.trash_id}
+              className="rounded-lg border bg-card/60 p-4 flex items-center gap-4"
+            >
+              <FileText className="size-4 text-muted-foreground/70 shrink-0" />
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium truncate">{titleOnly}</div>
+                <div className="text-caption-sm text-muted-foreground mt-0.5 flex items-center gap-2 flex-wrap">
+                  <span>原位置 output/Posts/{t.year}/</span>
+                  <span className="text-muted-foreground/50">·</span>
+                  <span>{formatRelativeOrAbsolute(deletedAt.toISOString())} 删除</span>
+                  <span className="text-muted-foreground/50">·</span>
+                  <span className={urgent ? "text-destructive" : ""}>
+                    剩 {t.days_until_purge} 天后清空
+                  </span>
+                </div>
+              </div>
+              <div className="flex items-center gap-1 shrink-0">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => onRestoreTrash(t)}
+                  title="还原到原位置"
+                >
+                  <RotateCcw data-icon="inline-start" />
+                  还原
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => onPurgeTrash(t)}
+                  title="永久删除（不可恢复）"
+                  className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                >
+                  <Trash2 data-icon="inline-start" />
+                  永久删
+                </Button>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </ScrollArea>
   )
 }
 
@@ -273,12 +392,12 @@ function FingerprintPanel() {
 
       <div className="flex flex-wrap gap-x-8 gap-y-4 items-end">
         <div className="shrink-0">
-          <div className="text-2xl font-semibold tabular-nums">{data.avg_sentence_len ?? "—"}<span className="text-sm font-normal text-muted-foreground ml-1">字</span></div>
-          <div className="text-[11px] text-muted-foreground mt-0.5">平均句长</div>
+          <div className="text-heading-lg font-semibold tabular-nums">{data.avg_sentence_len ?? "—"}<span className="text-sm font-normal text-muted-foreground ml-1">字</span></div>
+          <div className="text-caption-sm text-muted-foreground mt-0.5">平均句长</div>
         </div>
         <div className="shrink-0">
-          <div className="text-2xl font-semibold tabular-nums">{data.avg_paragraph_len ?? "—"}<span className="text-sm font-normal text-muted-foreground ml-1">字</span></div>
-          <div className="text-[11px] text-muted-foreground mt-0.5">平均段长</div>
+          <div className="text-heading-lg font-semibold tabular-nums">{data.avg_paragraph_len ?? "—"}<span className="text-sm font-normal text-muted-foreground ml-1">字</span></div>
+          <div className="text-caption-sm text-muted-foreground mt-0.5">平均段长</div>
         </div>
 
         {/* 句长走势：每篇一根条，按时间正序 */}
@@ -293,13 +412,13 @@ function FingerprintPanel() {
               />
             ))}
           </div>
-          <div className="text-[11px] text-muted-foreground mt-1">句长走势（早 → 近）</div>
+          <div className="text-caption-sm text-muted-foreground mt-1">句长走势（早 → 近）</div>
         </div>
       </div>
 
       {data.top_terms.length > 0 && (
         <div>
-          <div className="text-[11px] text-muted-foreground mb-1.5">你反复在用的词</div>
+          <div className="text-caption-sm text-muted-foreground mb-1.5">你反复在用的词</div>
           <div className="flex flex-wrap gap-x-2.5 gap-y-1 items-baseline">
             {data.top_terms.map(t => (
               <span
@@ -318,23 +437,27 @@ function FingerprintPanel() {
   )
 }
 
-export function VoiceView() {
+// 「风格」全屏二级页（Figma 样式）：顶部 header（交通灯留位 + 返回 + 标题）+ 左 nav/右内容（KnowledgeEditor）。
+export function VoiceView({ onBack }: { onBack: () => void }) {
   return (
-    <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-      <div className="px-8 pt-8 pb-4 shrink-0 flex flex-col gap-4">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight flex items-center gap-2">
-            <PenLine className="size-5 text-primary" />
-            风格
-          </h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            别的工具写出来是「AI 的第三人称摘要」；这里写出来是「你的第一人称署名长文」——
-            靠的就是下面这套可编辑的文风合同，加上你历史成品沉淀出的风格指纹。
-          </p>
-        </div>
-        <FingerprintPanel />
-        <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground/60">文风合同 · 直接编辑</div>
-      </div>
+    <div className="flex flex-col h-full min-h-0">
+      {/* header：Tauri 下左侧留出浮入的交通灯位；返回箭头退出二级页；整行可拖拽窗口 */}
+      <header
+        className="h-[52px] shrink-0 flex items-center gap-2 border-b px-3"
+        data-tauri-drag-region={isTauri || undefined}
+      >
+        {isTauri && <div className="w-[68px] shrink-0" aria-hidden />}
+        <button
+          type="button"
+          onClick={onBack}
+          aria-label="返回"
+          data-tauri-drag-region={false}
+          className="size-6 shrink-0 rounded-md flex items-center justify-center text-muted-foreground hover:bg-foreground/[0.06] hover:text-foreground transition-colors"
+        >
+          <ArrowLeft className="size-3" />
+        </button>
+        <h1 className="text-body-md font-semibold font-heading">风格</h1>
+      </header>
       <div className="flex-1 min-h-0 flex flex-col">
         <KnowledgeEditor />
       </div>
