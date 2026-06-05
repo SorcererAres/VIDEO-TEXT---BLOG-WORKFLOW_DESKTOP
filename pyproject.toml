@@ -24,7 +24,9 @@ dependencies = [
 
 [project.optional-dependencies]
 # 开发期工具链（不随运行时分发）：`pip install -e ".[dev]"` 安装。
-dev = ["ruff>=0.6"]
+# httpx 是 fastapi.testclient.TestClient 的硬依赖（测试用）：macOS 上由 mlx-whisper
+# 依赖链顺带装入，但 Linux CI 跳过 mlx-whisper，故必须显式声明，否则测试导入即失败。
+dev = ["ruff>=0.6", "httpx>=0.27"]
 
 [project.scripts]
 video2blog = "video2blog.cli.main:main"
