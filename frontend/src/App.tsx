@@ -62,6 +62,8 @@ import { readOutlineDraft, writeOutlineDraft, clearOutlineDraft, readDraftEdit, 
 import { FilterRadioGroup } from '@/components/FilterRadioGroup'
 import { useSidebarLayout } from '@/lib/use-sidebar-layout'
 import { useJobListFilters } from '@/lib/use-job-list-filters'
+import { useJobStatusNotifications } from '@/lib/use-job-status-notifications'
+import { isTauri } from '@/lib/is-tauri'
 
 // 任务数据类型 + 跨视图的小工具搬到 lib/job-types.ts，下方按需 import。
 
@@ -75,8 +77,7 @@ try { localStorage.removeItem("v2b_create_draft") } catch { /* ignore */ }
 // 2026-06 重设计后 JobList 已不读取 sessionIds（scope=session 维度砍掉），但 App.tsx
 // 提交时仍 push —— 给 ⌘K 搜索的"最近提交"加权预留，且写入成本可忽略。
 
-// 是否运行在 Tauri 壳内（决定交通灯留白 / vibrancy 等原生壳专属处理）
-const isTauri = typeof window !== "undefined" && ("__TAURI_INTERNALS__" in window || "__TAURI__" in window)
+// isTauri 下沉到 lib/is-tauri.ts（App 与 hook 共用单一来源）。
 
 // 任务 ⚙ popover 里的单段 radio group（FilterRadioGroup）搬到 components/FilterRadioGroup.tsx。
 
@@ -163,11 +164,6 @@ export default function App() {
   const sseAttemptsRef = useRef(0)
   const sseReconnectTimerRef = useRef<number | null>(null)
   const sseTargetJobRef = useRef<string | null>(null)
-
-  // 状态跃迁通知：记录上一轮每个 job 的「通知意义」复合状态，只在真正发生跃迁时提醒。
-  // 这样切换查看历史/已完成任务时（SSE 重放历史事件、列表状态不变）绝不会误弹。
-  const prevJobStatesRef = useRef<Map<string, string>>(new Map())
-  const jobsNotifyInitRef = useRef(false)
 
   // 外观跟随系统：由 main.tsx 的 next-themes ThemeProvider 接管（浅/深/自动），
   // 不再强制 .dark。用户可在 Settings 手动覆盖三态。
@@ -429,66 +425,10 @@ export default function App() {
     }
   }
 
-  // 任务状态提醒。前台（窗口聚焦）用轻量 toast 不打扰；Tauri 壳里窗口失焦/后台时
-  // 改走 macOS 系统通知中心（可点击唤回）。非 Tauri（浏览器）一律 toast。
-  const toastJobEvent = (kind: "info" | "success" | "error", title: string, body: string) => {
-    if (kind === "success") toast.success(title, { description: body })
-    else if (kind === "error") toast.error(title, { description: body })
-    else toast(title, { description: body, icon: <Pause /> })
-  }
-  const notifyJobEvent = (kind: "info" | "success" | "error", title: string, body: string) => {
-    const inForeground = typeof document !== "undefined" && document.hasFocus()
-    if (!isTauri || inForeground) { toastJobEvent(kind, title, body); return }
-    // 后台 + Tauri：送系统通知中心；权限未授予 / 出错则回退 toast（回前台仍可见）
-    void (async () => {
-      try {
-        const n = await import("@tauri-apps/plugin-notification")
-        let granted = await n.isPermissionGranted()
-        if (!granted) granted = (await n.requestPermission()) === "granted"
-        if (granted) n.sendNotification({ title, body })
-        else toastJobEvent(kind, title, body)
-      } catch {
-        toastJobEvent(kind, title, body)
-      }
-    })()
-  }
-
-  // 一个 job 的「通知意义」复合键：paused 要区分卡在哪个人工节点。
-  const jobNotifyKey = (j: EngineJob) =>
-    j.status === "paused" ? `paused:${j.paused_state ?? ""}` : j.status
-
-  // 对比上一轮 jobs，对发生状态跃迁的任务发提醒。首轮只建立基线、不提醒
-  //（否则启动时会把 restore 出来的旧 paused/succeeded 任务全弹一遍）。
-  // 首次见到的新任务也只记录不弹，只有「已知任务的状态变了」才提醒。
-  const detectStatusTransitions = (newJobs: EngineJob[]) => {
-    const prev = prevJobStatesRef.current
-    const next = new Map<string, string>()
-    for (const j of newJobs) next.set(j.id, jobNotifyKey(j))
-
-    if (jobsNotifyInitRef.current) {
-      for (const j of newJobs) {
-        const before = prev.get(j.id)
-        const after = next.get(j.id)!
-        if (before === undefined || before === after) continue
-        if (after === "paused:WAITING_USER_OUTLINE") {
-          notifyJobEvent("info", "等你审批大纲", `「${j.stem}」Step 5 已生成 outline.md`)
-        } else if (after === "paused:WAITING_USER_REVIEW") {
-          notifyJobEvent("info", "等你审稿", `「${j.stem}」请打开「草稿与质检」`)
-        } else if (after === "succeeded") {
-          notifyJobEvent("success", "博文生成完成", `「${j.stem}」成品已落盘 output/Posts/`)
-        } else if (after === "failed") {
-          notifyJobEvent("error", "任务失败", `「${j.stem}」${j.error ? "：" + j.error.slice(0, 80) : ""}`)
-        }
-      }
-    }
-    prevJobStatesRef.current = next
-    jobsNotifyInitRef.current = true
-  }
-
-  // DECOUPLE Round 2：fetchJobs / fetchHistory / fetchTrash 已下沉到
-  // useTasks / usePosts / useTrash。这里把"列表状态跃迁通知"注入任务 store：
-  // detectStatusTransitions 定义在 hook 调用点之后，用 ref 注入规避 TDZ，
-  // 每次 render 刷新为最新闭包，fetchTasks 拉到新数据时即会调用它。
+  // 任务列表的状态跃迁提醒（toast/系统通知）抽到 lib/use-job-status-notifications.tsx。
+  // DECOUPLE Round 2：把返回的 detectStatusTransitions 注入任务 store —— 每次 render
+  // 刷新为最新闭包，fetchTasks 拉到新数据时即会调用它（据真实状态跃迁发提醒）。
+  const { detectStatusTransitions } = useJobStatusNotifications()
   tasksOnDataRef.current = detectStatusTransitions
 
   // 拉配置档列表 —— Launcher 通过 props 接收；SettingsForm 改动后也会回调刷新。
@@ -1548,12 +1488,3 @@ export default function App() {
 
 
 
-// ═══════════════════ Pause icon for toast ═══════════════════
-function Pause() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="size-4">
-      <rect x="6" y="4" width="4" height="16" rx="1" />
-      <rect x="14" y="4" width="4" height="16" rx="1" />
-    </svg>
-  )
-}
