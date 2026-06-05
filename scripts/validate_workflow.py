@@ -53,10 +53,13 @@ def markdown_rows(path: Path) -> list[list[str]]:
 
 
 def check_placeholders(repo: Path, errors: list[str]) -> None:
+    # PREFERENCES / CONFIG 是入库的契约文件，必须在；HISTORY.md 是运行时生成的索引，
+    # 全新仓库（如 CI 全新 checkout）尚不存在属正常——存在才扫占位符。
     for rel in ("memory/PREFERENCES.md", "memory/CONFIG.md", "memory/HISTORY.md"):
         path = repo / rel
         if not path.exists():
-            errors.append(f"missing {rel}")
+            if rel != "memory/HISTORY.md":
+                errors.append(f"missing {rel}")
             continue
         for lineno, line in enumerate(read(path).splitlines(), start=1):
             if line.strip().startswith(">") or line.strip().startswith("```"):
@@ -80,8 +83,7 @@ def check_workflow_docs(repo: Path, errors: list[str]) -> None:
 def check_history(repo: Path, errors: list[str]) -> None:
     path = repo / "memory/HISTORY.md"
     if not path.exists():
-        errors.append("missing memory/HISTORY.md")
-        return
+        return  # 运行时生成的索引；全新仓库尚不存在属正常
     rows = [
         row
         for row in markdown_rows(path)
@@ -122,9 +124,14 @@ def check_posts(repo: Path, errors: list[str], *, lenient: bool) -> None:
 
 def check_fingerprints(repo: Path, errors: list[str]) -> None:
     posts_root = repo / "output/Posts"
-    fingerprints_path = repo / "memory/fingerprints.jsonl"
     if not posts_root.exists():
         return
+    # 只有存在已发布成品才需要指纹；fingerprints.jsonl 是运行时产物，
+    # 空仓库（如 CI 全新 checkout，无任何成品）不要求它存在。
+    published = [p for p in posts_root.glob("**/*.md") if not is_draft_post(p)]
+    if not published:
+        return
+    fingerprints_path = repo / "memory/fingerprints.jsonl"
     if not fingerprints_path.exists():
         errors.append("missing memory/fingerprints.jsonl")
         return
@@ -142,9 +149,7 @@ def check_fingerprints(repo: Path, errors: list[str]) -> None:
         if isinstance(path, str) and path:
             records.add(path)
 
-    for path in posts_root.glob("**/*.md"):
-        if is_draft_post(path):
-            continue
+    for path in published:
         rel = str(path.relative_to(repo))
         if rel not in records:
             errors.append(f"{rel} missing fingerprint record")
