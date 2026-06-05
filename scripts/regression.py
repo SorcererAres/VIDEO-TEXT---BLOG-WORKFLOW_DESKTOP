@@ -194,8 +194,16 @@ def setup_tmp_repo(source_repo: Path, tmp_root: Path) -> None:
 
     mem = tmp_root / "memory"
     mem.mkdir(parents=True, exist_ok=True)
-    for name in ("PREFERENCES.md", "CONFIG.md", "HISTORY.md"):
+    for name in ("PREFERENCES.md", "CONFIG.md"):
         shutil.copy2(source_repo / "memory" / name, mem / name)
+    # HISTORY 从固定最小表头开始：保持确定性，且不依赖本地 gitignored 的运行产物
+    # （CI 全新 checkout 里没有 memory/HISTORY.md）；引擎会在跑完后 upsert 本篇。
+    (mem / "HISTORY.md").write_text(
+        "# 近期博文索引\n保留最近 10 篇。\n\n"
+        "| 日期 | 标题 | 演讲人 | 一句摘要（演讲人视角） | 成品路径 |\n"
+        "|---|---|---|---|---|\n",
+        encoding="utf-8",
+    )
     # fingerprints 从空开始：让引擎 upsert 之后验证"本篇被记录"
     (mem / "fingerprints.jsonl").write_text("", encoding="utf-8")
 

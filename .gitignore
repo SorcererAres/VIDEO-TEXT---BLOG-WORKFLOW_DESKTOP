@@ -36,7 +36,9 @@ frontend/src-tauri/backend/
 .DS_Store
 .claude/
 .codex/
-.cursor/
+# .cursor/ 整体忽略（IDE 状态），但 skills/ 是引擎承重合同（Step 3–8 的 SKILL.md），必须入库
+.cursor/*
+!.cursor/skills/
 .qoder/
 .idea/
 .vscode/
