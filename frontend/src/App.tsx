@@ -51,18 +51,19 @@ import {
 import {
   type EngineJob,
   type EngineJobRequest,
-  type ReviewJson,
 } from '@/lib/job-types'
 import { pushSessionJobId } from '@/lib/session-jobs'
 // DECOUPLE Round 2：任务 / 作品 / 回收站三套数据源各自成 hook。
 import { useTasks } from '@/lib/use-tasks'
 import { usePosts } from '@/lib/use-posts'
 import { useTrash } from '@/lib/use-trash'
-import { readOutlineDraft, writeOutlineDraft, clearOutlineDraft, readDraftEdit, writeDraftEdit, clearDraftEdit } from '@/lib/draft-storage'
+import { clearOutlineDraft, clearDraftEdit } from '@/lib/draft-storage'
 import { FilterRadioGroup } from '@/components/FilterRadioGroup'
 import { useSidebarLayout } from '@/lib/use-sidebar-layout'
 import { useJobListFilters } from '@/lib/use-job-list-filters'
 import { useJobStatusNotifications } from '@/lib/use-job-status-notifications'
+import { useOutlineEditor } from '@/lib/use-outline-editor'
+import { useDraftEditor } from '@/lib/use-draft-editor'
 import { isTauri } from '@/lib/is-tauri'
 
 // 任务数据类型 + 跨视图的小工具搬到 lib/job-types.ts，下方按需 import。
@@ -124,19 +125,18 @@ export default function App() {
 
   // Settings 表单已自包含（自行从后端 GET /api/llm-config 加载 + 保存），父级不再持有 LLM 配置 state。
 
-  // Outline Editing state —— 默认预览(渲染后博文),需要改结构再切源码
-  const [outlineText, setOutlineText] = useState("")
-  const [isSubmittingOutline, setIsSubmittingOutline] = useState(false)
-  const [outlineViewMode, setOutlineViewMode] = useState<"edit" | "preview">("preview")
-  // 如果加载时发现本地有未提交的草稿(跟后端原始不一致),记下时间戳用于显示恢复 banner
-  const [outlineDraftRestoredTs, setOutlineDraftRestoredTs] = useState<number | null>(null)
-
-  // Review & Draft state —— draftContent 可编辑;分屏 / 草稿恢复都跟 OutlineView 一致
-  const [draftContent, setDraftContent] = useState("")
-  const [reviewJson, setReviewJson] = useState<ReviewJson | null>(null)
-  const [isSubmittingDraft, setIsSubmittingDraft] = useState(false)
-  const [draftViewMode, setDraftViewMode] = useState<"edit" | "preview">("preview")
-  const [draftEditRestoredTs, setDraftEditRestoredTs] = useState<number | null>(null)
+  // 大纲编辑器 / 草稿与质检 的状态 + 本地草稿自动存档 + 加载器抽到
+  // lib/use-outline-editor.ts、lib/use-draft-editor.ts；审批提交仍留 App（联动 startSse/fetchJobs）。
+  const {
+    outlineText, setOutlineText, isSubmittingOutline, setIsSubmittingOutline,
+    outlineViewMode, setOutlineViewMode, outlineDraftRestoredTs, setOutlineDraftRestoredTs,
+    loadOutline,
+  } = useOutlineEditor(selectedJob)
+  const {
+    draftContent, setDraftContent, reviewJson,
+    isSubmittingDraft, setIsSubmittingDraft, draftViewMode, setDraftViewMode,
+    draftEditRestoredTs, setDraftEditRestoredTs, loadDraftAndReview,
+  } = useDraftEditor(selectedJob)
 
   // 旧 CreateForm state（source/speaker/routing/mode/...）PR #3 已全部下放到 Launcher 内部。
   // App.tsx 只保留 profile 列表，因为 Launcher 通过 props 接收，且 Settings/重跑等也需要 fetch。
@@ -168,30 +168,6 @@ export default function App() {
   // 外观跟随系统：由 main.tsx 的 next-themes ThemeProvider 接管（浅/深/自动），
   // 不再强制 .dark。用户可在 Settings 手动覆盖三态。
 
-  // OutlineView 编辑器草稿自动存档 —— 仅在 paused 状态下保存,
-  // 因为只有这个状态用户才能/才会去编辑 outline。
-  // 节流 800ms,避免连续按键写穿 localStorage。
-  const sjId = selectedJob?.id
-  const sjStatus = selectedJob?.status
-  const sjIsHistorical = selectedJob?.kind === "historical"
-  useEffect(() => {
-    if (!sjId || sjIsHistorical || sjStatus !== "paused") return
-    if (!outlineText) return
-    const timer = window.setTimeout(() => {
-      writeOutlineDraft(sjId, outlineText)
-    }, 800)
-    return () => window.clearTimeout(timer)
-  }, [outlineText, sjId, sjStatus, sjIsHistorical])
-
-  // DraftReviewView 编辑器草稿同步 —— 跟 outline 一样的节流策略
-  useEffect(() => {
-    if (!sjId || sjIsHistorical || sjStatus !== "paused") return
-    if (!draftContent) return
-    const timer = window.setTimeout(() => {
-      writeDraftEdit(sjId, draftContent)
-    }, 800)
-    return () => window.clearTimeout(timer)
-  }, [draftContent, sjId, sjStatus, sjIsHistorical])
 
   // Check health and load jobs initially —— 标签页隐藏时暂停轮询,省电省后端
   useEffect(() => {
@@ -571,80 +547,7 @@ export default function App() {
   }
 
   // force=true: 跳过本地草稿,强制采用后端原始 outline
-  const loadOutline = async (jobId: string, force = false) => {
-    try {
-      const res = await fetch(API_BASE + `/jobs/${jobId}/files/outline`)
-      if (!res.ok) return
-      const data = await res.json()
-      const fetched: string = data.content
-      if (!force) {
-        const draft = readOutlineDraft(jobId)
-        // 本地草稿存在 + 跟后端原始不一致 → 恢复并提示
-        if (draft && draft.content !== fetched) {
-          setOutlineText(draft.content)
-          setOutlineDraftRestoredTs(draft.ts)
-          return
-        }
-      }
-      setOutlineText(fetched)
-      setOutlineDraftRestoredTs(null)
-      clearOutlineDraft(jobId)
-      // tab 切换由 selectedJob useEffect 统一管，loader 不再 setActiveTab —— 避免异步完成后覆盖用户手切的 tab。
-    } catch (e) {
-      console.warn("No outline.md yet", e)
-    }
-  }
-
-  // force=true: 跳过本地编辑草稿,强制采用后端原始 draft
-  const loadDraftAndReview = async (jobId: string, force = false) => {
-    try {
-      const draftRes = await fetch(API_BASE + `/jobs/${jobId}/files/draft`)
-      if (draftRes.ok) {
-        const draftData = await draftRes.json()
-        const fetched: string = draftData.content
-        let used = fetched
-        if (!force) {
-          const edit = readDraftEdit(jobId)
-          if (edit && edit.content !== fetched) {
-            used = edit.content
-            setDraftEditRestoredTs(edit.ts)
-          } else {
-            setDraftEditRestoredTs(null)
-            clearDraftEdit(jobId)
-          }
-        } else {
-          setDraftEditRestoredTs(null)
-          clearDraftEdit(jobId)
-        }
-        setDraftContent(used)
-        // tab 切换由 selectedJob useEffect 统一管，loader 不再 setActiveTab
-      }
-      const reviewRes = await fetch(API_BASE + `/jobs/${jobId}/files/review_json`)
-      if (reviewRes.ok) {
-        // 后端 /jobs/{id}/files/{key} 返回 { content: "<file text>", path }，
-        // review_json 的 content 是 JSON 字符串 —— 必须 parse 出来才是真正的 ReviewJson。
-        // 之前直接 setReviewJson(reviewData)，导致 reviewJson.scores 是 undefined，
-        // 触发"本轮无六维评分"假阳性（disk 上 6 维分数齐全也不显示）。
-        const reviewWrapper: { content: string; path?: string } = await reviewRes.json()
-        try {
-          const inner = JSON.parse(reviewWrapper.content) as ReviewJson
-          setReviewJson(inner)
-        } catch (parseErr) {
-          // JSON 损坏 —— 落 parse_failed 标志，让 UI 走"解析失败"分支 + 显示 raw_markdown 兜底
-          setReviewJson({
-            version: 0,
-            verdict: "REVIEW",
-            scores: {},
-            total: "—",
-            rebrief: "",
-            raw_markdown: reviewWrapper.content,
-            parse_failed: true,
-          })
-          console.warn("review_json 解析失败", parseErr)
-        }
-      }
-    } catch (e) { console.warn("No draft / review_json found", e) }
-  }
+  // loadOutline / loadDraftAndReview 已随编辑器状态搬进 useOutlineEditor / useDraftEditor。
 
   // 离线守卫 —— 销毁性 / 写操作前调一下,离线直接 toast 拦截
   const requireOnline = (action: string): boolean => {
