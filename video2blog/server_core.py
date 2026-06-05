@@ -161,6 +161,9 @@ class EngineJobService:
         self._client_factory = client_factory or self._default_client_factory
         self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="video2blog-job")
         self._jobs: dict[str, _JobRuntime] = {}
+        # 待 finalize 的删除：job_id -> {snapshot, work_dir_to_purge, expires_at}。
+        # 6s undo window，超时后真删 registry 痕迹 + work/<stem>/ 中间产物。
+        self._pending_delete: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
         self.allow_external_source = (
             allow_external_source
@@ -240,6 +243,108 @@ class EngineJobService:
         job.error = "任务被用户手动中断"
         self._mark(job, "failed")
         self._emit(job.id, "failed", {"error": job.error})
+
+    def delete_job(self, job_id: str) -> dict[str, Any]:
+        """删除 live job —— 6 秒 undo window 内仅从 registry 隐藏，超时后真清 work/<stem>/。
+
+        running / queued / paused 会先 cancel；终态（succeeded / failed）直接删。
+        快照（job + stem）写进 _pending_delete，restore_job 用它复原。
+        """
+        runtime = self._runtime(job_id)
+        job = runtime.job
+
+        # 1. 活跃任务先取消（cancel_job 内部已处理状态转移 + state 文件）
+        if job.status in {"queued", "running", "paused"}:
+            try:
+                self.cancel_job(job_id)
+            except Exception:
+                pass  # cancel 失败不阻塞删除
+
+        # 2. 快照 + 从 registry 移除
+        snapshot = {
+            "job_dict": job.to_dict(),
+            "stem": job.stem,
+            "deleted_at": self._now(),
+        }
+        with self._lock:
+            self._jobs.pop(job_id, None)
+            self._pending_delete[job_id] = snapshot
+        self._emit(job_id, "deleted", {"job_id": job_id})
+
+        # 3. 6s 后 finalize（真删 work/<stem>/ 中间产物 + pending 痕迹）
+        self._schedule_delete_finalize(job_id, 6.0)
+        return snapshot
+
+    def restore_job(self, job_id: str) -> EngineJob:
+        """6 秒 undo window 内还原已删除的 job —— 仅复原 registry 条目，不重新跑。
+
+        若任务原本在跑，cancel 已经把它标为 failed，restore 后用户能看到这个 failed 任务
+        + 一条说明，方便他重跑（点参数卡的「再跑一遍」即可，参数都在 job.request 里）。
+        """
+        with self._lock:
+            snap = self._pending_delete.pop(job_id, None)
+        if not snap:
+            raise KeyError(f"任务 {job_id} 不在可恢复窗口内（>6s 或已撤销）")
+
+        job_data = snap["job_dict"]
+        request_data = job_data.pop("request")
+        # 去掉 to_dict 屏蔽的 *** 占位，保留 None；恢复后真实 key 仍在 keychain，不丢
+        if request_data.get("api_key") == "***":
+            request_data["api_key"] = None
+        request = EngineJobRequest(**request_data)
+
+        # 状态：若 cancel 已把它打成 failed，保留；否则保留原状态。
+        # 错误消息加一行说明，让用户知道这是 restore 来的（不会自动重跑）。
+        restored_status = job_data.get("status", "failed")
+        restored_error = job_data.get("error") or ""
+        if restored_status == "failed" and "已撤销删除" not in restored_error:
+            restored_error = (restored_error + "\n（已撤销删除 · 重跑请用参数卡）").strip()
+
+        job = EngineJob(
+            id=job_data["id"],
+            status=restored_status,
+            request=request,
+            stem=job_data["stem"],
+            created_at=job_data["created_at"],
+            updated_at=self._now(),
+            final_post_path=job_data.get("final_post_path"),
+            review_path=job_data.get("review_path"),
+            clean_path=job_data.get("clean_path"),
+            insights_path=job_data.get("insights_path"),
+            outline_path=job_data.get("outline_path"),
+            input_tokens=job_data.get("input_tokens", 0),
+            output_tokens=job_data.get("output_tokens", 0),
+            estimated_cost_usd=job_data.get("estimated_cost_usd", 0.0),
+            error=restored_error or None,
+            paused_state=job_data.get("paused_state"),
+        )
+        runtime = _JobRuntime(job=job)
+        with self._lock:
+            self._jobs[job_id] = runtime
+        self._emit(job_id, "restored", {"job_id": job_id})
+        return job
+
+    def _schedule_delete_finalize(self, job_id: str, delay: float) -> None:
+        """delay 秒后真删（registry pending 痕迹 + work/<stem>/）。线程定时器，不阻塞调用方。"""
+
+        def _finalize() -> None:
+            with self._lock:
+                snap = self._pending_delete.pop(job_id, None)
+            if not snap:
+                return  # 已被 restore_job 撤销
+
+            # 真删 work/<stem>/ 中间产物（raw.txt / clean.md / outline.md / draft_v*.md / .state.json）
+            stem = snap.get("stem")
+            if stem:
+                import shutil
+
+                work_dir = self.repo_root / "work" / stem
+                if work_dir.is_dir():
+                    shutil.rmtree(work_dir, ignore_errors=True)
+
+        timer = threading.Timer(delay, _finalize)
+        timer.daemon = True
+        timer.start()
 
     def _write_state_status(self, stem: str, status: str) -> None:
         """原子地把 work/<stem>/.state.json 的 status 字段改成指定值。
@@ -770,7 +875,9 @@ class EngineJobService:
             restored_status, error = self._restored_http_status(engine_status)
             now = self._now()
             job = EngineJob(
-                id="disk-" + uuid.uuid5(uuid.NAMESPACE_URL, str(state_path.resolve())).hex[:20],
+                # 用 stem 生成 ID（而非 state_path.resolve()）—— sidecar 重启 / repo_root 切换
+                # 时 ID 保持稳定，避免前端缓存的 ID 在 sidecar 换 launcher 后变 stale。
+                id="disk-" + uuid.uuid5(uuid.NAMESPACE_URL, f"v2b:disk:{stem}").hex[:20],
                 status=restored_status,
                 request=request,
                 stem=str(stem),
