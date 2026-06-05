@@ -338,8 +338,9 @@ export default function App() {
   //   filter:    all / needs_me / active / done       ——「状态」段
   //   timeRange: any / 7d / 30d                       ——「时间」段
   //   sortMode:  smart / updated / created             ——「排序」段
-  // jobQuery 仍保留：顶部 ⌘K 模态选中后会清空，但 IPC 侧仍可注入。
-  const [jobQuery, setJobQuery] = useState("")
+  // jobQuery 传给 JobList 做行内过滤；当前恒为 ""（不过滤）。setter 待"⌘K 选中清空 /
+  // IPC 注入搜索词"功能落地时再加回 —— 现无调用方，留着会触发 noUnusedLocals 阻塞 build。
+  const [jobQuery] = useState("")
   const [jobFilter, setJobFilter] = useState<JobFilter>(
     () => (localStorage.getItem("v2b_job_filter") as JobFilter | null) || "all",
   )
