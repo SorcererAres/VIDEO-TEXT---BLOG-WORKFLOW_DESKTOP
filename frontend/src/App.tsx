@@ -35,13 +35,7 @@ import { LibraryView, VoiceView } from '@/components/places'
 import { SettingsPanel } from '@/components/settings'
 import {
   inferCurrentStep,
-  mapProgress,
   systemEvent,
-  successEvent,
-  errorEvent,
-  pausedEvent,
-  type ParsedEvent,
-  type ProgressData,
 } from '@/lib/log-parser'
 import { API_BASE } from '@/lib/api'
 import {
@@ -64,6 +58,7 @@ import { useJobListFilters } from '@/lib/use-job-list-filters'
 import { useJobStatusNotifications } from '@/lib/use-job-status-notifications'
 import { useOutlineEditor } from '@/lib/use-outline-editor'
 import { useDraftEditor } from '@/lib/use-draft-editor'
+import { useJobSse } from '@/lib/use-job-sse'
 import { isTauri } from '@/lib/is-tauri'
 
 // 任务数据类型 + 跨视图的小工具搬到 lib/job-types.ts，下方按需 import。
@@ -108,10 +103,7 @@ export default function App() {
   const [showVoice, setShowVoice] = useState(false)
   // 顶层"场所"（IA ④）：无 job/新建/设置时，主区按 place 展示。workshop=选中 job，settings=showSettings。
   const [place, setPlace] = useState<"start" | "library" | "voice">("start")
-  // logs = 原始 print 文本流（「原始日志」视图排查用）；
-  // progressEvents = 结构化叙事（来自后端 progress + job 生命周期事件）。H1 去耦后两者分离。
-  const [logs, setLogs] = useState<string[]>([])
-  const [progressEvents, setProgressEvents] = useState<ParsedEvent[]>([])
+  // 任务事件流（logs / progressEvents / 连接状态）抽到 lib/use-job-sse.ts，见下方 useJobSse。
   const [activeTab, setActiveTab] = useState<"console" | "outline" | "review" | "final" | "artifacts">("console")
   const [healthStatus, setHealthStatus] = useState<"online" | "offline">("offline")
   // 本机能否跑视频转录（/health capabilities.transcription）。打包版未内置转录引擎时 false。
@@ -156,14 +148,9 @@ export default function App() {
   // 仅看 live jobs：historical 一定是 succeeded 终态归档，不会出现在等我桶。
   const needsMeCount = useMemo(() => jobs.filter(isNeedsMe).length, [jobs])
 
-  const sseRef = useRef<EventSource | null>(null)
-  // SSE 连接状态机 —— terminal 表示任务已 succeeded/failed,不应再重连
-  type SseStatus = "idle" | "connecting" | "connected" | "reconnecting" | "terminal"
-  const [sseStatus, setSseStatus] = useState<SseStatus>("idle")
-  const [lastEventAt, setLastEventAt] = useState<number | null>(null)
-  const sseAttemptsRef = useRef(0)
-  const sseReconnectTimerRef = useRef<number | null>(null)
-  const sseTargetJobRef = useRef<string | null>(null)
+  // 任务事件流（SSE）：日志/进度 + 连接生命周期 + 指数退避重连抽到 lib/use-job-sse.ts。
+  // connectSse 的 paused/succeeded/failed 要拉新列表，故注入 fetchJobs。
+  const { logs, progressEvents, setProgressEvents, sseStatus, lastEventAt, startSse, resetSse } = useJobSse(fetchJobs)
 
   // 外观跟随系统：由 main.tsx 的 next-themes ThemeProvider 接管（浅/深/自动），
   // 不再强制 .dark。用户可在 Settings 手动覆盖三态。
@@ -321,11 +308,7 @@ export default function App() {
   useEffect(() => {
     if (!selectedJobId) {
       setSelectedJob(null)
-      setLogs([])
-      setProgressEvents([])
-      sseTargetJobRef.current = null
-      tearDownSse()
-      setSseStatus("idle")
+      resetSse()
       return
     }
 
@@ -338,11 +321,7 @@ export default function App() {
 
       // 历史归档:不打 SSE,不拉 work/* 产物,直接挂"成品及报告"tab
       if (job.kind === "historical") {
-        sseTargetJobRef.current = null
-        tearDownSse()
-        setSseStatus("idle")
-        setLogs([])
-        setProgressEvents([])
+        resetSse()
         if (isFreshSelect) setActiveTab("final")  // 只在初次选中时切，否则用户切 tab 又被拽回
         return
       }
@@ -419,132 +398,7 @@ export default function App() {
     }
   }
 
-  // 彻底关掉 SSE 并清掉待发的重连定时器
-  const tearDownSse = () => {
-    if (sseRef.current) {
-      sseRef.current.close()
-      sseRef.current = null
-    }
-    if (sseReconnectTimerRef.current !== null) {
-      window.clearTimeout(sseReconnectTimerRef.current)
-      sseReconnectTimerRef.current = null
-    }
-  }
-
-  // 启动一个全新的 SSE 会话(新 job 或重选 job 时调一次)
-  const startSse = (jobId: string) => {
-    tearDownSse()
-    sseTargetJobRef.current = jobId
-    sseAttemptsRef.current = 0
-    setLogs([])
-    setProgressEvents([])
-    setSseStatus("connecting")
-    setLastEventAt(null)
-    connectSse(jobId)
-  }
-
-  // 实际建连(也用于退避重连)
-  const connectSse = (jobId: string) => {
-    // 若目标 job 已被换走(用户点了别的任务),直接放弃
-    if (sseTargetJobRef.current !== jobId) return
-
-    const isReconnect = sseAttemptsRef.current > 0
-    setSseStatus(isReconnect ? "reconnecting" : "connecting")
-
-    const source = new EventSource(API_BASE + `/jobs/${jobId}/events`)
-    sseRef.current = source
-
-    const markEvent = () => setLastEventAt(Date.now())
-
-    source.onopen = () => {
-      setSseStatus("connected")
-      sseAttemptsRef.current = 0
-      markEvent()
-    }
-
-    source.addEventListener("log", (e: MessageEvent) => {
-      markEvent()
-      try {
-        const eventData = JSON.parse(e.data)
-        const msg = eventData.data?.message || ""
-        if (msg) setLogs(prev => [...prev, msg])
-      } catch (err) { console.error("Err parsing SSE log event", err) }
-    })
-
-    // 结构化进度事件（H1）：后端直接给语义字段，前端只做 kind→展示 映射，不再正则反解析。
-    source.addEventListener("progress", (e: MessageEvent) => {
-      markEvent()
-      try {
-        const eventData = JSON.parse(e.data)
-        const data = eventData.data as ProgressData | undefined
-        if (data?.kind) setProgressEvents(prev => [...prev, mapProgress(data)])
-      } catch (err) { console.error("Err parsing SSE progress event", err) }
-    })
-
-    source.addEventListener("started", () => {
-      markEvent()
-      setProgressEvents(prev => [...prev, systemEvent("任务开始执行")])
-    })
-
-    // 注意：paused/succeeded/failed 这三类「状态提醒」**不在这里弹 toast**。
-    // SSE 一连上后端会重放该任务的历史事件（日志面板需要），重放到历史 paused
-    // 行就会误触发提醒——这正是"切到已完成任务也弹『等你审批』"的根因。
-    // 提醒统一改由 detectStatusTransitions（基于 jobs 列表真实状态跃迁）发出，
-    // 重放不改变列表状态 → 不会误弹。这里只管日志 + 连接生命周期。
-    source.addEventListener("paused", (e: MessageEvent) => {
-      markEvent()
-      try {
-        const eventData = JSON.parse(e.data)
-        const stateStatus = eventData.data?.state_status || ""
-        setProgressEvents(prev => [...prev, pausedEvent(stateStatus)])
-        fetchJobs() // 拉新列表 → detectStatusTransitions 据真实跃迁发提醒
-        setSseStatus("terminal")
-        sseTargetJobRef.current = null
-        tearDownSse()
-      } catch (err) { console.error("Err parsing SSE paused event", err) }
-    })
-
-    source.addEventListener("succeeded", () => {
-      markEvent()
-      setProgressEvents(prev => [...prev, successEvent("全部步骤已通过")])
-      fetchJobs()
-      setSseStatus("terminal")
-      sseTargetJobRef.current = null // 防止队列里残留的 onerror 触发重连
-      tearDownSse()
-    })
-
-    source.addEventListener("failed", (e: MessageEvent) => {
-      markEvent()
-      try {
-        const eventData = JSON.parse(e.data)
-        const err = eventData.data?.error || ""
-        setProgressEvents(prev => [...prev, errorEvent(`任务失败：${err}`)])
-        fetchJobs()
-      } catch (err) { console.error("Err parsing SSE failed event", err) }
-      setSseStatus("terminal")
-      sseTargetJobRef.current = null
-      tearDownSse()
-    })
-
-    source.onerror = () => {
-      // EventSource 会自己尝试重连,但我们要管控状态条 + 实现指数退避。
-      // 关掉它,手动调度下一次。
-      source.close()
-      if (sseRef.current === source) sseRef.current = null
-
-      // 目标已换走 / 已 terminal(succeeded/failed 把 ref 置 null),不再重连
-      if (sseTargetJobRef.current !== jobId) return
-
-      sseAttemptsRef.current += 1
-      const attempts = sseAttemptsRef.current
-      const backoff = Math.min(30000, 1000 * 2 ** (attempts - 1))
-      setSseStatus("reconnecting")
-      sseReconnectTimerRef.current = window.setTimeout(() => {
-        sseReconnectTimerRef.current = null
-        connectSse(jobId)
-      }, backoff)
-    }
-  }
+  // tearDownSse / startSse / connectSse 已随事件流状态搬进 useJobSse（startSse 由上方解构）。
 
   // force=true: 跳过本地草稿,强制采用后端原始 outline
   // loadOutline / loadDraftAndReview 已随编辑器状态搬进 useOutlineEditor / useDraftEditor。
