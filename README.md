@@ -238,7 +238,8 @@ Pre-Flight 会扫描 `memory/` 中的占位符。命中 `____`、`YYYY-MM-DD`、
 | 文档 | 用途 |
 |---|---|
 | `WORKFLOW.md` | Agent 运行规则，唯一权威 |
-| `GUIDE.md` | 安装、目录、命令、常见任务 |
+| `docs/GUIDE.md` | 安装、目录、命令、常见任务 |
+| `DESIGN.md` / `STYLE.md` | UI 方向与样式契约（设计基线，被记忆引用） |
 | `AGENTS.md` / `CLAUDE.md` | 工具适配入口 |
 | `.codex/skills/video2blog-workflow/SKILL.md` | Codex skill 适配说明 |
 | `.cursor/skills/video2blog/` | Step 3-8 子步骤执行细则 |
