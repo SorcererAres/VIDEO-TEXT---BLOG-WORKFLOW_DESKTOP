@@ -30,7 +30,7 @@ import { moveTrashPost, restoreTrashPost, purgeTrashPost, type TrashPost } from 
 import { Launcher, type LauncherHandle } from '@/components/Launcher'
 import type { LauncherSubmitPayload } from '@/lib/launcher-command'
 import { TrafficLights } from '@/components/TrafficLights'
-import { JobList, HomeView, JobWorkspace, isNeedsMe, type JobFilter, type JobTimeRange, type JobSortMode } from '@/components/jobs'
+import { JobList, HomeView, JobWorkspace, isNeedsMe } from '@/components/jobs'
 import { LibraryView, VoiceView } from '@/components/places'
 import { SettingsPanel } from '@/components/settings'
 import {
@@ -61,6 +61,7 @@ import { useTrash } from '@/lib/use-trash'
 import { readOutlineDraft, writeOutlineDraft, clearOutlineDraft, readDraftEdit, writeDraftEdit, clearDraftEdit } from '@/lib/draft-storage'
 import { FilterRadioGroup } from '@/components/FilterRadioGroup'
 import { useSidebarLayout } from '@/lib/use-sidebar-layout'
+import { useJobListFilters } from '@/lib/use-job-list-filters'
 
 // 任务数据类型 + 跨视图的小工具搬到 lib/job-types.ts，下方按需 import。
 
@@ -145,29 +146,11 @@ export default function App() {
   //   filter:    all / needs_me / active / done       ——「状态」段
   //   timeRange: any / 7d / 30d                       ——「时间」段
   //   sortMode:  smart / updated / created             ——「排序」段
-  // jobQuery 传给 JobList 做行内过滤；当前恒为 ""（不过滤）。setter 待"⌘K 选中清空 /
-  // IPC 注入搜索词"功能落地时再加回 —— 现无调用方，留着会触发 noUnusedLocals 阻塞 build。
-  const [jobQuery] = useState("")
-  const [jobFilter, setJobFilter] = useState<JobFilter>(
-    () => (localStorage.getItem("v2b_job_filter") as JobFilter | null) || "all",
-  )
-  const [jobTimeRange, setJobTimeRange] = useState<JobTimeRange>(
-    () => (localStorage.getItem("v2b_job_time_range") as JobTimeRange | null) || "any",
-  )
-  const [jobSort, setJobSort] = useState<JobSortMode>(
-    () => (localStorage.getItem("v2b_job_sort") as JobSortMode | null) || "smart",
-  )
-  // 任务段折叠态（左侧 ⌃ 按钮）：收起后列表 + ⚙ 隐藏，只剩 header 一行；
-  // 等我项 > 0 时标题旁挂红点。
-  const [jobsCollapsed, setJobsCollapsed] = useState<boolean>(
-    () => localStorage.getItem("v2b_jobs_collapsed") === "1",
-  )
-  useEffect(() => { localStorage.setItem("v2b_job_filter", jobFilter) }, [jobFilter])
-  useEffect(() => { localStorage.setItem("v2b_job_time_range", jobTimeRange) }, [jobTimeRange])
-  useEffect(() => { localStorage.setItem("v2b_job_sort", jobSort) }, [jobSort])
-  useEffect(() => { localStorage.setItem("v2b_jobs_collapsed", jobsCollapsed ? "1" : "0") }, [jobsCollapsed])
-  // ⚙ icon 是否高亮：任一段非 default 即视为"列表正在被筛"
-  const jobsFilterActive = jobFilter !== "all" || jobTimeRange !== "any" || jobSort !== "smart"
+  // 任务列表过滤/时间/排序/段折叠状态（含 localStorage 持久化）抽到 lib/use-job-list-filters.ts。
+  const {
+    jobQuery, jobFilter, setJobFilter, jobTimeRange, setJobTimeRange,
+    jobSort, setJobSort, jobsCollapsed, setJobsCollapsed, jobsFilterActive,
+  } = useJobListFilters()
   // 等我项数量（paused 等审批 + failed 等修复）—— 收起态时挂红点用。
   // 仅看 live jobs：historical 一定是 succeeded 终态归档，不会出现在等我桶。
   const needsMeCount = useMemo(() => jobs.filter(isNeedsMe).length, [jobs])
