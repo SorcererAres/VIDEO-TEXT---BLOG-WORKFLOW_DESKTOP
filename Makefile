@@ -5,16 +5,27 @@ FRONTEND_DIR := frontend
 SIDECAR_SRC := .build-backend/dist/video2blog-server
 SIDECAR_DST := frontend/src-tauri/backend/video2blog-server
 
-.PHONY: install test validate regression frontend-lint frontend-build server dev app app-build backend-bin stage-sidecar sign-app notarize-app package-dmg notarize-dmg dist
+.PHONY: install test validate regression lint format frontend-lint frontend-build server dev app app-build backend-bin stage-sidecar sign-app notarize-app package-dmg notarize-dmg dist
 
 # 单一依赖来源 = pyproject.toml（pip install -e . 会注册包 + console script）。
+# `.[dev]` 带上 ruff 等开发期工具链（不随运行时分发）。
 # 一律走 `$(PYTHON) -m pip`，不用 `.venv/bin/pip`：后者在解释器/venv 错位时会装到别处（踩过坑）。
 install:
 	python3 -m venv .venv
-	$(PYTHON) -m pip install -e .
+	$(PYTHON) -m pip install -e ".[dev]"
 
 test:
 	$(PYTHON) -m unittest discover -s tests
+
+# ── 静态检查 / 格式化（ruff，lint + format 二合一）──
+# lint：只读检查（CI 用，不改文件）。format：就地统一格式（本地用）。
+lint:
+	$(PYTHON) -m ruff check
+	$(PYTHON) -m ruff format --check
+
+format:
+	$(PYTHON) -m ruff check --fix
+	$(PYTHON) -m ruff format
 
 validate:
 	$(PYTHON) scripts/validate_workflow.py

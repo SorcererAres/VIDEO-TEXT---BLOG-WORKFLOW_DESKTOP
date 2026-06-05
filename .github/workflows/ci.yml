@@ -32,6 +32,9 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci --prefix frontend
 
+      - name: Lint Python (ruff check + format)
+        run: make lint
+
       - name: Run Python tests
         run: make test
 
