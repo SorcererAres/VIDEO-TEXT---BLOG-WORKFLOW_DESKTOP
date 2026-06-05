@@ -4,7 +4,7 @@
 
 ## 1. 入口
 
-- `ENTRY → video`：先用 `python3 video2blog.py <video>` 生成 `work/<stem>/raw.txt`，再交给 Agent。
+- `ENTRY → video`：先用 `python3 transcribe.py <video>` 生成 `work/<stem>/raw.txt`，再交给 Agent。
 - `ENTRY → transcript`：已有文字稿或成文稿，直接给 `SOURCE`。
 - `SOURCE` 必填，可指向 `work/<stem>/raw.txt`、`work/<stem>/clean.md`、`input/Text/*` 或已有文章。
 - `MODE` 可选：`full` 或 `quick`；未声明默认 `full`。

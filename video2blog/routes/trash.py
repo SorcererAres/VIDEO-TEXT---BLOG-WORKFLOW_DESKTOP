@@ -22,6 +22,7 @@ from fastapi import HTTPException
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
+
     from video2blog.server_core import EngineJobService
 
 
@@ -66,7 +67,7 @@ def _purge_expired(root: Path, retention_days: int = _TRASH_RETENTION_DAYS) -> i
     return removed
 
 
-def register(app: "FastAPI", service: "EngineJobService", root: Path) -> None:  # noqa: ARG001 (service 暂未用)
+def register(app: FastAPI, service: EngineJobService, root: Path) -> None:  # noqa: ARG001 (service 暂未用)
     @app.delete("/posts")
     def post_to_trash(post_path: str) -> dict[str, Any]:
         """把作品集文章移到 .trash/posts/（30 天可恢复）。
@@ -85,7 +86,9 @@ def register(app: "FastAPI", service: "EngineJobService", root: Path) -> None:  
         try:
             rel = src.relative_to(root / "output" / "Posts")
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail="post_path 必须落在 output/Posts/ 下") from exc
+            raise HTTPException(
+                status_code=400, detail="post_path 必须落在 output/Posts/ 下"
+            ) from exc
 
         # rel = <year>/<file>.md → 拆 year 和 文件名
         if len(rel.parts) < 2:
@@ -132,14 +135,16 @@ def register(app: "FastAPI", service: "EngineJobService", root: Path) -> None:  
             except OSError:
                 size = 0
             age_days = (now - ts) / 86400
-            items.append({
-                "trash_id": f.name,
-                "year": year,
-                "original_name": orig,
-                "deleted_at": ts,
-                "size": size,
-                "days_until_purge": max(0, round(_TRASH_RETENTION_DAYS - age_days, 1)),
-            })
+            items.append(
+                {
+                    "trash_id": f.name,
+                    "year": year,
+                    "original_name": orig,
+                    "deleted_at": ts,
+                    "size": size,
+                    "days_until_purge": max(0, round(_TRASH_RETENTION_DAYS - age_days, 1)),
+                }
+            )
         items.sort(key=lambda x: x["deleted_at"], reverse=True)
         return items
 

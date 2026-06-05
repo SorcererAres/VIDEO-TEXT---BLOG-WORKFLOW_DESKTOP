@@ -12,10 +12,11 @@ from video2blog.server_core import redact_sensitive_text, transcription_availabl
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
+
     from video2blog.server_core import EngineJobService
 
 
-def register(app: "FastAPI", service: "EngineJobService", root: Path) -> None:
+def register(app: FastAPI, service: EngineJobService, root: Path) -> None:
     @app.get("/health")
     def health() -> dict[str, Any]:
         # transcription：本机能否跑视频转录。打包版（frozen，未打包 mlx/whisper.cpp）为 false，

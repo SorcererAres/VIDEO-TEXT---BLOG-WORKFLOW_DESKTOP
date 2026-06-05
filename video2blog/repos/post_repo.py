@@ -14,8 +14,9 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from video2blog.engine.utils import atomic_write
 from video2blog.utils import strip_frontmatter
@@ -46,7 +47,7 @@ def list_posts(root: Path) -> list[dict[str, Any]]:
             is_draft = post_path.stem.startswith("DRAFT-")
 
             # review 文件名跟随 post stem（去掉可能的 DRAFT- 前缀）
-            review_stem = post_path.stem[len("DRAFT-"):] if is_draft else post_path.stem
+            review_stem = post_path.stem[len("DRAFT-") :] if is_draft else post_path.stem
             review_path = root / "output" / "Reviews" / f"{review_stem}.review.md"
 
             # 用 post 路径做稳定 ID（SHA），跨重启不变
@@ -59,42 +60,46 @@ def list_posts(root: Path) -> list[dict[str, Any]]:
             except OSError:
                 mtime = 0.0
 
-            items.append({
-                "id": stable_id,
-                "kind": "historical",                    # 前端用这个字段区分
-                "stem": display_stem,
-                "status": "draft" if is_draft else "succeeded",
-                "request": {
-                    "source": data.get("source", ""),
-                    "speaker": data.get("speaker", "我"),
-                    "routing": data.get("routing", "/default"),
-                    "mode": data.get("mode", "full"),
-                    "max_retries": 0,
-                    "force": False,
-                    "pause_on_outline": False,
-                    "api_key": None,
-                },
-                "created_at": data.get("date", ""),
-                "updated_at": data.get("date", ""),
-                "final_post_path": rel_post,
-                "review_path": str(review_path.relative_to(root)) if review_path.exists() else None,
-                "clean_path": None,
-                "insights_path": None,
-                "outline_path": None,
-                "input_tokens": 0,
-                "output_tokens": 0,
-                "estimated_cost_usd": 0.0,
-                "error": None,
-                # 历史归档专属字段
-                "pass_score": data.get("pass_score"),
-                "is_draft": is_draft,
-                "mtime": mtime,
-            })
+            items.append(
+                {
+                    "id": stable_id,
+                    "kind": "historical",  # 前端用这个字段区分
+                    "stem": display_stem,
+                    "status": "draft" if is_draft else "succeeded",
+                    "request": {
+                        "source": data.get("source", ""),
+                        "speaker": data.get("speaker", "我"),
+                        "routing": data.get("routing", "/default"),
+                        "mode": data.get("mode", "full"),
+                        "max_retries": 0,
+                        "force": False,
+                        "pause_on_outline": False,
+                        "api_key": None,
+                    },
+                    "created_at": data.get("date", ""),
+                    "updated_at": data.get("date", ""),
+                    "final_post_path": rel_post,
+                    "review_path": str(review_path.relative_to(root))
+                    if review_path.exists()
+                    else None,
+                    "clean_path": None,
+                    "insights_path": None,
+                    "outline_path": None,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "estimated_cost_usd": 0.0,
+                    "error": None,
+                    # 历史归档专属字段
+                    "pass_score": data.get("pass_score"),
+                    "is_draft": is_draft,
+                    "mtime": mtime,
+                }
+            )
         except Exception:
             continue
 
     # 最近的排前面
-    items.sort(key=lambda x: (x.get("mtime") or 0), reverse=True)
+    items.sort(key=lambda x: x.get("mtime") or 0, reverse=True)
     return items
 
 
@@ -105,7 +110,7 @@ def _stem_from_post_path(post_abs: Path) -> str:
     """
     stem = post_abs.stem
     if stem.startswith("DRAFT-"):
-        stem = stem[len("DRAFT-"):]
+        stem = stem[len("DRAFT-") :]
     return stem
 
 
@@ -148,29 +153,36 @@ def purge_post_chain(
             errors.append(f"{op}: {exc}")
 
     if posts:
+
         def _del_post() -> None:
             if post_abs.is_file():
                 post_abs.unlink()
                 deleted.append(str(post_abs.relative_to(root)))
+
         _try("删 post", _del_post)
 
     if reviews:
+
         def _del_reviews() -> None:
             review = root / "output" / "Reviews" / f"{stem}.review.md"
             if review.is_file():
                 review.unlink()
                 deleted.append(str(review.relative_to(root)))
+
         _try("删 review", _del_reviews)
 
     if work:
+
         def _del_work() -> None:
             work_dir = root / "work" / stem
             if work_dir.is_dir():
                 shutil.rmtree(work_dir, ignore_errors=True)
                 deleted.append(f"work/{stem}/")
+
         _try("删 work", _del_work)
 
     if history_index:
+
         def _del_history_line() -> None:
             hist = root / "memory" / "HISTORY.md"
             if not hist.is_file():
@@ -181,9 +193,11 @@ def purge_post_chain(
             if len(kept) != len(lines):
                 atomic_write(hist, "\n".join(kept) + ("\n" if kept else ""))
                 deleted.append(f"memory/HISTORY.md ({len(lines) - len(kept)} 行)")
+
         _try("更新 HISTORY", _del_history_line)
 
     if fingerprints:
+
         def _del_fp_lines() -> None:
             fp = root / "memory" / "fingerprints.jsonl"
             if not fp.is_file():
@@ -207,6 +221,7 @@ def purge_post_chain(
             if removed:
                 atomic_write(fp, "\n".join(kept) + ("\n" if kept else ""))
                 deleted.append(f"memory/fingerprints.jsonl ({removed} 行)")
+
         _try("更新 fingerprints", _del_fp_lines)
 
     return {"ok": True, "deleted": deleted, "errors": errors, "stem": stem}

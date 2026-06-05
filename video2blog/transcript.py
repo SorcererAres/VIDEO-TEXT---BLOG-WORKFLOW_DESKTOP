@@ -74,7 +74,7 @@ def plain_text_to_minimal_srt(plain: str) -> str:
     head = plain[:800].replace("\n", " ").strip()
     if not head:
         return ""
-    return "1\n00:00:00,000 --> 00:00:07,500\n" f"{head}\n\n"
+    return f"1\n00:00:00,000 --> 00:00:07,500\n{head}\n\n"
 
 
 def normalize_transcription_result(result: dict[str, Any]) -> tuple[str, str]:

@@ -13,10 +13,11 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
+
     from video2blog.server_core import EngineJobService
 
 
-def register(app: "FastAPI", service: "EngineJobService", root: Path) -> None:
+def register(app: FastAPI, service: EngineJobService, root: Path) -> None:
     @app.get("/fingerprints")
     def get_fingerprints() -> dict[str, Any]:
         """聚合风格指纹 → 文风画像。空/缺文件返回 count=0。"""
@@ -33,7 +34,13 @@ def register(app: "FastAPI", service: "EngineJobService", root: Path) -> None:
                     continue  # 跳过坏行，不让一行坏数据拖垮整个画像
 
         if not records:
-            return {"count": 0, "avg_sentence_len": None, "avg_paragraph_len": None, "per_post": [], "top_terms": []}
+            return {
+                "count": 0,
+                "avg_sentence_len": None,
+                "avg_paragraph_len": None,
+                "per_post": [],
+                "top_terms": [],
+            }
 
         def _nums(key: str) -> list[float]:
             out = []

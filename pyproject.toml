@@ -22,6 +22,10 @@ dependencies = [
   "mlx-whisper>=0.4.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
 ]
 
+[project.optional-dependencies]
+# 开发期工具链（不随运行时分发）：`pip install -e ".[dev]"` 安装。
+dev = ["ruff>=0.6"]
+
 [project.scripts]
 video2blog = "video2blog.cli.main:main"
 
@@ -31,3 +35,25 @@ Repository = "https://github.com/sorcererair/video-text-blog-workflow"
 [tool.setuptools.packages.find]
 include = ["video2blog*"]
 exclude = ["Archive*", "tests*", "scripts*", "work*", "output*", "input*", "knowledge*", "memory*"]
+
+# ── 静态检查 / 格式化（ruff，lint + format 二合一）──
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+# 非源码目录不参与检查（数据 / 归档 / 虚拟环境 / 构建产物）。
+extend-exclude = [
+  "Archive",
+  "work",
+  "output",
+  "input",
+  "knowledge",
+  ".venv",
+  ".build-backend",
+  "video2blog.egg-info",
+]
+
+[tool.ruff.lint]
+# E/W=pycodestyle，F=pyflakes，I=isort，UP=pyupgrade，B=bugbear。
+select = ["E", "F", "I", "W", "UP", "B"]
+# 行宽交给 formatter 尽力处理；本项目中文注释多，不强制断行（否则可读性受损）。
+ignore = ["E501"]

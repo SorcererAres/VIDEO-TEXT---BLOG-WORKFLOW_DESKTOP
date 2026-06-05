@@ -55,11 +55,7 @@ def split_frontmatter(text: str) -> tuple[dict[str, str], str]:
         key, value = line.split(":", 1)
         key = key.strip()
         value = value.strip()
-        if (
-            len(value) >= 2
-            and value[0] == value[-1]
-            and value[0] in {"'", '"'}
-        ):
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
             value = value[1:-1]
         data[key] = value
 
@@ -123,7 +119,9 @@ def iter_posts(repo: Path) -> list[Path]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo", type=Path, default=Path.cwd())
-    parser.add_argument("--check", action="store_true", help="show pending migrations without writing files")
+    parser.add_argument(
+        "--check", action="store_true", help="show pending migrations without writing files"
+    )
     args = parser.parse_args(argv)
 
     repo = args.repo.resolve()

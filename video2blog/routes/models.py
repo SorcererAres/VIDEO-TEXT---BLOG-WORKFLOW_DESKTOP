@@ -51,6 +51,7 @@ class TestLLMRequest(BaseModel):
 
 class DetectSpeakerRequest(BaseModel):
     """POST /api/detect-speaker 入参：从源文识别演讲人主体。"""
+
     source: str
     profile_id: str | None = None
     use_llm: bool = False
@@ -58,6 +59,7 @@ class DetectSpeakerRequest(BaseModel):
 
 class KnowledgeFileRequest(BaseModel):
     """PUT /knowledge-file 入参：写回某个合同/知识层文件。"""
+
     path: str
     content: str
 
@@ -67,6 +69,7 @@ class DispositionRequest(BaseModel):
 
     value ∈ used（直接用了）/ edited（改了改）/ rewrote（重写了）；null 清除标记。
     按成品 path 归档到 memory/dispositions.json，作为质量学习闭环的信号。"""
+
     path: str
     value: str | None = None
 
@@ -74,6 +77,7 @@ class DispositionRequest(BaseModel):
 class LlmProfileRequest(BaseModel):
     """POST/PUT /api/llm-profiles 入参。非敏感字段落 config 文件；
     api_key 非空才写系统钥匙串，省略 / null 则保留原 key。"""
+
     name: str | None = None
     provider: str | None = None
     api_base: str | None = None

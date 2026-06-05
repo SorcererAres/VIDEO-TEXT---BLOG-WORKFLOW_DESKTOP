@@ -30,6 +30,18 @@ function sourceKind(source: string): "video" | "transcript" | "text" | "" {
   if (s.includes("input/text/") || /\.(md|txt)$/.test(s)) return "text"
   return ""
 }
+// 两扇门：视频走转录，其余（转录稿 / 文字稿）都归文字稿门。
+function inferSourceType(source: string): "video" | "text" {
+  return sourceKind(source) === "video" ? "video" : "text"
+}
+// 文字稿子类建议：成稿(quick·只套风格) / 生文字稿(full·清洗成文)。
+// raw.txt / 字幕 / work 下产物按生文字稿；.md 视为成稿；其余默认生文字稿。
+function suggestTextKind(source: string): "article" | "transcript" {
+  const s = source.toLowerCase()
+  if (/raw\.txt$|\.srt$|\.vtt$/.test(s) || s.includes("/work/")) return "transcript"
+  if (/\.md$/.test(s)) return "article"
+  return "transcript"
+}
 
 // 父级用 ref 操控的命令式 API
 export interface LauncherHandle {
@@ -57,6 +69,7 @@ export interface LauncherProps {
 }
 
 const DEFAULT_SPEAKER_STORE_KEY = "v2b_last_speaker"
+const SOURCE_TYPE_STORE_KEY = "v2b_last_source_type"
 
 export function Launcher(props: LauncherProps) {
   const apiBase = props.apiBase ?? API_BASE
@@ -80,9 +93,18 @@ export function Launcher(props: LauncherProps) {
   const [maxRetries, setMaxRetries] = useState(1)
   const [force, setForce] = useState(false)
   const [rewriteStrategy, setRewriteStrategy] = useState<"single" | "sectioned">("single")
-  const [trueQuick, setTrueQuick] = useState(false)
   const [profileId, setProfileId] = useState("")
   const [transcribeEngine, setTranscribeEngine] = useState<"default" | "whisper-cpp" | "mlx">("default")
+
+  // ── 来源类型：两扇门。视频→先转录再改写；文字稿→直接改写。 ──
+  const [sourceType, setSourceType] = useState<"video" | "text">(
+    () => (localStorage.getItem(SOURCE_TYPE_STORE_KEY) as "video" | "text") || "video",
+  )
+  // 文字稿子类：成稿(quick) / 生文字稿(full)。仅 sourceType==="text" 有意义。
+  const [textKind, setTextKind] = useState<"article" | "transcript">("transcript")
+  const textKindTouched = useRef(false)
+  // 成稿 = quick 模式（跳过清洗/提炼/骨架，直接重写+质检）
+  const isQuick = sourceType === "text" && textKind === "article"
 
   // ── inline 折叠/展开（overlay 由父级控制 open） ──
   const [innerExpanded, setInnerExpanded] = useState(false)
@@ -106,12 +128,14 @@ export function Launcher(props: LauncherProps) {
     setMaxRetries(1)
     setForce(false)
     setRewriteStrategy("single")
-    setTrueQuick(false)
+    setTextKind("transcript")
+    textKindTouched.current = false
     setProfileId("")
     setTranscribeEngine("default")
     setDetectedSpeaker(null)
     speakerTouchedRef.current = false
     setUploadErr(null)
+    // sourceType 不重置：保留用户上次选的门（也写进 localStorage）
   }
 
   // 父级命令式 API（uploadFile 在下面 uploadFile 定义后通过 ref 闭包指过来）
@@ -119,6 +143,7 @@ export function Launcher(props: LauncherProps) {
   useImperativeHandle(props.ref, () => ({
     injectSource: (path: string) => {
       setSource(path)
+      setSourceType(inferSourceType(path))
       if (props.variant === "inline") setInnerExpanded(true)
     },
     uploadFile: (file: File) => uploadFileRef.current(file),
@@ -134,7 +159,10 @@ export function Launcher(props: LauncherProps) {
       setRewriteStrategy(p.rewrite_strategy ?? "single")
       setProfileId(p.profile_id ?? "")
       setTranscribeEngine(p.transcribe_engine ?? "default")
-      setTrueQuick(p.mode === "quick")
+      // 反推两扇门：源类型定门，mode 定文字稿子类
+      setSourceType(inferSourceType(p.source))
+      setTextKind(p.mode === "quick" ? "article" : "transcript")
+      textKindTouched.current = true
       if (props.variant === "inline") setInnerExpanded(true)
     },
     open: () => {
@@ -144,6 +172,11 @@ export function Launcher(props: LauncherProps) {
       if (props.variant === "inline") setInnerExpanded(false)
     },
   }), [props.variant])
+
+  // 打包版未内置转录引擎：视频门无意义，强制落到文字稿门
+  useEffect(() => {
+    if (!props.transcriptionAvailable && sourceType === "video") setSourceType("text")
+  }, [props.transcriptionAvailable, sourceType])
 
   // 源变化 → 路由自动建议（用户没手动改过才覆盖）
   useEffect(() => {
@@ -214,6 +247,24 @@ export function Launcher(props: LauncherProps) {
     setRouting(v)
   }
 
+  // 选源统一入口：落源 + 按源反推门 + 建议文字稿子类（用户没手动改过才覆盖）
+  const chooseSource = (path: string) => {
+    setSource(path)
+    const st = inferSourceType(path)
+    setSourceType(st)
+    if (st === "text" && !textKindTouched.current) setTextKind(suggestTextKind(path))
+    if (props.variant === "inline") setInnerExpanded(true)
+  }
+
+  // 手动切门：切到与当前源不兼容的门时清源（与 X 清除一致）
+  const handleSourceTypeChange = (t: "video" | "text") => {
+    setSourceType(t)
+    if (source && inferSourceType(source) !== t) {
+      setSource("")
+      setRoutingTouched(false)
+    }
+  }
+
   // 上传：跟旧 CreateForm 同款，落 input/Video|Text 由后端按扩展名定
   const uploadFile = async (file: File) => {
     setUploading(true); setUploadErr(null)
@@ -227,8 +278,7 @@ export function Launcher(props: LauncherProps) {
         throw new Error(detail)
       }
       const data: { path: string } = await res.json()
-      setSource(data.path)
-      if (props.variant === "inline") setInnerExpanded(true)
+      chooseSource(data.path)
     } catch (e) {
       setUploadErr(`上传失败：${e instanceof Error ? e.message : String(e)}`)
     } finally { setUploading(false) }
@@ -241,13 +291,13 @@ export function Launcher(props: LauncherProps) {
   const tryCommand = () => {
     const parsed = parseLauncherCommand(cmdLine, props.profileOptions)
     if (!parsed) return false
-    if (parsed.source) setSource(parsed.source)
+    if (parsed.source) chooseSource(parsed.source)
     if (parsed.routing) { setRouting(parsed.routing); setRoutingTouched(true) }
     if (parsed.profile_id) setProfileId(parsed.profile_id)
     if (parsed.force !== undefined) setForce(parsed.force)
     if (parsed.rewrite_strategy) setRewriteStrategy(parsed.rewrite_strategy)
     if (parsed.transcribe_engine) setTranscribeEngine(parsed.transcribe_engine)
-    if (parsed.mode === "quick") setTrueQuick(true)
+    if (parsed.mode === "quick") { setTextKind("article"); textKindTouched.current = true }
     if (parsed.max_retries !== undefined) setMaxRetries(parsed.max_retries)
     setCmdLine("")
     if (props.variant === "inline") setInnerExpanded(true)
@@ -269,12 +319,14 @@ export function Launcher(props: LauncherProps) {
       if (force) payload.force = true
       if (rewriteStrategy !== "single") payload.rewrite_strategy = rewriteStrategy
       if (profileId) payload.profile_id = profileId
-      if (transcribeEngine !== "default") payload.transcribe_engine = transcribeEngine
-      if (trueQuick) payload.mode = "quick"
+      // 转录引擎仅视频门发送；成稿走 quick，其余默认 full（不发 mode）
+      if (sourceType === "video" && transcribeEngine !== "default") payload.transcribe_engine = transcribeEngine
+      if (isQuick) payload.mode = "quick"
       const ok = await props.onSubmit(payload)
       if (ok) {
         pushRecentSource(source)
         localStorage.setItem(DEFAULT_SPEAKER_STORE_KEY, speaker.trim() || "我")
+        localStorage.setItem(SOURCE_TYPE_STORE_KEY, sourceType)
         resetFields()
         if (props.variant === "inline") setInnerExpanded(false)
         else props.onClose?.()
@@ -320,15 +372,23 @@ export function Launcher(props: LauncherProps) {
       onKeyDown={handleKeyDown}
       {...dragHandlers}
     >
+      {/* 来源类型：两扇门 —— 驱动整张表单露什么 */}
+      <SourceTypeTabs
+        value={sourceType}
+        onChange={handleSourceTypeChange}
+        transcriptionAvailable={props.transcriptionAvailable}
+      />
+
       {/* 源选择行 —— 没源时用 SourcePicker，已选用 chip + 命令式输入入口 */}
       {!source ? (
         <div className="flex items-center gap-2">
           <div className="flex-1">
             <SourcePicker
               value={source}
-              onChange={(v) => { setSource(v); if (props.variant === "inline") setInnerExpanded(true) }}
+              onChange={chooseSource}
               apiBase={apiBase}
               transcriptionAvailable={props.transcriptionAvailable}
+              filterKind={sourceType}
             />
           </div>
         </div>
@@ -352,6 +412,14 @@ export function Launcher(props: LauncherProps) {
             </button>
           </div>
         </div>
+      )}
+
+      {/* 文字稿门：成稿(quick) / 生文字稿(full) —— 主选择，不再埋进高级 */}
+      {sourceType === "text" && (
+        <TextKindSegment
+          value={textKind}
+          onChange={(v) => { textKindTouched.current = true; setTextKind(v) }}
+        />
       )}
 
       {/* 视频源 + 转录可用时的提示 */}
@@ -382,7 +450,7 @@ export function Launcher(props: LauncherProps) {
                 if (!tryCommand()) {
                   // 解析失败 —— 当裸路径处理（仍然走后端校验）
                   const t = cmdLine.trim()
-                  if (t) { setSource(t); setCmdLine("") }
+                  if (t) { chooseSource(t); setCmdLine("") }
                 }
               }
             }}
@@ -404,7 +472,12 @@ export function Launcher(props: LauncherProps) {
           onDetectSpeakerAI={detectSpeakerAI}
           detectingSpeaker={detectingSpeaker}
         />
-        <PauseToggle value={pauseOnOutline} onChange={setPauseOnOutline} />
+        {/* 大纲审批仅在有大纲步骤（full）时有意义；成稿(quick)隐藏 */}
+        {!isQuick && <PauseToggle value={pauseOnOutline} onChange={setPauseOnOutline} />}
+        {/* 转录引擎：视频门唯一专属旋钮，提到主行 */}
+        {sourceType === "video" && props.transcriptionAvailable && (
+          <EngineChip value={transcribeEngine} onChange={setTranscribeEngine} />
+        )}
         {/* 多档时 profile 变 chip；单档/默认档时只是信息 badge */}
         {hasMultiProfile ? (
           <ProfilePicker
@@ -427,10 +500,6 @@ export function Launcher(props: LauncherProps) {
           maxRetries={maxRetries} setMaxRetries={setMaxRetries}
           force={force} setForce={setForce}
           rewriteStrategy={rewriteStrategy} setRewriteStrategy={setRewriteStrategy}
-          trueQuick={trueQuick} setTrueQuick={setTrueQuick}
-          transcribeEngine={transcribeEngine} setTranscribeEngine={setTranscribeEngine}
-          showTranscribe={kind === "video" && props.transcriptionAvailable}
-          pauseOnOutline={pauseOnOutline}
         />
         <div className="flex-1" />
         <Button
@@ -466,8 +535,8 @@ export function Launcher(props: LauncherProps) {
         ref={fileInputRef}
         type="file"
         hidden
-        accept={props.transcriptionAvailable
-          ? ".mp4,.mov,.mkv,.m4v,.webm,.flv,.avi,.txt,.md,.srt,.vtt,video/*"
+        accept={sourceType === "video" && props.transcriptionAvailable
+          ? ".mp4,.mov,.mkv,.m4v,.webm,.flv,.avi,video/*"
           : ".txt,.md,.srt,.vtt"}
         onChange={e => { const f = e.target.files?.[0]; if (f) uploadFile(f); e.target.value = "" }}
       />
@@ -560,6 +629,121 @@ function PauseToggle({ value, onChange }: { value: boolean; onChange: (v: boolea
   )
 }
 
+// ─── 子组件：来源类型两扇门 ─────────────────────────────────────────────
+function SourceTypeTabs({ value, onChange, transcriptionAvailable }: {
+  value: "video" | "text"
+  onChange: (t: "video" | "text") => void
+  transcriptionAvailable: boolean
+}) {
+  const tabs = [
+    { key: "video" as const, label: "视频", Icon: Film },
+    { key: "text" as const, label: "文字稿", Icon: FileText },
+  ]
+  return (
+    <div className="inline-flex self-start rounded-lg border bg-muted/40 p-0.5">
+      {tabs.map(({ key, label, Icon }) => {
+        const disabled = key === "video" && !transcriptionAvailable
+        const active = value === key
+        return (
+          <button
+            key={key}
+            type="button"
+            disabled={disabled}
+            onClick={() => onChange(key)}
+            title={disabled ? "打包版未内置转录引擎 · 请用文字稿" : undefined}
+            className={cn(
+              "inline-flex items-center gap-1.5 px-3 py-1 rounded-md text-sm transition-colors",
+              active ? "bg-card shadow-sm text-foreground" : "text-foreground/60 hover:text-foreground",
+              disabled && "opacity-40 cursor-not-allowed hover:text-foreground/60",
+            )}
+          >
+            <Icon className="size-3.5" /> {label}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+// ─── 子组件：文字稿子类（成稿 quick / 生文字稿 full） ───────────────────
+function TextKindSegment({ value, onChange }: {
+  value: "article" | "transcript"
+  onChange: (v: "article" | "transcript") => void
+}) {
+  const opts = [
+    { key: "article" as const, label: "已成稿", sub: "只套风格" },
+    { key: "transcript" as const, label: "生文字稿", sub: "清洗成文" },
+  ]
+  return (
+    <div className="flex gap-1.5">
+      {opts.map(({ key, label, sub }) => {
+        const active = value === key
+        return (
+          <button
+            key={key}
+            type="button"
+            onClick={() => onChange(key)}
+            className={cn(
+              "flex-1 rounded-md border px-3 py-1.5 text-left transition-colors",
+              active
+                ? "bg-foreground/[0.08] border-foreground/15"
+                : "border-transparent bg-muted/40 hover:bg-foreground/[0.05]",
+            )}
+          >
+            <span className="text-sm">{label}</span>
+            <span className="ml-1 text-xs text-muted-foreground">· {sub}</span>
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+// ─── 子组件：转录引擎 chip（仅视频门） ──────────────────────────────────
+function EngineChip({ value, onChange }: {
+  value: "default" | "whisper-cpp" | "mlx"
+  onChange: (v: "default" | "whisper-cpp" | "mlx") => void
+}) {
+  const [open, setOpen] = useState(false)
+  const label = value === "default" ? "默认引擎" : value === "mlx" ? "mlx · Apple" : "whisper.cpp"
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-sm transition-colors",
+            "text-foreground/85 hover:bg-foreground/[0.05]",
+            (open || value !== "default") && "bg-foreground/[0.08] border-foreground/15 text-foreground",
+          )}
+          title="转录引擎"
+        >
+          <FileAudio className="size-3.5" />
+          <span className="text-caption-sm">{label}</span>
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-56 p-2">
+        <div className="text-xs font-medium text-muted-foreground px-1 pb-1">转录引擎</div>
+        <div className="flex flex-col gap-0.5">
+          {(["default", "whisper-cpp", "mlx"] as const).map(opt => (
+            <button
+              key={opt}
+              type="button"
+              onClick={() => { onChange(opt); setOpen(false) }}
+              className={cn(
+                "text-left px-2 py-1.5 rounded-md text-sm transition-colors",
+                value === opt ? "bg-foreground/[0.08]" : "hover:bg-foreground/[0.05]",
+              )}
+            >
+              {opt === "default" ? "默认（自动选最优）" : opt === "mlx" ? "mlx · Apple 加速" : "whisper.cpp"}
+            </button>
+          ))}
+        </div>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
 // ─── 子组件：profile chip（仅多档时） ───────────────────────────────────
 function ProfilePicker({ profileOptions, profileId, defaultProfileId, onChange }: {
   profileOptions: LlmProfile[]
@@ -624,14 +808,9 @@ function AdvancedPopover(props: {
   maxRetries: number; setMaxRetries: (v: number) => void
   force: boolean; setForce: (v: boolean) => void
   rewriteStrategy: "single" | "sectioned"; setRewriteStrategy: (v: "single" | "sectioned") => void
-  trueQuick: boolean; setTrueQuick: (v: boolean) => void
-  transcribeEngine: "default" | "whisper-cpp" | "mlx"; setTranscribeEngine: (v: "default" | "whisper-cpp" | "mlx") => void
-  showTranscribe: boolean
-  pauseOnOutline: boolean
 }) {
   const [open, setOpen] = useState(false)
   const dirty = props.maxRetries !== 1 || props.force || props.rewriteStrategy !== "single"
-    || props.trueQuick || props.transcribeEngine !== "default"
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
@@ -666,35 +845,7 @@ function AdvancedPopover(props: {
               onChange={v => props.setRewriteStrategy(v ? "sectioned" : "single")}
               hint="按 outline 拆节调用 LLM，长稿避免撞窗"
             />
-            <Checkbox
-              label="跳过中间步骤（纯 quick 模式）"
-              checked={props.trueQuick}
-              onChange={props.setTrueQuick}
-              hint="不做清洗 / 提炼 / 骨架，直接重写 + 质检"
-            />
           </div>
-          {props.showTranscribe && (
-            <div>
-              <div className="text-xs font-medium text-muted-foreground mb-1.5">转录引擎</div>
-              <div className="flex gap-1">
-                {(["default", "whisper-cpp", "mlx"] as const).map(opt => (
-                  <button
-                    key={opt}
-                    type="button"
-                    onClick={() => props.setTranscribeEngine(opt)}
-                    className={cn(
-                      "flex-1 px-2 py-1 rounded-md border text-xs transition-colors",
-                      props.transcribeEngine === opt
-                        ? "bg-foreground/[0.08] border-foreground/15 text-foreground"
-                        : "text-foreground/70 hover:bg-foreground/[0.05]",
-                    )}
-                  >
-                    {opt === "default" ? "默认" : opt === "mlx" ? "mlx · Apple" : "whisper.cpp"}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
         </div>
       </PopoverContent>
     </Popover>

@@ -66,13 +66,13 @@ def main(argv: list[str] | None = None) -> int:
     api_key = os.environ.get("VIDEO2BLOG_API_KEY", "").strip()
     if not api_key:
         print("[错误] 未设置环境变量 VIDEO2BLOG_API_KEY，请先在终端中执行:", file=sys.stderr)
-        print("  export VIDEO2BLOG_API_KEY=\"你的API密钥\"", file=sys.stderr)
-        print("  (可选) export VIDEO2BLOG_API_BASE=\"接口BaseURL\"", file=sys.stderr)
-        print("  (可选) export VIDEO2BLOG_MODEL=\"使用的模型\"", file=sys.stderr)
+        print('  export VIDEO2BLOG_API_KEY="你的API密钥"', file=sys.stderr)
+        print('  (可选) export VIDEO2BLOG_API_BASE="接口BaseURL"', file=sys.stderr)
+        print('  (可选) export VIDEO2BLOG_MODEL="使用的模型"', file=sys.stderr)
         return 1
 
     repo_root = Path(__file__).resolve().parents[1]
-    
+
     # Resolve source path
     source_path = args.source
     if not source_path.is_absolute():
@@ -126,7 +126,10 @@ def main(argv: list[str] | None = None) -> int:
             print("================================================================", flush=True)
             print("[✓] 运行成功！", flush=True)
             print(f"[✓] 成品路径: {final_path}", flush=True)
-            print(f"[✓] 累计 Token 消耗: Input {client.total_input_tokens} | Output {client.total_output_tokens}", flush=True)
+            print(
+                f"[✓] 累计 Token 消耗: Input {client.total_input_tokens} | Output {client.total_output_tokens}",
+                flush=True,
+            )
             print(f"[✓] 累计预估费用: ${client.total_cost:.5f} USD", flush=True)
             print("================================================================", flush=True)
             return 0
@@ -136,6 +139,7 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as e:
         print(f"\n[错误] 工作流执行发生异常: {e}", file=sys.stderr)
         import traceback
+
         traceback.print_exc()
         return 1
 

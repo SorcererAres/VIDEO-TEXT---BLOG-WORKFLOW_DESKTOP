@@ -13,7 +13,20 @@ from pathlib import Path
 
 WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9_-]*|[\u4e00-\u9fff]+")
 SENTENCE_RE = re.compile(r"[^。！？!?]+[。！？!?]?")
-STOP_TERMS = {"这个", "一个", "我们", "他们", "自己", "不是", "就是", "如果", "因为", "所以", "但是", "可以"}
+STOP_TERMS = {
+    "这个",
+    "一个",
+    "我们",
+    "他们",
+    "自己",
+    "不是",
+    "就是",
+    "如果",
+    "因为",
+    "所以",
+    "但是",
+    "可以",
+}
 
 
 def strip_frontmatter(text: str) -> str:
@@ -62,9 +75,13 @@ def fingerprint(path: Path, repo: Path) -> dict:
         "title": title_from_text(body, path),
         "created_at": datetime.now(timezone.utc).isoformat(),
         "paragraph_count": len(paragraphs),
-        "avg_paragraph_len": round(sum(paragraph_lengths) / len(paragraph_lengths), 2) if paragraph_lengths else 0,
+        "avg_paragraph_len": round(sum(paragraph_lengths) / len(paragraph_lengths), 2)
+        if paragraph_lengths
+        else 0,
         "sentence_count": len(sentences),
-        "avg_sentence_len": round(sum(sentence_lengths) / len(sentence_lengths), 2) if sentence_lengths else 0,
+        "avg_sentence_len": round(sum(sentence_lengths) / len(sentence_lengths), 2)
+        if sentence_lengths
+        else 0,
         "opening": sentences[0][:80] if sentences else "",
         "top_terms": top_terms,
     }

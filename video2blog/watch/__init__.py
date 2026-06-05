@@ -5,8 +5,8 @@ from __future__ import annotations
 import sys
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from video2blog.output import output_paths
 from video2blog.pipeline import VIDEO_EXT, process_video
@@ -179,4 +179,6 @@ def watch_loop(
     except KeyboardInterrupt:
         observer.stop()
     observer.join()
+
+
 __all__ = ["watch_loop"]

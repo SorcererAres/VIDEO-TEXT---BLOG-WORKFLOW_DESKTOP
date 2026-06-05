@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import json
+import shutil
+import tempfile
 import time
 import unittest
 from pathlib import Path
-import tempfile
-import shutil
 from unittest import mock
 
-from video2blog.engine.utils import atomic_write
+from video2blog.engine.chunking import split_text_chunks
+from video2blog.engine.client import LLMClient
 from video2blog.engine.parser import ContextLoader
 from video2blog.engine.runner import (
     Engine,
@@ -19,13 +20,12 @@ from video2blog.engine.runner import (
     extract_blog_body,
     extract_json_object,
     extract_quality_review,
+    looks_like_json_mode_unsupported,
     parse_markdown_review,
     parse_quality_json_review,
-    looks_like_json_mode_unsupported,
     strip_runtime_scaffold,
 )
-from video2blog.engine.chunking import split_text_chunks
-from video2blog.engine.client import LLMClient, estimate_tokens
+from video2blog.engine.utils import atomic_write
 
 
 class TestEngineUtils(unittest.TestCase):
@@ -37,12 +37,12 @@ class TestEngineUtils(unittest.TestCase):
 
     def test_atomic_write(self) -> None:
         test_file = self.tmp_dir / "test_file.txt"
-        
+
         # Test basic write
         atomic_write(test_file, "hello atomic")
         self.assertTrue(test_file.exists())
         self.assertEqual(test_file.read_text(encoding="utf-8"), "hello atomic")
-        
+
         # Test overwriting existing
         atomic_write(test_file, "hello overwrite")
         self.assertEqual(test_file.read_text(encoding="utf-8"), "hello overwrite")
@@ -51,23 +51,27 @@ class TestEngineUtils(unittest.TestCase):
 class TestEngineParser(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp_dir = Path(tempfile.mkdtemp())
-        
+
         # Create mock preferences, config, workflow files, and skills
         (self.tmp_dir / "memory").mkdir(parents=True, exist_ok=True)
         (self.tmp_dir / "knowledge").mkdir(parents=True, exist_ok=True)
         (self.tmp_dir / ".cursor/skills/video2blog/rewrite-blog").mkdir(parents=True, exist_ok=True)
-        
+
         (self.tmp_dir / "WORKFLOW.md").write_text("Mock Workflow content", encoding="utf-8")
         (self.tmp_dir / "knowledge/STYLE_GUIDE.md").write_text("Mock Style Guide", encoding="utf-8")
-        (self.tmp_dir / "memory/PREFERENCES.md").write_text("Mock Preferences: speaker is {{SPEAKER}}", encoding="utf-8")
+        (self.tmp_dir / "memory/PREFERENCES.md").write_text(
+            "Mock Preferences: speaker is {{SPEAKER}}", encoding="utf-8"
+        )
         (self.tmp_dir / "memory/CONFIG.md").write_text("Mock Config", encoding="utf-8")
         (self.tmp_dir / "memory/HISTORY.md").write_text(
-            "# 近期博文索引\n\n| 日期 | 标题 | 演讲人 | 一句摘要（演讲人视角） | 成品路径 |\n|---|---|---|---|---|\n", 
-            encoding="utf-8"
+            "# 近期博文索引\n\n| 日期 | 标题 | 演讲人 | 一句摘要（演讲人视角） | 成品路径 |\n|---|---|---|---|---|\n",
+            encoding="utf-8",
         )
-        
+
         skill_content = "---\nname: rewrite-blog\n---\n# Step 6 Rewrite\nUse role {{ROUTING}}"
-        (self.tmp_dir / ".cursor/skills/video2blog/rewrite-blog/SKILL.md").write_text(skill_content, encoding="utf-8")
+        (self.tmp_dir / ".cursor/skills/video2blog/rewrite-blog/SKILL.md").write_text(
+            skill_content, encoding="utf-8"
+        )
 
         self.loader = ContextLoader(self.tmp_dir)
 
@@ -78,9 +82,11 @@ class TestEngineParser(unittest.TestCase):
         # Currently no placeholders
         errors = self.loader.check_placeholders()
         self.assertEqual(len(errors), 0)
-        
+
         # Add placeholders
-        (self.tmp_dir / "memory/PREFERENCES.md").write_text("Mock Preferences with YYYY-MM-DD and ____", encoding="utf-8")
+        (self.tmp_dir / "memory/PREFERENCES.md").write_text(
+            "Mock Preferences with YYYY-MM-DD and ____", encoding="utf-8"
+        )
         errors = self.loader.check_placeholders()
         self.assertTrue(len(errors) > 0)
 
@@ -94,10 +100,10 @@ class TestEngineParser(unittest.TestCase):
             "SPEAKER": "张老师",
             "ROUTING": "/lecture",
             "MODE": "quick",
-            "SOURCE": "raw.txt"
+            "SOURCE": "raw.txt",
         }
         system, user = self.loader.assemble_prompt("rewrite-blog", variables, "Raw Transcript Text")
-        
+
         # Verify placeholders replaced
         self.assertIn("张老师", system)
         self.assertIn("/lecture", system)
@@ -108,25 +114,30 @@ class TestEngineParser(unittest.TestCase):
     def test_assemble_prompt_omits_workflow_when_disabled(self) -> None:
         # 回归：quality-check 这类强格式化步骤必须能关掉 WORKFLOW 注入，
         # 否则 LLM 看到 Step 3-8 全套说明后会跑歪、把工作流又复述一遍。
-        variables = {"SPEAKER": "张老师", "ROUTING": "/lecture", "MODE": "quick", "SOURCE": "raw.txt"}
+        variables = {
+            "SPEAKER": "张老师",
+            "ROUTING": "/lecture",
+            "MODE": "quick",
+            "SOURCE": "raw.txt",
+        }
         (self.tmp_dir / "WORKFLOW.md").write_text(
             "# WORKFLOW\n## Step 3: clean-transcript\n## Step 6: rewrite-blog",
             encoding="utf-8",
         )
-        sys_on, _ = self.loader.assemble_prompt("rewrite-blog", variables, "x", include_workflow=True)
-        self.assertIn("Step 3: clean-transcript", sys_on)   # 默认应注入
-        sys_off, _ = self.loader.assemble_prompt("rewrite-blog", variables, "x", include_workflow=False)
+        sys_on, _ = self.loader.assemble_prompt(
+            "rewrite-blog", variables, "x", include_workflow=True
+        )
+        self.assertIn("Step 3: clean-transcript", sys_on)  # 默认应注入
+        sys_off, _ = self.loader.assemble_prompt(
+            "rewrite-blog", variables, "x", include_workflow=False
+        )
         self.assertNotIn("Step 3: clean-transcript", sys_off)
         self.assertNotIn("Step 6: rewrite-blog", sys_off)
         self.assertNotIn("## 1. 运行合同", sys_off)
 
     def test_assemble_prompt_fail_closed(self) -> None:
         # Missing SPEAKER variable
-        variables = {
-            "ROUTING": "/lecture",
-            "MODE": "quick",
-            "SOURCE": "raw.txt"
-        }
+        variables = {"ROUTING": "/lecture", "MODE": "quick", "SOURCE": "raw.txt"}
         with self.assertRaises(ValueError):
             self.loader.assemble_prompt("rewrite-blog", variables, "Raw Transcript Text")
 
@@ -160,7 +171,9 @@ class TestLLMClientWallClockDeadline(unittest.TestCase):
 
         # 必须在 deadline 后及时退出(单次 attempt 不能拖过 max_total_seconds)
         # 容忍 1.5s 系统调度 / future overhead
-        self.assertLess(elapsed, deadline + 1.5, f"call_api 跑了 {elapsed:.1f}s,远超 deadline 还没退出")
+        self.assertLess(
+            elapsed, deadline + 1.5, f"call_api 跑了 {elapsed:.1f}s,远超 deadline 还没退出"
+        )
 
 
 class TestEngineRunnerHelpers(unittest.TestCase):
@@ -201,11 +214,13 @@ class TestEngineRunnerHelpers(unittest.TestCase):
         self.assertEqual(result["verdict"], "PASS")
 
     def test_extract_json_object(self) -> None:
-        text_with_fences = "Some chat introduction\n```json\n{\n  \"val\": 42\n}\n```\nSome chat conclusion"
+        text_with_fences = (
+            'Some chat introduction\n```json\n{\n  "val": 42\n}\n```\nSome chat conclusion'
+        )
         obj = extract_json_object(text_with_fences)
         self.assertEqual(obj.get("val"), 42)
-        
-        plain_json = "{\"val\": 100}"
+
+        plain_json = '{"val": 100}'
         obj2 = extract_json_object(plain_json)
         self.assertEqual(obj2.get("val"), 100)
 
@@ -335,7 +350,11 @@ class TestEngineRunnerHelpers(unittest.TestCase):
                 RuntimeError("LLM API 请求失败: HTTP 400\nunsupported response_format json_object")
             )
         )
-        self.assertFalse(looks_like_json_mode_unsupported(RuntimeError("LLM API 请求失败: HTTP 401 invalid api key")))
+        self.assertFalse(
+            looks_like_json_mode_unsupported(
+                RuntimeError("LLM API 请求失败: HTTP 401 invalid api key")
+            )
+        )
 
 
 class TestEngineSectionedRewriteHelpers(unittest.TestCase):
@@ -373,22 +392,31 @@ class TestEngineSectionedRewriteHelpers(unittest.TestCase):
         # 三种 kind 的指令必须能被 mock 的 _identify_section_kind 识别
         # —— 改了模板，mock 与 runner 之间的耦合就会断。
         intro = Engine._build_section_task(
-            kind="intro", heading="导语", brief="开场骨架",
-            clean_text="C", insights_text="I",
+            kind="intro",
+            heading="导语",
+            brief="开场骨架",
+            clean_text="C",
+            insights_text="I",
         )
         self.assertIn("### 本节任务（导语", intro)
         self.assertIn("# <文章总标题>", intro)
 
         body = Engine._build_section_task(
-            kind="body-00", heading="## 测试的真功能", brief="承载翻转",
-            clean_text="C", insights_text="I",
+            kind="body-00",
+            heading="## 测试的真功能",
+            brief="承载翻转",
+            clean_text="C",
+            insights_text="I",
         )
         self.assertIn("### 本节任务（正文一节）", body)
         self.assertIn("## 测试的真功能", body)
 
         outro = Engine._build_section_task(
-            kind="outro", heading="收尾", brief="点出方向差异",
-            clean_text="C", insights_text="I",
+            kind="outro",
+            heading="收尾",
+            brief="点出方向差异",
+            clean_text="C",
+            insights_text="I",
         )
         self.assertIn("### 本节任务（收尾", outro)
 
@@ -411,14 +439,7 @@ class TestEngineSectionedRewriteHelpers(unittest.TestCase):
         self.assertNotIn("Step 6", cleaned)
 
     def test_first_title_candidate_picks_first_numbered_item(self) -> None:
-        outline = (
-            "## 标题候选\n"
-            "1. 第一条标题\n"
-            "2. 第二条\n"
-            "\n"
-            "## 骨架\n"
-            "...\n"
-        )
+        outline = "## 标题候选\n1. 第一条标题\n2. 第二条\n\n## 骨架\n...\n"
         self.assertEqual(Engine._first_title_candidate(outline), "第一条标题")
 
     def test_first_title_candidate_returns_empty_when_missing(self) -> None:
@@ -450,7 +471,9 @@ class JsonModeUnsupportedThenMarkdownClient(MockLLMClient):
     def call_api(self, system_prompt: str, user_prompt: str, json_mode: bool = False) -> str:
         self.calls.append((system_prompt, user_prompt, json_mode))
         if json_mode:
-            raise RuntimeError("LLM API 请求失败: HTTP 400\nunsupported response_format json_object")
+            raise RuntimeError(
+                "LLM API 请求失败: HTTP 400\nunsupported response_format json_object"
+            )
         resp = self.responses[self.call_count]
         self.call_count += 1
         return resp
@@ -459,27 +482,39 @@ class JsonModeUnsupportedThenMarkdownClient(MockLLMClient):
 class TestEngineRunner(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp_dir = Path(tempfile.mkdtemp())
-        
+
         # Setup folders
         (self.tmp_dir / "memory").mkdir(parents=True, exist_ok=True)
         (self.tmp_dir / "knowledge").mkdir(parents=True, exist_ok=True)
         (self.tmp_dir / "work/test_stem").mkdir(parents=True, exist_ok=True)
-        (self.tmp_dir / ".cursor/skills/video2blog/clean-transcript").mkdir(parents=True, exist_ok=True)
-        (self.tmp_dir / ".cursor/skills/video2blog/extract-insights").mkdir(parents=True, exist_ok=True)
-        (self.tmp_dir / ".cursor/skills/video2blog/structure-narrative").mkdir(parents=True, exist_ok=True)
+        (self.tmp_dir / ".cursor/skills/video2blog/clean-transcript").mkdir(
+            parents=True, exist_ok=True
+        )
+        (self.tmp_dir / ".cursor/skills/video2blog/extract-insights").mkdir(
+            parents=True, exist_ok=True
+        )
+        (self.tmp_dir / ".cursor/skills/video2blog/structure-narrative").mkdir(
+            parents=True, exist_ok=True
+        )
         (self.tmp_dir / ".cursor/skills/video2blog/rewrite-blog").mkdir(parents=True, exist_ok=True)
-        (self.tmp_dir / ".cursor/skills/video2blog/quality-check").mkdir(parents=True, exist_ok=True)
+        (self.tmp_dir / ".cursor/skills/video2blog/quality-check").mkdir(
+            parents=True, exist_ok=True
+        )
 
         # Setup standard context files
-        (self.tmp_dir / "WORKFLOW.md").write_text("Mock Workflow contract line length limit bypass", encoding="utf-8")
+        (self.tmp_dir / "WORKFLOW.md").write_text(
+            "Mock Workflow contract line length limit bypass", encoding="utf-8"
+        )
         (self.tmp_dir / "knowledge/STYLE_GUIDE.md").write_text("Mock Style Guide", encoding="utf-8")
-        (self.tmp_dir / "memory/PREFERENCES.md").write_text("Mock Preferences: speaker is {{SPEAKER}}", encoding="utf-8")
+        (self.tmp_dir / "memory/PREFERENCES.md").write_text(
+            "Mock Preferences: speaker is {{SPEAKER}}", encoding="utf-8"
+        )
         (self.tmp_dir / "memory/CONFIG.md").write_text("Mock Config", encoding="utf-8")
-        
+
         # Setup mock HISTORY.md to pass check_placeholders
         (self.tmp_dir / "memory/HISTORY.md").write_text(
-            "# 近期博文索引\n\n| 日期 | 标题 | 演讲人 | 一句摘要（演讲人视角） | 成品路径 |\n|---|---|---|---|---|\n", 
-            encoding="utf-8"
+            "# 近期博文索引\n\n| 日期 | 标题 | 演讲人 | 一句摘要（演讲人视角） | 成品路径 |\n|---|---|---|---|---|\n",
+            encoding="utf-8",
         )
 
         (self.tmp_dir / ".cursor/skills/video2blog/clean-transcript/SKILL.md").write_text(
@@ -494,10 +529,11 @@ class TestEngineRunner(unittest.TestCase):
             "---\nname: structure-narrative\n---\n# Step 5 Structure\nmode: {{MODE}}",
             encoding="utf-8",
         )
-        
+
         # Step 6 skill (contains correction template variables A4 contract requirement)
         (self.tmp_dir / ".cursor/skills/video2blog/rewrite-blog/SKILL.md").write_text(
-            "---\nname: rewrite-blog\n---\n# Step 6 Rewrite\nrouting: {{ROUTING}}\nprev_total: {{PREV_TOTAL}}\nprev_rebrief: {{PREV_REBRIEF}}", encoding="utf-8"
+            "---\nname: rewrite-blog\n---\n# Step 6 Rewrite\nrouting: {{ROUTING}}\nprev_total: {{PREV_TOTAL}}\nprev_rebrief: {{PREV_REBRIEF}}",
+            encoding="utf-8",
         )
         # Step 7 skill
         (self.tmp_dir / ".cursor/skills/video2blog/quality-check/SKILL.md").write_text(
@@ -532,15 +568,15 @@ class TestEngineRunner(unittest.TestCase):
         step8_summary = "我（梁老师）分享了关于《学习的真谛》的内容。"
 
         mock_client = MockLLMClient([step6_resp, step7_resp, step8_summary])
-        engine = Engine(self.tmp_dir, mock_client) # type: ignore
-        
+        engine = Engine(self.tmp_dir, mock_client)  # type: ignore
+
         post_path = engine.run_job(
             stem="test_stem",
             source_path=source_path,
             mode="quick",
             routing="/lecture",
             speaker="梁老师",
-            max_retries=1
+            max_retries=1,
         )
 
         self.assertIsNotNone(post_path)
@@ -599,7 +635,7 @@ class TestEngineRunner(unittest.TestCase):
         source_path = self.tmp_dir / "work/test_stem/raw.txt"
         source_path.write_text("This is raw transcript text", encoding="utf-8")
 
-        # Mock API responses: 
+        # Mock API responses:
         # 1. Step 6 draft v1
         # 2. Step 7 Quality Check REVIEW (fails, score 45) (Markdown)
         # 3. Step 6 draft v2 (revised)
@@ -642,15 +678,15 @@ class TestEngineRunner(unittest.TestCase):
         step8_summary = "我（梁老师）分享了关于《学习目标是做到》的内容。"
 
         mock_client = MockLLMClient([step6_v1, step7_v1, step6_v2, step7_v2, step8_summary])
-        engine = Engine(self.tmp_dir, mock_client) # type: ignore
-        
+        engine = Engine(self.tmp_dir, mock_client)  # type: ignore
+
         post_path = engine.run_job(
             stem="test_stem",
             source_path=source_path,
             mode="quick",
             routing="/lecture",
             speaker="梁老师",
-            max_retries=1
+            max_retries=1,
         )
 
         self.assertIsNotNone(post_path)
@@ -693,8 +729,10 @@ class TestEngineRunner(unittest.TestCase):
         )
         summary_resp = "我（梁老师）完成了 Full Mode Title。"
 
-        mock_client = MockLLMClient([clean_resp, insights_resp, outline_resp, step6_resp, step7_resp, summary_resp])
-        engine = Engine(self.tmp_dir, mock_client) # type: ignore
+        mock_client = MockLLMClient(
+            [clean_resp, insights_resp, outline_resp, step6_resp, step7_resp, summary_resp]
+        )
+        engine = Engine(self.tmp_dir, mock_client)  # type: ignore
 
         post_path = engine.run_job(
             stem="test_stem",
@@ -736,7 +774,7 @@ class TestEngineRunner(unittest.TestCase):
         responses.append("## 清洗稿\n\nRecovered chunk 2\n\n## 不确定清单\n- [?] recovered")
 
         mock_client = MockLLMClient(responses)
-        engine = Engine(self.tmp_dir, mock_client, chunk_char_limit=12, chunk_context_chars=4) # type: ignore
+        engine = Engine(self.tmp_dir, mock_client, chunk_char_limit=12, chunk_context_chars=4)  # type: ignore
         state = engine.load_state("test_stem")
         state["variables"] = {
             "SPEAKER": "梁老师",
@@ -788,15 +826,14 @@ class TestEngineRunner(unittest.TestCase):
             )
 
         responses = [
-            f"## 核心观点\n{idx}. Insight chunk {idx}\n\n## 待确认项\n- 无"
-            for idx in range(1, 4)
+            f"## 核心观点\n{idx}. Insight chunk {idx}\n\n## 待确认项\n- 无" for idx in range(1, 4)
         ]
         responses.append("## 核心观点\n1. Reduced insights\n\n## 待确认项\n- 无")
         responses.append("## 核心观点\n2. Recovered insight chunk 2\n\n## 待确认项\n- 无")
         responses.append("## 核心观点\n1. Reduced again\n\n## 待确认项\n- 无")
 
         mock_client = MockLLMClient(responses)
-        engine = Engine(self.tmp_dir, mock_client, chunk_char_limit=1000, chunk_context_chars=4) # type: ignore
+        engine = Engine(self.tmp_dir, mock_client, chunk_char_limit=1000, chunk_context_chars=4)  # type: ignore
         state = engine.load_state("test_stem")
         state["variables"] = {
             "SPEAKER": "梁老师",
@@ -856,12 +893,15 @@ class TestEngineRunner(unittest.TestCase):
             total_input_tokens = 0
             total_output_tokens = 0
             total_cost = 0.0
+
             def call_api(self, *args, **kwargs):  # noqa: D401
                 raise AssertionError("generate_summary 不允许调 LLM——这是 finalize 步骤的硬性约束")
 
         engine = Engine(self.tmp_dir, ExplodingClient())  # type: ignore[arg-type]
         # speaker 含括号注解时应剥掉
-        s = engine.generate_summary("正文内容（不会被读取）", "学习目标是做到", "葛旭（孤独的阅读者创办者）")
+        s = engine.generate_summary(
+            "正文内容（不会被读取）", "学习目标是做到", "葛旭（孤独的阅读者创办者）"
+        )
         self.assertEqual(s, "我（葛旭）分享了关于《学习目标是做到》的内容。")
         # 干净的 speaker 直接用
         s2 = engine.generate_summary("正文", "标题", "梁老师")
@@ -878,15 +918,20 @@ class TestEngineRunner(unittest.TestCase):
         # 第一次：标题 A
         engine = Engine(
             self.tmp_dir,
-            MockLLMClient([  # type: ignore[arg-type]
-                "# 旧标题A\n\n这是 A 版正文。",
-                self._step7_pass_md(),
-                "我（梁老师）讲了 A。",
-            ]),
+            MockLLMClient(
+                [  # type: ignore[arg-type]
+                    "# 旧标题A\n\n这是 A 版正文。",
+                    self._step7_pass_md(),
+                    "我（梁老师）讲了 A。",
+                ]
+            ),
         )
         post_a = engine.run_job(
-            stem="test_stem", source_path=source_path,
-            mode="quick", routing="/lecture", speaker="梁老师",
+            stem="test_stem",
+            source_path=source_path,
+            mode="quick",
+            routing="/lecture",
+            speaker="梁老师",
         )
         self.assertIsNotNone(post_a)
 
@@ -897,14 +942,19 @@ class TestEngineRunner(unittest.TestCase):
         engine.save_state("test_stem", st)
 
         # 第二次：LLM 给出完全不同的标题 B
-        engine.client = MockLLMClient([  # type: ignore[assignment]
-            "# 全新标题B\n\n这是 B 版正文。",
-            self._step7_pass_md("55/60"),
-            "我（梁老师）讲了 B。",
-        ])
+        engine.client = MockLLMClient(
+            [  # type: ignore[assignment]
+                "# 全新标题B\n\n这是 B 版正文。",
+                self._step7_pass_md("55/60"),
+                "我（梁老师）讲了 B。",
+            ]
+        )
         post_b = engine.run_job(
-            stem="test_stem", source_path=source_path,
-            mode="quick", routing="/lecture", speaker="梁老师",
+            stem="test_stem",
+            source_path=source_path,
+            mode="quick",
+            routing="/lecture",
+            speaker="梁老师",
         )
         self.assertIsNotNone(post_b)
 
@@ -933,7 +983,9 @@ class TestEngineRecoversFromTerminalFailureStatus(unittest.TestCase):
         (self.tmp_dir / "knowledge").mkdir(parents=True, exist_ok=True)
         (self.tmp_dir / "work/x").mkdir(parents=True, exist_ok=True)
         (self.tmp_dir / ".cursor/skills/video2blog/rewrite-blog").mkdir(parents=True, exist_ok=True)
-        (self.tmp_dir / ".cursor/skills/video2blog/quality-check").mkdir(parents=True, exist_ok=True)
+        (self.tmp_dir / ".cursor/skills/video2blog/quality-check").mkdir(
+            parents=True, exist_ok=True
+        )
         (self.tmp_dir / "WORKFLOW.md").write_text("contract", encoding="utf-8")
         (self.tmp_dir / "knowledge/STYLE_GUIDE.md").write_text("style", encoding="utf-8")
         (self.tmp_dir / "memory/PREFERENCES.md").write_text("pref", encoding="utf-8")
@@ -962,22 +1014,37 @@ class TestEngineRecoversFromTerminalFailureStatus(unittest.TestCase):
             "variables": {"SPEAKER": "我", "ROUTING": "/lecture", "MODE": "quick"},
             "history": [],
             "checked_results": [
-                {"version": 1, "verdict": "REVIEW", "scores": {}, "total": "—/60",
-                 "rebrief": "parse_failed", "parse_failed": True}
+                {
+                    "version": 1,
+                    "verdict": "REVIEW",
+                    "scores": {},
+                    "total": "—/60",
+                    "rebrief": "parse_failed",
+                    "parse_failed": True,
+                }
             ],
             "cache": {
                 "CLEANING": {"input_hash": "kept", "model": "m", "contract_fingerprint": "c"},
             },
         }
         if with_v1_cache:
-            state["cache"]["REWRITING_v1"] = {"input_hash": "old", "model": "m", "contract_fingerprint": "c"}
-            state["cache"]["CHECKING_v1"] = {"input_hash": "old", "model": "m", "contract_fingerprint": "c"}
+            state["cache"]["REWRITING_v1"] = {
+                "input_hash": "old",
+                "model": "m",
+                "contract_fingerprint": "c",
+            }
+            state["cache"]["CHECKING_v1"] = {
+                "input_hash": "old",
+                "model": "m",
+                "contract_fingerprint": "c",
+            }
             state["best_version"] = 1
         state_path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
         return state_path
 
     class _RaisingClient:
         """让引擎一调 LLM 就 raise；目的是把'入口已经重置状态'这一事实暴露出来。"""
+
         total_input_tokens = 0
         total_output_tokens = 0
         total_cost = 0.0
@@ -998,22 +1065,31 @@ class TestEngineRecoversFromTerminalFailureStatus(unittest.TestCase):
         # 引擎在 Step 6 调 LLM 时 raise；关键是 raise 之前入口已经把状态推进过
         with self.assertRaisesRegex(RuntimeError, "intentional-after-reset"):
             engine.run_job(
-                stem="x", source_path=source,
-                mode="quick", routing="/lecture", speaker="我", max_retries=0,
+                stem="x",
+                source_path=source,
+                mode="quick",
+                routing="/lecture",
+                speaker="我",
+                max_retries=0,
             )
 
         s = json.loads(state_path.read_text(encoding="utf-8"))
-        self.assertNotEqual(s["status"], "FAILED",
-                            "FAILED 必须被重置，否则下次提交同 stem 永远跑不动")
-        self.assertEqual(s["checked_results"], [],
-                         "checked_results 必须清空，避免命中旧 parse_failed review")
-        self.assertNotIn("best_version", s,
-                         "best_version 必须移除，否则下游 next(...) 会查到陈年版本")
-        self.assertNotIn("REWRITING_v1", s["cache"],
-                         "REWRITING_v1 cache 必须清，让用户的'再试一次'真去调 LLM")
+        self.assertNotEqual(
+            s["status"], "FAILED", "FAILED 必须被重置，否则下次提交同 stem 永远跑不动"
+        )
+        self.assertEqual(
+            s["checked_results"], [], "checked_results 必须清空，避免命中旧 parse_failed review"
+        )
+        self.assertNotIn(
+            "best_version", s, "best_version 必须移除，否则下游 next(...) 会查到陈年版本"
+        )
+        self.assertNotIn(
+            "REWRITING_v1", s["cache"], "REWRITING_v1 cache 必须清，让用户的'再试一次'真去调 LLM"
+        )
         self.assertNotIn("CHECKING_v1", s["cache"], "CHECKING_v1 同理")
-        self.assertIn("CLEANING", s["cache"],
-                      "Step 3-5 cache 必须保留，避免重复烧 clean/extract/structure 钱")
+        self.assertIn(
+            "CLEANING", s["cache"], "Step 3-5 cache 必须保留，避免重复烧 clean/extract/structure 钱"
+        )
 
     def test_cancelled_status_also_recovers(self) -> None:
         state_path = self._write_state("CANCELLED")
@@ -1022,8 +1098,14 @@ class TestEngineRecoversFromTerminalFailureStatus(unittest.TestCase):
         engine = Engine(self.tmp_dir, self._RaisingClient())  # type: ignore[arg-type]
 
         with self.assertRaises(RuntimeError):
-            engine.run_job(stem="x", source_path=source,
-                           mode="quick", routing="/lecture", speaker="我", max_retries=0)
+            engine.run_job(
+                stem="x",
+                source_path=source,
+                mode="quick",
+                routing="/lecture",
+                speaker="我",
+                max_retries=0,
+            )
 
         s = json.loads(state_path.read_text(encoding="utf-8"))
         self.assertNotEqual(s["status"], "CANCELLED")
@@ -1055,20 +1137,29 @@ class TestEngineRecoversFromTerminalFailureStatus(unittest.TestCase):
 
         # 这次用 sectioned 提交 —— 短路必须 miss，进入重置 + 重新跑
         engine = Engine(
-            self.tmp_dir, self._RaisingClient(),  # type: ignore[arg-type]
+            self.tmp_dir,
+            self._RaisingClient(),  # type: ignore[arg-type]
             rewrite_strategy="sectioned",
         )
         # raising client 会让重写阶段抛错；关键是 raise 之前已经走过 FINISHED 重置路径
         with self.assertRaises(RuntimeError):
-            engine.run_job(stem="x", source_path=source,
-                           mode="quick", routing="/lecture", speaker="我", max_retries=0)
+            engine.run_job(
+                stem="x",
+                source_path=source,
+                mode="quick",
+                routing="/lecture",
+                speaker="我",
+                max_retries=0,
+            )
 
         s2 = json.loads(state_path.read_text(encoding="utf-8"))
         # 关键断言：strategy 切换让短路 miss，FINISHED 走重置，cache 被清
-        self.assertNotIn("REWRITING_v1", s2["cache"],
-                         "strategy 切换时旧 cache 必须被清，否则后续按节路径会复用 single 草稿")
-        self.assertNotIn("final_post_path", s2,
-                         "重置时旧 final_post_path 也必须清掉")
+        self.assertNotIn(
+            "REWRITING_v1",
+            s2["cache"],
+            "strategy 切换时旧 cache 必须被清，否则后续按节路径会复用 single 草稿",
+        )
+        self.assertNotIn("final_post_path", s2, "重置时旧 final_post_path 也必须清掉")
 
     def test_finished_status_also_resets_and_purges_stale_files(self) -> None:
         """5/28 撞到的第 3 个回归点：FINISHED 不被特殊清理时，下一次重跑同 stem 会
@@ -1088,14 +1179,22 @@ class TestEngineRecoversFromTerminalFailureStatus(unittest.TestCase):
         source.write_text("raw", encoding="utf-8")
         engine = Engine(self.tmp_dir, self._RaisingClient())  # type: ignore[arg-type]
         with self.assertRaises(RuntimeError):
-            engine.run_job(stem="x", source_path=source,
-                           mode="quick", routing="/lecture", speaker="我", max_retries=0)
+            engine.run_job(
+                stem="x",
+                source_path=source,
+                mode="quick",
+                routing="/lecture",
+                speaker="我",
+                max_retries=0,
+            )
 
         s2 = json.loads(state_path.read_text(encoding="utf-8"))
         self.assertNotEqual(s2["status"], "FINISHED")
-        self.assertNotIn("final_post_path", s2,
-                         "FINISHED 重提时 final_post_path 必须清掉，"
-                         "否则 Step 8 同源去重会误删上一轮真实成品")
+        self.assertNotIn(
+            "final_post_path",
+            s2,
+            "FINISHED 重提时 final_post_path 必须清掉，否则 Step 8 同源去重会误删上一轮真实成品",
+        )
         self.assertFalse((self.tmp_dir / "work/x/draft_v1.md").exists())
         self.assertFalse((self.tmp_dir / "work/x/review_v1.json").exists())
 
@@ -1118,8 +1217,14 @@ class TestEngineRecoversFromTerminalFailureStatus(unittest.TestCase):
         source.write_text("raw", encoding="utf-8")
         engine = Engine(self.tmp_dir, self._RaisingClient())  # type: ignore[arg-type]
         with self.assertRaises(RuntimeError):
-            engine.run_job(stem="x", source_path=source,
-                           mode="quick", routing="/lecture", speaker="我", max_retries=0)
+            engine.run_job(
+                stem="x",
+                source_path=source,
+                mode="quick",
+                routing="/lecture",
+                speaker="我",
+                max_retries=0,
+            )
 
         # 重置之后 draft_v*/review_v*/chunks/rewrite 全清，避免污染下一轮
         self.assertFalse((work_dir / "draft_v1.md").exists(), "旧 draft_v1 未清")

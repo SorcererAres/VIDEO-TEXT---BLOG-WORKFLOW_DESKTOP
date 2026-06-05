@@ -181,13 +181,21 @@ def _load() -> dict[str, Any]:
         default_id = raw.get("defaultProfileId")
         if default_id not in {p["id"] for p in profiles}:
             default_id = profiles[0]["id"] if profiles else None
-        return {"schema_version": _SCHEMA_VERSION, "profiles": profiles, "defaultProfileId": default_id}
+        return {
+            "schema_version": _SCHEMA_VERSION,
+            "profiles": profiles,
+            "defaultProfileId": default_id,
+        }
 
     # ── v1 → v2 迁移 ──
     legacy_key = _delete_legacy_key()
     has_v1_config = any(raw.get(k) for k in ("provider", "api_base", "model"))
 
-    state: dict[str, Any] = {"schema_version": _SCHEMA_VERSION, "profiles": [], "defaultProfileId": None}
+    state: dict[str, Any] = {
+        "schema_version": _SCHEMA_VERSION,
+        "profiles": [],
+        "defaultProfileId": None,
+    }
     if has_v1_config or legacy_key:
         profile = _normalize_profile(
             {

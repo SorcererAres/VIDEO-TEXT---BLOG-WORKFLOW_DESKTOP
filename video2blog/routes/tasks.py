@@ -22,10 +22,11 @@ from video2blog.server_core import EngineJobRequest
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
+
     from video2blog.server_core import EngineJobService
 
 
-def register(app: "FastAPI", service: "EngineJobService", root: Path) -> None:  # noqa: ARG001
+def register(app: FastAPI, service: EngineJobService, root: Path) -> None:  # noqa: ARG001
     @app.get("/api/tasks")
     def list_tasks_endpoint() -> list[dict[str, Any]]:
         return task_repo.list_tasks(service)
@@ -40,7 +41,9 @@ def register(app: "FastAPI", service: "EngineJobService", root: Path) -> None:  
     @app.post("/api/tasks", status_code=202)
     def create_task_endpoint(payload: JobCreateRequest) -> dict[str, Any]:
         try:
-            request_data = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
+            request_data = (
+                payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
+            )
             request = EngineJobRequest(**request_data)
             job = service.submit_job(request)
             return job.to_dict()

@@ -15,7 +15,6 @@ except ImportError:
     TestClient = None
 
 from video2blog.server import create_app
-from video2blog.server_core import EngineJobRequest
 
 
 class MockLLMClient:
@@ -38,6 +37,7 @@ class MockLLMClient:
 class TestEngineServerAPI(unittest.TestCase):
     def setUp(self) -> None:
         import os
+
         from video2blog.engine import secrets_store as ss
 
         self.tmp_dir = Path(tempfile.mkdtemp())
@@ -52,6 +52,7 @@ class TestEngineServerAPI(unittest.TestCase):
 
     def tearDown(self) -> None:
         import os
+
         shutil.rmtree(self.tmp_dir)
         shutil.rmtree(self._cfg_dir, ignore_errors=True)
         self._ss._keyring = self._real_keyring
@@ -70,14 +71,30 @@ class TestEngineServerAPI(unittest.TestCase):
         mem = self.tmp_dir / "memory"
         mem.mkdir(parents=True, exist_ok=True)
         (mem / "fingerprints.jsonl").write_text(
-            "\n".join([
-                json.dumps({"title": "A", "avg_sentence_len": 30, "avg_paragraph_len": 80,
-                            "created_at": "2026-05-01T00:00:00+00:00", "top_terms": ["AI", "问题", "学习"]}),
-                json.dumps({"title": "B", "avg_sentence_len": 40, "avg_paragraph_len": 100,
-                            "created_at": "2026-05-02T00:00:00+00:00", "top_terms": ["AI", "问题", "工程"]}),
-                "",  # 空行应被跳过
-                "{坏行}",  # 坏 JSON 应被跳过，不拖垮聚合
-            ]),
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "title": "A",
+                            "avg_sentence_len": 30,
+                            "avg_paragraph_len": 80,
+                            "created_at": "2026-05-01T00:00:00+00:00",
+                            "top_terms": ["AI", "问题", "学习"],
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "title": "B",
+                            "avg_sentence_len": 40,
+                            "avg_paragraph_len": 100,
+                            "created_at": "2026-05-02T00:00:00+00:00",
+                            "top_terms": ["AI", "问题", "工程"],
+                        }
+                    ),
+                    "",  # 空行应被跳过
+                    "{坏行}",  # 坏 JSON 应被跳过，不拖垮聚合
+                ]
+            ),
             encoding="utf-8",
         )
         d = client.get("/fingerprints").json()
@@ -87,7 +104,7 @@ class TestEngineServerAPI(unittest.TestCase):
         self.assertEqual(len(d["per_post"]), 2)
         self.assertEqual(d["per_post"][0]["title"], "A")  # 按 created_at 正序
         terms = {t["term"]: t["posts"] for t in d["top_terms"]}
-        self.assertEqual(terms["AI"], 2)       # 两篇都有
+        self.assertEqual(terms["AI"], 2)  # 两篇都有
         self.assertEqual(terms["问题"], 2)
         self.assertEqual(terms["工程"], 1)
 
@@ -102,7 +119,9 @@ class TestEngineServerAPI(unittest.TestCase):
         # 落盘可读回
         self.assertEqual(client.get("/api/dispositions").json()[p]["value"], "edited")
         # 非法 value 拒绝
-        self.assertEqual(client.post("/api/dispositions", json={"path": p, "value": "nope"}).status_code, 400)
+        self.assertEqual(
+            client.post("/api/dispositions", json={"path": p, "value": "nope"}).status_code, 400
+        )
         # 清除
         cleared = client.post("/api/dispositions", json={"path": p, "value": None}).json()
         self.assertNotIn(p, cleared)
@@ -117,7 +136,9 @@ class TestEngineServerAPI(unittest.TestCase):
         (self.tmp_dir / "input/Text").mkdir(parents=True, exist_ok=True)
         (self.tmp_dir / "input/Text/.gitkeep").write_text("", encoding="utf-8")  # 应被忽略
         (self.tmp_dir / "input/Text/snippet.md").write_text("hello", encoding="utf-8")
-        (self.tmp_dir / "input/Text/random.bin").write_text("nope", encoding="utf-8")  # 非白名单后缀，应被忽略
+        (self.tmp_dir / "input/Text/random.bin").write_text(
+            "nope", encoding="utf-8"
+        )  # 非白名单后缀，应被忽略
 
         client = TestClient(create_app(self.tmp_dir))
         res = client.get("/sources")
@@ -155,7 +176,9 @@ class TestEngineServerAPI(unittest.TestCase):
             "routing: /lecture\nspeaker: 白墨西\nsource: work/foo/raw.txt\npass_score: 55/60\n---\n# 成品一\n正文\n",
             encoding="utf-8",
         )
-        (reviews_dir / "2026-05-20-成品一.review.md").write_text("## 评分\n...\n## Re-Brief\nok\n", encoding="utf-8")
+        (reviews_dir / "2026-05-20-成品一.review.md").write_text(
+            "## 评分\n...\n## Re-Brief\nok\n", encoding="utf-8"
+        )
 
         # DRAFT 也应该出现,且 status=draft
         (posts_dir / "DRAFT-2026-05-21-未通过.md").write_text(
@@ -165,7 +188,9 @@ class TestEngineServerAPI(unittest.TestCase):
         )
 
         # 无 frontmatter 的文件应被跳过
-        (posts_dir / "no-frontmatter.md").write_text("# 裸 markdown\n没合同信息\n", encoding="utf-8")
+        (posts_dir / "no-frontmatter.md").write_text(
+            "# 裸 markdown\n没合同信息\n", encoding="utf-8"
+        )
 
         client = TestClient(create_app(self.tmp_dir))
         # Round 3：历史成品列表从 /jobs/history 迁到 /api/posts（行为一致）
@@ -217,10 +242,16 @@ class TestEngineServerAPI(unittest.TestCase):
         source_path.parent.mkdir(parents=True, exist_ok=True)
         source_path.write_text("raw", encoding="utf-8")
 
-        res = client.post("/jobs", json={
-            "source": "work/test/raw.txt", "mode": "quick", "speaker": "x",
-            "routing": "/lecture", "api_key": "BAD",
-        })
+        res = client.post(
+            "/jobs",
+            json={
+                "source": "work/test/raw.txt",
+                "mode": "quick",
+                "speaker": "x",
+                "routing": "/lecture",
+                "api_key": "BAD",
+            },
+        )
         self.assertEqual(res.status_code, 202)
         job_id = res.json()["id"]
 
@@ -255,13 +286,17 @@ class TestEngineServerAPI(unittest.TestCase):
 
         # 无效 mode
         self.assertEqual(
-            client.post("/open", json={"path": "output/Posts/2026/x.md", "mode": "browser"}).status_code,
+            client.post(
+                "/open", json={"path": "output/Posts/2026/x.md", "mode": "browser"}
+            ).status_code,
             400,
         )
 
         # 不存在的合法路径
         self.assertEqual(
-            client.post("/open", json={"path": "output/Posts/2026/nope.md", "mode": "finder"}).status_code,
+            client.post(
+                "/open", json={"path": "output/Posts/2026/nope.md", "mode": "finder"}
+            ).status_code,
             404,
         )
 
@@ -286,7 +321,9 @@ class TestEngineServerAPI(unittest.TestCase):
             },
         )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.headers.get("access-control-allow-origin"), "http://localhost:5173")
+        self.assertEqual(
+            response.headers.get("access-control-allow-origin"), "http://localhost:5173"
+        )
 
     def test_cors_rejects_non_local_origins(self) -> None:
         app = create_app(self.tmp_dir)
@@ -300,7 +337,9 @@ class TestEngineServerAPI(unittest.TestCase):
             },
         )
         self.assertEqual(response.status_code, 400)
-        self.assertNotEqual(response.headers.get("access-control-allow-origin"), "https://evil.example")
+        self.assertNotEqual(
+            response.headers.get("access-control-allow-origin"), "https://evil.example"
+        )
 
     def test_test_llm_redacts_api_key_from_errors(self) -> None:
         secret = "secret-test-llm-api-key"
@@ -323,7 +362,7 @@ class TestEngineServerAPI(unittest.TestCase):
         app = create_app(self.tmp_dir)
         service = app.state.video2blog_service
         client = TestClient(app)
-        
+
         # Initially empty
         res = client.get("/jobs")
         self.assertEqual(res.status_code, 200)
@@ -388,7 +427,10 @@ class TestEngineServerAPI(unittest.TestCase):
         for j in list_payload:
             if j["id"] == job_id:
                 self.assertEqual(j["request"]["api_key"], "***")
-                self.assertNotIn("my-request-api-key", res_submit.text + client.get("/jobs").text + client.get(f"/jobs/{job_id}").text)
+                self.assertNotIn(
+                    "my-request-api-key",
+                    res_submit.text + client.get("/jobs").text + client.get(f"/jobs/{job_id}").text,
+                )
         detail = client.get(f"/jobs/{job_id}").json()
         self.assertEqual(detail["request"]["api_key"], "***")
         events_path = self.tmp_dir / "work/test_stem/events.jsonl"
@@ -430,12 +472,12 @@ class TestEngineServerAPI(unittest.TestCase):
             "我（梁老师）完成了 The Test Title。",
         ]
         mock_client = MockLLMClient(responses)
-        
+
         # Custom app builder to inject mock LLM client
         app = create_app(self.tmp_dir)
         service = app.state.video2blog_service
         service._client_factory = lambda _: mock_client
-        
+
         client = TestClient(app)
 
         source_path = self.tmp_dir / "work/test_stem/raw.txt"
@@ -467,14 +509,16 @@ class TestEngineServerAPI(unittest.TestCase):
         self.assertIn("## 标题候选", res_outline_file.json()["content"])
 
         state_path = self.tmp_dir / "work/test_stem/.state.json"
-        with open(state_path, "r", encoding="utf-8") as f:
+        with open(state_path, encoding="utf-8") as f:
             state = json.load(f)
         self.assertEqual(state["status"], "WAITING_USER_OUTLINE")
 
         # 2. Approve Outline
         res_approve_outline = client.post(
             f"/jobs/{job_id}/approve-outline",
-            json={"outline_markdown": "## 标题候选\n1. Approved Title\n\n## 骨架\nUpdated skeleton"},
+            json={
+                "outline_markdown": "## 标题候选\n1. Approved Title\n\n## 骨架\nUpdated skeleton"
+            },
         )
         self.assertEqual(res_approve_outline.status_code, 200)
 
@@ -491,7 +535,7 @@ class TestEngineServerAPI(unittest.TestCase):
         self.assertEqual(res_review_json.status_code, 200)
         self.assertIn("REVIEW", res_review_json.json()["content"])
 
-        with open(state_path, "r", encoding="utf-8") as f:
+        with open(state_path, encoding="utf-8") as f:
             state = json.load(f)
         self.assertEqual(state["status"], "WAITING_USER_REVIEW")
 
@@ -506,12 +550,12 @@ class TestEngineServerAPI(unittest.TestCase):
         finished = service.wait_for_job(job_id)
         self.assertEqual(finished.status, "succeeded")
 
-        with open(state_path, "r", encoding="utf-8") as f:
+        with open(state_path, encoding="utf-8") as f:
             state = json.load(f)
         self.assertEqual(state["status"], "FINISHED")
         self.assertIn("DRAFT-", finished.final_post_path)
         self.assertTrue((self.tmp_dir / finished.final_post_path).exists())
-        
+
         service.shutdown()
 
     def test_knowledge_files_list_and_read(self) -> None:
@@ -531,32 +575,54 @@ class TestEngineServerAPI(unittest.TestCase):
     def test_knowledge_write_roundtrip_and_validation(self) -> None:
         client = TestClient(create_app(self.tmp_dir))
         # 正常写：ok=True
-        r = client.put("/knowledge-file", json={"path": "knowledge/STYLE_GUIDE.md", "content": "1. 新规则\n2. 简体中文"})
+        r = client.put(
+            "/knowledge-file",
+            json={"path": "knowledge/STYLE_GUIDE.md", "content": "1. 新规则\n2. 简体中文"},
+        )
         self.assertEqual(r.status_code, 200)
         self.assertTrue(r.json()["ok"])
-        self.assertEqual(client.get("/knowledge-file", params={"path": "knowledge/STYLE_GUIDE.md"}).json()["content"], "1. 新规则\n2. 简体中文")
+        self.assertEqual(
+            client.get("/knowledge-file", params={"path": "knowledge/STYLE_GUIDE.md"}).json()[
+                "content"
+            ],
+            "1. 新规则\n2. 简体中文",
+        )
         # 含占位符：仍落盘但 ok=False + errors
-        r2 = client.put("/knowledge-file", json={"path": "memory/PREFERENCES.md", "content": "目标字数：____"})
+        r2 = client.put(
+            "/knowledge-file", json={"path": "memory/PREFERENCES.md", "content": "目标字数：____"}
+        )
         self.assertEqual(r2.status_code, 200)
         self.assertFalse(r2.json()["ok"])
         self.assertTrue(r2.json()["errors"])
-        self.assertEqual(client.get("/knowledge-file", params={"path": "memory/PREFERENCES.md"}).json()["content"], "目标字数：____")
+        self.assertEqual(
+            client.get("/knowledge-file", params={"path": "memory/PREFERENCES.md"}).json()[
+                "content"
+            ],
+            "目标字数：____",
+        )
 
     def test_knowledge_rejects_non_allowlisted(self) -> None:
         client = TestClient(create_app(self.tmp_dir))
-        self.assertEqual(client.get("/knowledge-file", params={"path": "video2blog/server.py"}).status_code, 403)
-        self.assertEqual(client.put("/knowledge-file", json={"path": "video2blog/server.py", "content": "x"}).status_code, 403)
+        self.assertEqual(
+            client.get("/knowledge-file", params={"path": "video2blog/server.py"}).status_code, 403
+        )
+        self.assertEqual(
+            client.put(
+                "/knowledge-file", json={"path": "video2blog/server.py", "content": "x"}
+            ).status_code,
+            403,
+        )
 
     def test_upload_routes_by_extension_and_dedupes(self) -> None:
         client = TestClient(create_app(self.tmp_dir))
         # 文字稿 → input/Text
-        r = client.post("/upload", params={"name": "稿子.txt"}, content="你好".encode("utf-8"))
+        r = client.post("/upload", params={"name": "稿子.txt"}, content="你好".encode())
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["path"], "input/Text/稿子.txt")
         self.assertEqual(r.json()["kind"], "text")
         self.assertTrue((self.tmp_dir / "input/Text/稿子.txt").exists())
         # 重名 → -2
-        r2 = client.post("/upload", params={"name": "稿子.txt"}, content="x".encode("utf-8"))
+        r2 = client.post("/upload", params={"name": "稿子.txt"}, content=b"x")
         self.assertEqual(r2.json()["path"], "input/Text/稿子-2.txt")
         # 视频 → input/Video
         rv = client.post("/upload", params={"name": "clip.mp4"}, content=b"\x00\x01")
@@ -567,17 +633,25 @@ class TestEngineServerAPI(unittest.TestCase):
         self.assertIn("input/Text/稿子.txt", paths)
         self.assertIn("input/Video/clip.mp4", paths)
         # 不支持类型 / 空文件
-        self.assertEqual(client.post("/upload", params={"name": "x.exe"}, content=b"x").status_code, 400)
-        self.assertEqual(client.post("/upload", params={"name": "e.txt"}, content=b"").status_code, 400)
+        self.assertEqual(
+            client.post("/upload", params={"name": "x.exe"}, content=b"x").status_code, 400
+        )
+        self.assertEqual(
+            client.post("/upload", params={"name": "e.txt"}, content=b"").status_code, 400
+        )
         # 路径穿越被 basename 化（不写到 input 之外）
         rt = client.post("/upload", params={"name": "../evil.txt"}, content=b"x")
         self.assertEqual(rt.json()["path"], "input/Text/evil.txt")
 
     def test_detect_speaker_heuristic_and_fallback(self) -> None:
         (self.tmp_dir / "work/intro").mkdir(parents=True, exist_ok=True)
-        (self.tmp_dir / "work/intro/raw.txt").write_text("大家好，我是梁老师，今天聊学习。", encoding="utf-8")
+        (self.tmp_dir / "work/intro/raw.txt").write_text(
+            "大家好，我是梁老师，今天聊学习。", encoding="utf-8"
+        )
         (self.tmp_dir / "work/plain").mkdir(parents=True, exist_ok=True)
-        (self.tmp_dir / "work/plain/raw.txt").write_text("这段没有自我介绍，只是讲内容。", encoding="utf-8")
+        (self.tmp_dir / "work/plain/raw.txt").write_text(
+            "这段没有自我介绍，只是讲内容。", encoding="utf-8"
+        )
         (self.tmp_dir / "input/Video").mkdir(parents=True, exist_ok=True)
         (self.tmp_dir / "input/Video/c.mp4").write_bytes(b"x")
         client = TestClient(create_app(self.tmp_dir))
@@ -586,13 +660,19 @@ class TestEngineServerAPI(unittest.TestCase):
         self.assertEqual(r.json()["speaker"], "梁老师")
         self.assertEqual(r.json()["method"], "heuristic")
         # 无自我介绍 → null（前端走兜底）
-        self.assertIsNone(client.post("/api/detect-speaker", json={"source": "work/plain/raw.txt"}).json()["speaker"])
+        self.assertIsNone(
+            client.post("/api/detect-speaker", json={"source": "work/plain/raw.txt"}).json()[
+                "speaker"
+            ]
+        )
         # 视频源 → null + 原因
         rv = client.post("/api/detect-speaker", json={"source": "input/Video/c.mp4"}).json()
         self.assertIsNone(rv["speaker"])
         self.assertIn("转录", rv["reason"])
         # 越权源 → 400
-        self.assertEqual(client.post("/api/detect-speaker", json={"source": "../etc/passwd"}).status_code, 400)
+        self.assertEqual(
+            client.post("/api/detect-speaker", json={"source": "../etc/passwd"}).status_code, 400
+        )
 
     def _write_repo_contracts(self, root: Path) -> None:
         (root / "memory").mkdir(parents=True, exist_ok=True)
@@ -663,6 +743,7 @@ class TestLlmProfilesAPI(unittest.TestCase):
 
     def setUp(self) -> None:
         import os
+
         from video2blog.engine import secrets_store as ss
 
         self.tmp = Path(tempfile.mkdtemp())
@@ -676,6 +757,7 @@ class TestLlmProfilesAPI(unittest.TestCase):
 
     def tearDown(self) -> None:
         import os
+
         shutil.rmtree(self.tmp, ignore_errors=True)
         self.ss._keyring = self._real_keyring
         if self._old_xdg is None:
@@ -690,15 +772,28 @@ class TestLlmProfilesAPI(unittest.TestCase):
         self.assertEqual(c.get("/api/llm-profiles").json()["profiles"], [])
 
         # 建第一档（带 key）→ 自动成默认
-        r = c.post("/api/llm-profiles", json={"name": "DeepSeek", "provider": "deepseek", "model": "deepseek-chat", "api_key": "sk-AAAA1111"})
+        r = c.post(
+            "/api/llm-profiles",
+            json={
+                "name": "DeepSeek",
+                "provider": "deepseek",
+                "model": "deepseek-chat",
+                "api_key": "sk-AAAA1111",
+            },
+        )
         self.assertEqual(r.status_code, 201)
         pid = r.json()["created_id"]
         self.assertEqual(r.json()["defaultProfileId"], pid)
 
         # 建第二档并设默认
-        r2 = c.post("/api/llm-profiles", json={"name": "GPT", "provider": "openai", "model": "gpt-4o", "api_key": "sk-BBBB2222"})
+        r2 = c.post(
+            "/api/llm-profiles",
+            json={"name": "GPT", "provider": "openai", "model": "gpt-4o", "api_key": "sk-BBBB2222"},
+        )
         pid2 = r2.json()["created_id"]
-        self.assertEqual(c.post(f"/api/llm-profiles/{pid2}/default").json()["defaultProfileId"], pid2)
+        self.assertEqual(
+            c.post(f"/api/llm-profiles/{pid2}/default").json()["defaultProfileId"], pid2
+        )
 
         snap = c.get("/api/llm-profiles").json()
         self.assertNotIn("sk-AAAA1111", json.dumps(snap))
@@ -710,11 +805,19 @@ class TestLlmProfilesAPI(unittest.TestCase):
         c.put(f"/api/llm-profiles/{pid}", json={"name": "DS·改名"})
         names = {p["name"] for p in c.get("/api/llm-profiles").json()["profiles"]}
         self.assertIn("DS·改名", names)
-        self.assertTrue(next(p for p in c.get("/api/llm-profiles").json()["profiles"] if p["id"] == pid)["has_key"])
+        self.assertTrue(
+            next(p for p in c.get("/api/llm-profiles").json()["profiles"] if p["id"] == pid)[
+                "has_key"
+            ]
+        )
 
         # 删某档 key（仅 key）
         c.request("DELETE", f"/api/llm-profiles/{pid2}/key")
-        self.assertFalse(next(p for p in c.get("/api/llm-profiles").json()["profiles"] if p["id"] == pid2)["has_key"])
+        self.assertFalse(
+            next(p for p in c.get("/api/llm-profiles").json()["profiles"] if p["id"] == pid2)[
+                "has_key"
+            ]
+        )
 
         # 删档 → 默认回退
         c.request("DELETE", f"/api/llm-profiles/{pid2}")
@@ -723,7 +826,9 @@ class TestLlmProfilesAPI(unittest.TestCase):
         self.assertEqual(snap["defaultProfileId"], pid)
 
     def test_404_on_unknown_profile(self) -> None:
-        self.assertEqual(self.client.put("/api/llm-profiles/nope", json={"name": "x"}).status_code, 404)
+        self.assertEqual(
+            self.client.put("/api/llm-profiles/nope", json={"name": "x"}).status_code, 404
+        )
         self.assertEqual(self.client.request("DELETE", "/api/llm-profiles/nope").status_code, 404)
         self.assertEqual(self.client.post("/api/llm-profiles/nope/default").status_code, 404)
 

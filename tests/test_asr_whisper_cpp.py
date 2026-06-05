@@ -24,7 +24,9 @@ class WhisperCppTests(unittest.TestCase):
                 return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 
             with (
-                mock.patch.object(whisper_cpp, "resolve_whisper_cpp_bin", return_value="/bin/whisper-cli"),
+                mock.patch.object(
+                    whisper_cpp, "resolve_whisper_cpp_bin", return_value="/bin/whisper-cli"
+                ),
                 mock.patch.object(whisper_cpp.subprocess, "run", side_effect=fake_run),
             ):
                 result = whisper_cpp.transcribe_audio_whisper_cpp(
@@ -53,7 +55,9 @@ class WhisperCppTests(unittest.TestCase):
             model.write_text("model", encoding="utf-8")
             wav.write_text("wav", encoding="utf-8")
             with (
-                mock.patch.object(whisper_cpp, "resolve_whisper_cpp_bin", return_value="/bin/whisper-cli"),
+                mock.patch.object(
+                    whisper_cpp, "resolve_whisper_cpp_bin", return_value="/bin/whisper-cli"
+                ),
                 mock.patch.object(
                     whisper_cpp.subprocess,
                     "run",

@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import tempfile
 import unittest
-import json
 from pathlib import Path
 
 from video2blog.server_core import EngineJobRequest, EngineJobService
@@ -56,6 +56,7 @@ class _FakeKeyring:
 class TestEngineJobService(unittest.TestCase):
     def setUp(self) -> None:
         import os
+
         from video2blog.engine import secrets_store as ss
 
         self.tmp_dir = Path(tempfile.mkdtemp())
@@ -70,6 +71,7 @@ class TestEngineJobService(unittest.TestCase):
 
     def tearDown(self) -> None:
         import os
+
         shutil.rmtree(self.tmp_dir)
         shutil.rmtree(self._cfg_dir, ignore_errors=True)
         self._ss._keyring = self._real_keyring
@@ -130,9 +132,9 @@ class TestEngineJobService(unittest.TestCase):
         progress = [e["data"] for e in events if e["event"] == "progress"]
         self.assertTrue(progress, "应至少发出一条 progress 事件")
         kinds = {p.get("kind") for p in progress}
-        self.assertIn("step", kinds)       # Step 6/7 进入
-        self.assertIn("verdict", kinds)    # 质检结论
-        self.assertIn("artifact", kinds)   # Step 8 落盘
+        self.assertIn("step", kinds)  # Step 6/7 进入
+        self.assertIn("verdict", kinds)  # 质检结论
+        self.assertIn("artifact", kinds)  # Step 8 落盘
         # quick 模式应覆盖 Step 6 与 Step 7
         steps = {p.get("step") for p in progress if p.get("kind") == "step"}
         self.assertIn(6, steps)
@@ -159,8 +161,9 @@ class TestEngineJobService(unittest.TestCase):
 
     def test_api_key_precedence_in_client_factory(self) -> None:
         import os
+
         service = EngineJobService(self.tmp_dir)
-        
+
         # Scenario 1: No request api_key, uses environment variable
         os.environ["VIDEO2BLOG_API_KEY"] = "env-key"
         try:
@@ -169,7 +172,7 @@ class TestEngineJobService(unittest.TestCase):
             self.assertEqual(client.api_key, "env-key")
         finally:
             del os.environ["VIDEO2BLOG_API_KEY"]
-            
+
         # Scenario 2: Request api_key overrides environment variable
         os.environ["VIDEO2BLOG_API_KEY"] = "env-key"
         try:
@@ -302,7 +305,14 @@ class TestEngineJobService(unittest.TestCase):
         (work_dir / "raw.txt").write_text("raw", encoding="utf-8")
         (work_dir / "outline.md").write_text("## 标题候选\n1. x\n", encoding="utf-8")
         (work_dir / "events.jsonl").write_text(
-            json.dumps({"id": 1, "event": "paused", "timestamp": "t", "data": {"state_status": "WAITING_USER_OUTLINE"}})
+            json.dumps(
+                {
+                    "id": 1,
+                    "event": "paused",
+                    "timestamp": "t",
+                    "data": {"state_status": "WAITING_USER_OUTLINE"},
+                }
+            )
             + "\n",
             encoding="utf-8",
         )
@@ -356,8 +366,12 @@ class TestEngineJobService(unittest.TestCase):
                     "stem": "cancel_paused",
                     "status": "WAITING_USER_OUTLINE",
                     "mode": "full",
-                    "variables": {"SOURCE": "work/cancel_paused/raw.txt", "SPEAKER": "我",
-                                  "ROUTING": "/lecture", "MODE": "full"},
+                    "variables": {
+                        "SOURCE": "work/cancel_paused/raw.txt",
+                        "SPEAKER": "我",
+                        "ROUTING": "/lecture",
+                        "MODE": "full",
+                    },
                     "version": 1,
                 },
                 ensure_ascii=False,
@@ -371,7 +385,8 @@ class TestEngineJobService(unittest.TestCase):
             service.cancel_job(job.id)
             persisted = json.loads(state_path.read_text(encoding="utf-8"))
             self.assertEqual(
-                persisted["status"], "CANCELLED",
+                persisted["status"],
+                "CANCELLED",
                 "cancel 必须把 state.status 写到磁盘，否则下次重提卡在 paused 死循环",
             )
         finally:
@@ -388,8 +403,12 @@ class TestEngineJobService(unittest.TestCase):
                     "stem": "resume_clear",
                     "status": "WAITING_USER_REVIEW",
                     "mode": "quick",
-                    "variables": {"SOURCE": "work/resume_clear/raw.txt", "SPEAKER": "我",
-                                  "ROUTING": "/lecture", "MODE": "quick"},
+                    "variables": {
+                        "SOURCE": "work/resume_clear/raw.txt",
+                        "SPEAKER": "我",
+                        "ROUTING": "/lecture",
+                        "MODE": "quick",
+                    },
                     "version": 1,
                 },
                 ensure_ascii=False,
@@ -402,16 +421,20 @@ class TestEngineJobService(unittest.TestCase):
             self.assertEqual(job.paused_state, "WAITING_USER_REVIEW")
             # 模拟 resume：会触发 _executor.submit 再跑一次 run_job
             # 用 raising client 让它立刻挂掉，但 paused_state 应该已经清空
-            service._client_factory = lambda _r: type("X", (), {  # type: ignore[attr-defined]
-                "model": "raising",
-                "api_base": "",
-                "api_key": "",
-                "total_input_tokens": 0,
-                "total_output_tokens": 0,
-                "total_cost": 0.0,
-                "call_api": lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("expected")),
-                "check_budget": lambda *_a, **_kw: None,
-            })()
+            service._client_factory = lambda _r: type(
+                "X",
+                (),
+                {  # type: ignore[attr-defined]
+                    "model": "raising",
+                    "api_base": "",
+                    "api_key": "",
+                    "total_input_tokens": 0,
+                    "total_output_tokens": 0,
+                    "total_cost": 0.0,
+                    "call_api": lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("expected")),
+                    "check_budget": lambda *_a, **_kw: None,
+                },
+            )()
             service.resume_job(job.id)
             service.wait_for_job(job.id)
             self.assertIsNone(job.paused_state)
@@ -482,13 +505,22 @@ class TestTranscribeStage(unittest.TestCase):
 
     def _patch_popen(self, fake):
         import video2blog.server_core as sc
+
         self._orig = sc.subprocess.Popen
         sc.subprocess.Popen = lambda *a, **k: fake  # type: ignore[assignment]
         self.addCleanup(lambda: setattr(sc.subprocess, "Popen", self._orig))
 
     def test_success_streams_and_returns_raw_txt(self) -> None:
-        raw = self.svc.repo_root / "work/foo/raw.txt"  # 用已 resolve 的 repo_root，避开 /tmp→/private/tmp 符号链接
-        self._patch_popen(_FakePopen(["[1/3] ffmpeg → audio.wav", "[2/3] mlx-whisper …", "[3/3] 写 raw.txt"], 0, raw_txt=raw))
+        raw = (
+            self.svc.repo_root / "work/foo/raw.txt"
+        )  # 用已 resolve 的 repo_root，避开 /tmp→/private/tmp 符号链接
+        self._patch_popen(
+            _FakePopen(
+                ["[1/3] ffmpeg → audio.wav", "[2/3] mlx-whisper …", "[3/3] 写 raw.txt"],
+                0,
+                raw_txt=raw,
+            )
+        )
         logs: list[str] = []
         out = self.svc._transcribe(self.video, logs.append, lambda: False, force=False)
         self.assertEqual(out, raw)
@@ -505,7 +537,9 @@ class TestTranscribeStage(unittest.TestCase):
             self.svc._transcribe(self.video, lambda _l: None, lambda: False, force=False)
 
     def test_cancel_raises(self) -> None:
-        self._patch_popen(_FakePopen(["[1/3] ffmpeg", "[2/3] …"], 0, raw_txt=self.tmp / "work/foo/raw.txt"))
+        self._patch_popen(
+            _FakePopen(["[1/3] ffmpeg", "[2/3] …"], 0, raw_txt=self.tmp / "work/foo/raw.txt")
+        )
         with self.assertRaises(RuntimeError):
             self.svc._transcribe(self.video, lambda _l: None, lambda: True, force=False)  # 立即取消
 

@@ -89,7 +89,13 @@ class SecretsStoreTest(unittest.TestCase):
         p = ss.config_path()
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(
-            json.dumps({"provider": "deepseek", "api_base": "https://api.deepseek.com/v1", "model": "deepseek-chat"}),
+            json.dumps(
+                {
+                    "provider": "deepseek",
+                    "api_base": "https://api.deepseek.com/v1",
+                    "model": "deepseek-chat",
+                }
+            ),
             encoding="utf-8",
         )
         self.fake.store[(ss._KEYRING_SERVICE, "api_key")] = "sk-LEGACY"
@@ -143,7 +149,9 @@ class SecretsStoreTest(unittest.TestCase):
     # ── 解析优先级 ──
 
     def test_resolve_precedence_request_env_keychain(self) -> None:
-        a = ss.create_profile({"name": "A", "provider": "deepseek", "api_base": "https://x/v1", "model": "m1"})
+        a = ss.create_profile(
+            {"name": "A", "provider": "deepseek", "api_base": "https://x/v1", "model": "m1"}
+        )
         ss.set_key(a["id"], "keychain-key")
         os.environ["VIDEO2BLOG_API_KEY"] = "env-key"
         try:

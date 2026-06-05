@@ -38,7 +38,7 @@ def probe_duration(path: Path, log_path: Path | None = None) -> float | None:
         "default=noprint_wrappers=1:nokey=1",
         str(path),
     ]
-    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
         append_log(log_path, f"ffprobe failed for {path}: {proc.stderr or proc.stdout}")
         return None
@@ -67,7 +67,7 @@ def extract_audio(video: Path, wav: Path, log_path: Path | None = None) -> None:
         str(wav),
     ]
     append_log(log_path, "ffmpeg extract start: " + shell_join(cmd))
-    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
         append_log(log_path, "ffmpeg extract failed:\n" + (proc.stderr or proc.stdout))
         sys.stderr.write(proc.stderr or proc.stdout or "ffmpeg 失败\n")
@@ -114,7 +114,7 @@ def split_audio_for_chunks(
         str(pattern),
     ]
     append_log(log_path, "ffmpeg chunk start: " + shell_join(cmd))
-    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
         append_log(log_path, "ffmpeg chunk failed:\n" + (proc.stderr or proc.stdout))
         raise RuntimeError(proc.stderr or proc.stdout or "ffmpeg 分段失败")

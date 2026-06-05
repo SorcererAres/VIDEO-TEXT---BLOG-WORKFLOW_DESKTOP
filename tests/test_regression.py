@@ -17,7 +17,6 @@ if str(REPO_ROOT) not in sys.path:
 
 from scripts.regression import run_fixture  # noqa: E402
 
-
 FIXTURES_ROOT = REPO_ROOT / "tests" / "fixtures" / "regression"
 
 
@@ -41,7 +40,13 @@ class TestRegressionFixtures(unittest.TestCase):
         steps_called = [c["step"] for c in result.mock_calls]
         self.assertEqual(
             steps_called,
-            ["clean-transcript", "extract-insights", "structure-narrative", "rewrite-blog", "quality-check"],
+            [
+                "clean-transcript",
+                "extract-insights",
+                "structure-narrative",
+                "rewrite-blog",
+                "quality-check",
+            ],
             msg=f"full 模式 step 顺序错: {steps_called}",
         )
         self.assertEqual(result.pass_score, "54/60")
@@ -55,10 +60,10 @@ class TestRegressionFixtures(unittest.TestCase):
         self.assertEqual(
             fixture_files,
             [
-                "rewrite-blog.md",       # v1 初稿
-                "quality-check.json",    # v1 评审 → REVIEW
-                "rewrite-blog-v2.md",    # 自修正第 2 轮重写
-                "quality-check-v2.json", # v2 评审 → PASS
+                "rewrite-blog.md",  # v1 初稿
+                "quality-check.json",  # v1 评审 → REVIEW
+                "rewrite-blog-v2.md",  # 自修正第 2 轮重写
+                "quality-check-v2.json",  # v2 评审 → PASS
             ],
             msg=f"自修正调用顺序错: {fixture_files}",
         )
@@ -70,7 +75,8 @@ class TestRegressionFixtures(unittest.TestCase):
         self.assertTrue(result.ok, msg=f"quick_parse_failed failed: {result.errors}")
         # 关键：尽管 max_retries=1，引擎也不应该跑第 2 轮——只有 2 次调用
         self.assertEqual(
-            len(result.mock_calls), 2,
+            len(result.mock_calls),
+            2,
             f"parse_failed 必须跳过自修正，actual={[c['fixture_file'] for c in result.mock_calls]}",
         )
         self.assertEqual(result.pass_score, "—/60")
@@ -111,6 +117,7 @@ class TestRegressionGuardrails(unittest.TestCase):
         """如果 fixture 缺 expected/quality-check.json，run_fixture 必须给出明确错误。"""
         import shutil
         import tempfile
+
         with tempfile.TemporaryDirectory(prefix="v2b-fixture-guard-") as tmp:
             tmp_fixture = Path(tmp) / "broken_quick"
             shutil.copytree(FIXTURES_ROOT / "quick_basic", tmp_fixture)

@@ -25,9 +25,7 @@ from video2blog.watch import watch_loop
 ENGINE_CHOICES = ("auto", "mlx", "whisper-cpp", "external")
 FALLBACK_POLICY_CHOICES = ("ask", "auto", "stop")
 
-WHISPER_MODEL = os.environ.get(
-    "VIDEO2BLOG_WHISPER_MODEL", "mlx-community/whisper-large-v3-turbo"
-)
+WHISPER_MODEL = os.environ.get("VIDEO2BLOG_WHISPER_MODEL", "mlx-community/whisper-large-v3-turbo")
 WHISPER_CPP_MODEL = os.environ.get("VIDEO2BLOG_WHISPER_CPP_MODEL", "").strip()
 WHISPER_CPP_BIN = os.environ.get("VIDEO2BLOG_WHISPER_CPP_BIN", "").strip()
 DEFAULT_ENGINE = os.environ.get("VIDEO2BLOG_ENGINE", "auto").strip() or "auto"
@@ -35,9 +33,7 @@ DEFAULT_FALLBACK_POLICY = os.environ.get("VIDEO2BLOG_FALLBACK_POLICY", "ask").st
 DEFAULT_MLX_TIMEOUT_SECONDS = int(
     os.environ.get("VIDEO2BLOG_MLX_TIMEOUT_SECONDS", "1800").strip() or "1800"
 )
-DEFAULT_SEGMENT_MINUTES = float(
-    os.environ.get("VIDEO2BLOG_SEGMENT_MINUTES", "15").strip() or "15"
-)
+DEFAULT_SEGMENT_MINUTES = float(os.environ.get("VIDEO2BLOG_SEGMENT_MINUTES", "15").strip() or "15")
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "work"
@@ -78,8 +74,7 @@ def launch_in_macos_terminal(command: list[str], cwd: Path) -> None:
             "end run",
             shell_script,
         ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         text=True,
     )
     if proc.returncode != 0:
@@ -121,7 +116,9 @@ def prompt_fallback_action(message: str, terminal_command: list[str] | None) -> 
         "4. 退出，稍后手动处理",
     ]
     if not sys.stdin.isatty():
-        terminal_hint = shell_join(terminal_command) if terminal_command else "<无法生成 Terminal 命令>"
+        terminal_hint = (
+            shell_join(terminal_command) if terminal_command else "<无法生成 Terminal 命令>"
+        )
         raise RuntimeError(
             f"{message}\n"
             "当前不是交互式终端，默认 fallback-policy=ask，已停止自动降级。\n"
@@ -180,7 +177,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument(
         "--fallback-policy",
         choices=FALLBACK_POLICY_CHOICES,
-        default=DEFAULT_FALLBACK_POLICY if DEFAULT_FALLBACK_POLICY in FALLBACK_POLICY_CHOICES else "ask",
+        default=DEFAULT_FALLBACK_POLICY
+        if DEFAULT_FALLBACK_POLICY in FALLBACK_POLICY_CHOICES
+        else "ask",
         help="mlx 在 auto 模式下不可用时如何处理：ask 默认询问，auto 自动降级，stop 直接停止",
     )
     p.add_argument("--model", default=WHISPER_MODEL)
@@ -192,7 +191,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=Path(WHISPER_CPP_MODEL).expanduser() if WHISPER_CPP_MODEL else None,
     )
     p.add_argument("--whisper-cpp-bin", default=WHISPER_CPP_BIN or None)
-    p.add_argument("--source", type=Path, help=f"--engine external 时使用的已有 {sorted(EXTERNAL_TRANSCRIPT_EXT)}")
+    p.add_argument(
+        "--source",
+        type=Path,
+        help=f"--engine external 时使用的已有 {sorted(EXTERNAL_TRANSCRIPT_EXT)}",
+    )
     p.add_argument(
         "--run-in-terminal",
         action="store_true",
@@ -262,7 +265,9 @@ def main(argv: list[str] | None = None) -> None:
     if args.watch is not None:
         spec = args.watch
         if spec == "" and root is None:
-            sys.exit("使用 `-w` 且省略监听目录时，必须设置 `--input-root` 或环境变量 VIDEO2BLOG_INPUT_ROOT")
+            sys.exit(
+                "使用 `-w` 且省略监听目录时，必须设置 `--input-root` 或环境变量 VIDEO2BLOG_INPUT_ROOT"
+            )
         watch_target = root if spec == "" else resolve_maybe_relative(spec, root)
         watch_loop(
             watch_target,
@@ -286,12 +291,7 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(f"文件不存在：{video}")
     terminal_command = terminal_mlx_command(args, video)
     needs_metal = args.engine in ("auto", "mlx")
-    if (
-        needs_metal
-        and not args.run_in_terminal
-        and not args.no_auto_terminal
-        and in_sandbox()
-    ):
+    if needs_metal and not args.run_in_terminal and not args.no_auto_terminal and in_sandbox():
         print(
             "⚙ 检测到 Cursor/Codex/Claude Code 沙箱，自动转 macOS Terminal 跑 MLX 以获取 Metal 加速。",
             file=sys.stderr,

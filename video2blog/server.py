@@ -44,6 +44,7 @@ def create_app(repo_root: Path | str | None = None) -> FastAPI:
     app = FastAPI(title="Video2Blog Local Engine", version="0.1.0", lifespan=lifespan)
 
     from fastapi.middleware.cors import CORSMiddleware
+
     configured_origins = [
         item.strip()
         for item in os.environ.get("VIDEO2BLOG_CORS_ORIGINS", "").split(",")

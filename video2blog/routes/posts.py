@@ -18,10 +18,11 @@ from video2blog.repos import post_repo
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
+
     from video2blog.server_core import EngineJobService
 
 
-def register(app: "FastAPI", service: "EngineJobService", root: Path) -> None:  # noqa: ARG001 (service 暂未用)
+def register(app: FastAPI, service: EngineJobService, root: Path) -> None:  # noqa: ARG001 (service 暂未用)
     @app.get("/api/posts")
     def list_posts_endpoint() -> list[dict[str, Any]]:
         """扫 output/Posts/，返回作品列表（与 /jobs/history 行为一致）。"""

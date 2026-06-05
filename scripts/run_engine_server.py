@@ -26,7 +26,9 @@ def _default_state_dir() -> Path:
         return home / "Library" / "Application Support" / "com.sorcerer.video2blog"
     if sys.platform == "win32":
         appdata = os.environ.get("APPDATA")
-        return Path(appdata) / "video2blog" if appdata else home / "AppData" / "Roaming" / "video2blog"
+        return (
+            Path(appdata) / "video2blog" if appdata else home / "AppData" / "Roaming" / "video2blog"
+        )
     return Path(os.environ.get("XDG_CONFIG_HOME", home / ".config")) / "video2blog"
 
 
@@ -43,9 +45,7 @@ def _pick_port(host: str, preferred: int, scan_range: int = 64) -> int:
             except OSError:
                 continue
             return port
-    raise RuntimeError(
-        f"端口 {preferred}..{preferred + scan_range - 1} 全部被占，无法启动后端。"
-    )
+    raise RuntimeError(f"端口 {preferred}..{preferred + scan_range - 1} 全部被占，无法启动后端。")
 
 
 def _write_port_file(state_dir: Path, host: str, port: int) -> Path:
@@ -69,10 +69,11 @@ def main(argv: list[str] | None = None) -> int:
     raw_argv = sys.argv[1:] if argv is None else list(argv)
     # 子命令分发：让 frozen server 二进制（sys.executable）复用 CLI 转录链。
     # 打包版下 server_core._transcribe 调 `video2blog-server transcribe <video> ...`，
-    # 绕开「frozen 下 sys.executable 是 server 二进制、不能直接跑 video2blog.py 脚本」的问题。
+    # 绕开「frozen 下 sys.executable 是 server 二进制、不能直接跑 transcribe.py 脚本」的问题。
     # 转录仍是独立子进程，崩溃/超时不影响主 server。
     if raw_argv and raw_argv[0] == "transcribe":
         from video2blog.cli.main import main as cli_main
+
         cli_main(raw_argv[1:])
         return 0
 
@@ -80,6 +81,7 @@ def main(argv: list[str] | None = None) -> int:
     # 不支持 python -c；mlx 引擎的隔离 worker 改经此子命令拉起）。
     if raw_argv and raw_argv[0] == "mlx-worker":
         from video2blog.asr.mlx import _mlx_worker_main
+
         return _mlx_worker_main(raw_argv[1:])
 
     parser = argparse.ArgumentParser(description="启动 Video2Blog 本地 Engine 服务。")
@@ -110,14 +112,17 @@ def main(argv: list[str] | None = None) -> int:
     try:
         import uvicorn
     except ImportError:
-        print("[错误] 未安装 uvicorn。请先执行: pip install -e . 或 pip install fastapi uvicorn", file=sys.stderr)
+        print(
+            "[错误] 未安装 uvicorn。请先执行: pip install -e . 或 pip install fastapi uvicorn",
+            file=sys.stderr,
+        )
         return 1
-
-    from video2blog.server import create_app
 
     # 首启初始化：打包版工作目录全新时没有写作合同，从打包模板补齐 + 建目录结构，
     # 否则改写链 Pre-Flight 会失败（开箱不可用）。幂等、非破坏，dev 下只确保目录存在。
     from video2blog.app_bootstrap import ensure_repo_initialized
+    from video2blog.server import create_app
+
     created = ensure_repo_initialized(args.repo_root)
     if created:
         print(f"[server] 首启初始化工作目录：补齐 {', '.join(created)}", flush=True)

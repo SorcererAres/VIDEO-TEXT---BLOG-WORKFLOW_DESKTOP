@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
+
     from video2blog.server_core import EngineJobService
 
 from video2blog.routes import (
@@ -32,7 +33,7 @@ from video2blog.routes import (
 )
 
 
-def register_all(app: "FastAPI", service: "EngineJobService", root: Path) -> None:
+def register_all(app: FastAPI, service: EngineJobService, root: Path) -> None:
     """把所有域路由注册到 app。顺序无关（路径各自独立）。
 
     DECOUPLE：tasks / posts / maintenance 是按域拆分的新前缀

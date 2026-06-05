@@ -8,7 +8,7 @@
 
 ## 中转
 
-`video2blog.py` 默认写入：
+`transcribe.py` 默认写入：
 
 ```text
 work/<stem>/raw.txt

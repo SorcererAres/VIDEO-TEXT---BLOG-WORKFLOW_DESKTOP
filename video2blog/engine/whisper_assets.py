@@ -16,8 +16,8 @@ import os
 import sys
 import threading
 import urllib.request
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 # large-v3-turbo：质量接近 large-v3、速度快很多，~1.6GB，博客转录的甜点。
 DEFAULT_MODEL = "ggml-large-v3-turbo.bin"
@@ -193,17 +193,19 @@ def list_ggml_models() -> list[dict]:
         downloaded = p.exists() and p.stat().st_size > 1_000_000
         with _dl_lock:
             st = dict(_dl_state.get(name, {}))
-        out.append({
-            "name": name,
-            "label": label,
-            "size_mb": mb,
-            "downloaded": downloaded,
-            "local_mb": round(p.stat().st_size / 1_048_576) if downloaded else 0,
-            "is_default": name == DEFAULT_MODEL,
-            "status": st.get("status"),       # downloading / error / None
-            "percent": st.get("percent"),
-            "error": st.get("error"),
-        })
+        out.append(
+            {
+                "name": name,
+                "label": label,
+                "size_mb": mb,
+                "downloaded": downloaded,
+                "local_mb": round(p.stat().st_size / 1_048_576) if downloaded else 0,
+                "is_default": name == DEFAULT_MODEL,
+                "status": st.get("status"),  # downloading / error / None
+                "percent": st.get("percent"),
+                "error": st.get("error"),
+            }
+        )
     return out
 
 
@@ -230,6 +232,7 @@ def start_ggml_download(name: str) -> None:
             pct = int(done * 100 / total) if total else 0
             with _dl_lock:
                 _dl_state[name] = {"status": "downloading", "percent": pct}
+
         try:
             _download_to(dest, url, _on_prog)
             with _dl_lock:
@@ -302,17 +305,19 @@ def list_mlx_models() -> list[dict]:
         pct = st.get("percent")
         if st.get("status") == "downloading" and pct is None and mb:
             pct = min(99, round(local_mb * 100 / mb))
-        out.append({
-            "name": repo,
-            "label": label,
-            "size_mb": mb,
-            "downloaded": downloaded,
-            "local_mb": local_mb,
-            "is_default": repo == DEFAULT_MLX_MODEL,
-            "status": st.get("status"),
-            "percent": pct,
-            "error": st.get("error"),
-        })
+        out.append(
+            {
+                "name": repo,
+                "label": label,
+                "size_mb": mb,
+                "downloaded": downloaded,
+                "local_mb": local_mb,
+                "is_default": repo == DEFAULT_MLX_MODEL,
+                "status": st.get("status"),
+                "percent": pct,
+                "error": st.get("error"),
+            }
+        )
     return out
 
 

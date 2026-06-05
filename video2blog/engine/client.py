@@ -48,8 +48,7 @@ class LLMClient:
     ) -> None:
         self.api_key = api_key or os.environ.get("VIDEO2BLOG_API_KEY", "").strip()
         self.api_base = (
-            api_base
-            or os.environ.get("VIDEO2BLOG_API_BASE", "https://api.openai.com/v1").strip()
+            api_base or os.environ.get("VIDEO2BLOG_API_BASE", "https://api.openai.com/v1").strip()
         )
         self.model = model or os.environ.get("VIDEO2BLOG_MODEL", "gpt-4o").strip()
         self.max_budget_tokens = max_budget_tokens
@@ -160,7 +159,9 @@ class LLMClient:
 
         # 单 worker 线程池;退出时不等(wait=False),让卡住的 urlopen 线程留作守护性僵尸,
         # 进程退出时一并清理。整次 call_api 不会因为一个挂死的请求被永久封锁。
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="v2b-llm")
+        executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="v2b-llm"
+        )
         try:
             while True:
                 elapsed = time.monotonic() - start
@@ -205,25 +206,31 @@ class LLMClient:
                     # 成功路径
                     resp_json = json.loads(body)
                     usage = resp_json.get("usage", {})
-                    in_tokens = usage.get("prompt_tokens", 0) or estimate_tokens(full_prompt_est, self.model)
+                    in_tokens = usage.get("prompt_tokens", 0) or estimate_tokens(
+                        full_prompt_est, self.model
+                    )
                     choices = resp_json.get("choices", [])
                     if not choices:
                         raise ValueError(f"API 返回 Choices 为空: {body}")
                     content = choices[0].get("message", {}).get("content", "")
-                    out_tokens = usage.get("completion_tokens", 0) or estimate_tokens(content, self.model)
+                    out_tokens = usage.get("completion_tokens", 0) or estimate_tokens(
+                        content, self.model
+                    )
                     self.total_input_tokens += in_tokens
                     self.total_output_tokens += out_tokens
                     return content
 
                 # HTTP 错误路径
-                if status in (429, 500, 502, 503, 504) and retry_count < max_retries and remaining - delay > 5:
+                if (
+                    status in (429, 500, 502, 503, 504)
+                    and retry_count < max_retries
+                    and remaining - delay > 5
+                ):
                     retry_count += 1
                     time.sleep(delay)
                     delay *= backoff_factor
                     continue
-                raise RuntimeError(
-                    f"LLM API 请求失败: HTTP {status}\n接口返回内容: {body}"
-                )
+                raise RuntimeError(f"LLM API 请求失败: HTTP {status}\n接口返回内容: {body}")
         finally:
             # 卡住的 urlopen 线程留着背景跑,不阻塞 call_api 返回
             executor.shutdown(wait=False, cancel_futures=True)

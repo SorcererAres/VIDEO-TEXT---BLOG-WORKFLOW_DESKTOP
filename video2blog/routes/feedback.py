@@ -16,12 +16,13 @@ from video2blog.routes.models import DispositionRequest
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
+
     from video2blog.server_core import EngineJobService
 
 _VALID = {"used", "edited", "rewrote"}
 
 
-def register(app: "FastAPI", service: "EngineJobService", root: Path) -> None:
+def register(app: FastAPI, service: EngineJobService, root: Path) -> None:
     from fastapi import HTTPException
 
     store = root / "memory" / "dispositions.json"
@@ -47,12 +48,17 @@ def register(app: "FastAPI", service: "EngineJobService", root: Path) -> None:
         if not rel:
             raise HTTPException(status_code=400, detail="path 必填")
         if payload.value is not None and payload.value not in _VALID:
-            raise HTTPException(status_code=400, detail=f"value 必须为 {sorted(_VALID)} 之一或 null")
+            raise HTTPException(
+                status_code=400, detail=f"value 必须为 {sorted(_VALID)} 之一或 null"
+            )
 
         data = _load()
         if payload.value is None:
             data.pop(rel, None)
         else:
-            data[rel] = {"value": payload.value, "updated_at": datetime.now(timezone.utc).isoformat()}
+            data[rel] = {
+                "value": payload.value,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
         atomic_write(store, json.dumps(data, ensure_ascii=False, indent=2))
         return data

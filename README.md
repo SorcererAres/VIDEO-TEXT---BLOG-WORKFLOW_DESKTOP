@@ -4,7 +4,7 @@
 
 这个仓库负责两件事：
 
-- 本地生成原始转录：`video2blog.py` 把视频转成 `work/<stem>/raw.txt|raw.srt|raw.log|meta.json`。
+- 本地生成原始转录：`transcribe.py` 把视频转成 `work/<stem>/raw.txt|raw.srt|raw.log|meta.json`。
 - Agent 写作工作流：按 `WORKFLOW.md` 做清洗、提炼、结构、改写、质检和归档。
 
 `WORKFLOW.md` 是唯一运行合同；README 只帮助人快速理解和上手。
@@ -30,7 +30,7 @@ make install   # 建 .venv 并 pip install -e .（依赖来源唯一：pyproject
 视频入口：
 
 ```bash
-python3 video2blog.py /path/to/video.mp4
+python3 transcribe.py /path/to/video.mp4
 ```
 
 默认输出：
@@ -63,7 +63,7 @@ SOURCE → input/Text/example.md
 
 | 入口 | 适用素材 | 先做什么 | Agent 从哪里接手 |
 |---|---|---|---|
-| `ENTRY → video` | `.mp4`、`.mov`、`.mkv` | 运行 `python3 video2blog.py <video>` | `work/<stem>/raw.txt` |
+| `ENTRY → video` | `.mp4`、`.mov`、`.mkv` | 运行 `python3 transcribe.py <video>` | `work/<stem>/raw.txt` |
 | `ENTRY → transcript` | `.txt`、`.md`、`.srt`、已有文章 | 直接准备 `SOURCE` | `input/Text/*`、`work/*/clean.md` 或其他文本路径 |
 
 `MODE` 可选：
@@ -126,19 +126,19 @@ Step 7 只判定 `PASS` 或 `REVIEW`。`DRAFT` 不是质检判定，而是用户
 
 ```bash
 export VIDEO2BLOG_INPUT_ROOT=~/Movies/inbox
-python3 video2blog.py foo.mp4
+python3 transcribe.py foo.mp4
 ```
 
 监听输入目录：
 
 ```bash
-python3 video2blog.py -w --fallback-policy auto
+python3 transcribe.py -w --fallback-policy auto
 ```
 
 使用外部字幕或文字稿作为转录源：
 
 ```bash
-python3 video2blog.py --engine external --source transcript.srt placeholder.mp4
+python3 transcribe.py --engine external --source transcript.srt placeholder.mp4
 ```
 
 静态校验工作流文档和核心产物：

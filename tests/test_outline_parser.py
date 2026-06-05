@@ -178,10 +178,10 @@ class TestParseOutlineSections(unittest.TestCase):
 
     def test_data_class_is_immutable(self) -> None:
         sec = BodySection(heading="## X", brief="y")
-        with self.assertRaises(Exception):
+        with self.assertRaises(AttributeError):
             sec.heading = "## Y"  # type: ignore[misc]
         outline = OutlineSections(intro="i", body=[sec], outro="o")
-        with self.assertRaises(Exception):
+        with self.assertRaises(AttributeError):
             outline.intro = "changed"  # type: ignore[misc]
 
 

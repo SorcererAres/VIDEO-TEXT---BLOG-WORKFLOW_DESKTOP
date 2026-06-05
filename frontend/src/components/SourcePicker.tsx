@@ -31,6 +31,8 @@ interface SourcePickerProps {
   // 本机能否跑视频转录（后端 /health capabilities.transcription）。
   // 打包版（frozen，未内置转录引擎）为 false：视频源禁用 + 给降级说明。
   transcriptionAvailable?: boolean
+  // 两扇门过滤：video 只列待转录视频；text 列转录稿+文字稿；不传则全列。
+  filterKind?: "video" | "text"
 }
 
 const RECENT_KEY = "v2b_recent_sources"
@@ -68,7 +70,7 @@ function formatSize(n: number): string {
  *   - 支持搜索过滤
  *   - 仍允许用户切换到手动输入模式(粘任意路径)
  */
-export function SourcePicker({ value, onChange, apiBase, className, transcriptionAvailable = true }: SourcePickerProps) {
+export function SourcePicker({ value, onChange, apiBase, className, transcriptionAvailable = true, filterKind }: SourcePickerProps) {
   const [open, setOpen] = useState(false)
   const [items, setItems] = useState<SourceItem[]>([])
   const [loading, setLoading] = useState(false)
@@ -121,13 +123,19 @@ export function SourcePicker({ value, onChange, apiBase, className, transcriptio
     [items, value],
   )
 
+  // 两扇门：video 门只显示待转录视频；text 门显示转录稿+文字稿
+  const showVideos = filterKind !== "text"
+  const showText = filterKind !== "video"
+
   // 把 items 按 kind 分组
   const videos = items.filter(i => i.kind === "video")
   const transcripts = items.filter(i => i.kind === "transcript")
   const texts = items.filter(i => i.kind === "text")
+  const visibleCount = (showVideos ? videos.length : 0) + (showText ? transcripts.length + texts.length : 0)
   const recentItems = recent
     .map(p => items.find(i => i.path === p))
     .filter((i): i is SourceItem => i !== undefined)
+    .filter(i => (i.kind === "video" ? showVideos : showText))
 
   if (manualMode) {
     return (
@@ -154,9 +162,11 @@ export function SourcePicker({ value, onChange, apiBase, className, transcriptio
       ref={fileRef}
       type="file"
       hidden
-      accept={transcriptionAvailable
-        ? ".mp4,.mov,.mkv,.m4v,.webm,.flv,.avi,.txt,.md,.srt,.vtt,video/*"
-        : ".txt,.md,.srt,.vtt"}
+      accept={filterKind === "text" || !transcriptionAvailable
+        ? ".txt,.md,.srt,.vtt"
+        : filterKind === "video"
+        ? ".mp4,.mov,.mkv,.m4v,.webm,.flv,.avi,video/*"
+        : ".mp4,.mov,.mkv,.m4v,.webm,.flv,.avi,.txt,.md,.srt,.vtt,video/*"}
       onChange={e => { const f = e.target.files?.[0]; if (f) handleUpload(f); e.target.value = "" }}
     />
     <Popover open={open} onOpenChange={setOpen}>
@@ -219,6 +229,11 @@ export function SourcePicker({ value, onChange, apiBase, className, transcriptio
                 </div>
               </CommandEmpty>
             )}
+            {!loading && !error && items.length > 0 && visibleCount === 0 && (
+              <div className="py-6 text-center text-sm text-muted-foreground">
+                {filterKind === "video" ? "没有待转录的视频 · 可上传或切到「文字稿」" : "没有文字稿 · 可上传或切到「视频」"}
+              </div>
+            )}
 
             {!loading && !error && recentItems.length > 0 && (
               <>
@@ -240,7 +255,7 @@ export function SourcePicker({ value, onChange, apiBase, className, transcriptio
               </>
             )}
 
-            {videos.length > 0 && (
+            {showVideos && videos.length > 0 && (
               <CommandGroup
                 heading={
                   transcriptionAvailable
@@ -270,9 +285,9 @@ export function SourcePicker({ value, onChange, apiBase, className, transcriptio
               </CommandGroup>
             )}
 
-            {transcripts.length > 0 && (
+            {showText && transcripts.length > 0 && (
               <>
-                {videos.length > 0 && <CommandSeparator />}
+                {showVideos && videos.length > 0 && <CommandSeparator />}
                 <CommandGroup heading={`视频转录稿 · ${transcripts.length}`}>
                 {transcripts.map(item => (
                   <SourceRow
@@ -289,7 +304,7 @@ export function SourcePicker({ value, onChange, apiBase, className, transcriptio
               </>
             )}
 
-            {texts.length > 0 && (
+            {showText && texts.length > 0 && (
               <>
                 {transcripts.length > 0 && <CommandSeparator />}
                 <CommandGroup heading={`文字稿 · ${texts.length}`}>
@@ -320,7 +335,10 @@ export function SourcePicker({ value, onChange, apiBase, className, transcriptio
               onClick={() => fileRef.current?.click()}
             >
               {uploading ? <Loader2 className="animate-spin" data-icon="inline-start" /> : <Upload data-icon="inline-start" />}
-              {uploading ? "上传中…" : transcriptionAvailable ? "上传视频 / 文字稿…" : "上传文字稿 / 字幕…"}
+              {uploading ? "上传中…"
+                : filterKind === "video" ? "上传视频…"
+                : filterKind === "text" ? "上传文字稿 / 字幕…"
+                : transcriptionAvailable ? "上传视频 / 文字稿…" : "上传文字稿 / 字幕…"}
             </Button>
             <Button
               type="button"

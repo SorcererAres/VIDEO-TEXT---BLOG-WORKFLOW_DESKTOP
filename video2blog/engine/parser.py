@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from video2blog.utils import strip_frontmatter, PLACEHOLDER_RE
+
+from video2blog.utils import PLACEHOLDER_RE, strip_frontmatter
 
 
 class ContextLoader:
@@ -15,7 +16,7 @@ class ContextLoader:
 
     def check_placeholders(self) -> list[str]:
         """Scans memory/PREFERENCES.md, memory/CONFIG.md, and memory/HISTORY.md for placeholders.
-        
+
         Returns a list of error strings.
         """
         errors = []
@@ -34,14 +35,14 @@ class ContextLoader:
 
     def get_skill_instruction(self, step_name: str) -> tuple[dict[str, str], str]:
         """Reads and parses the SKILL.md file for a given step.
-        
+
         Returns:
             A tuple of (frontmatter_dict, markdown_body_text).
         """
         skill_path = self.repo_root / f".cursor/skills/video2blog/{step_name}/SKILL.md"
         if not skill_path.exists():
             raise FileNotFoundError(f"缺失技能指令文件: {skill_path}")
-        
+
         content = skill_path.read_text(encoding="utf-8", errors="replace")
         frontmatter, body = strip_frontmatter(content)
         return frontmatter, body
@@ -77,7 +78,7 @@ class ContextLoader:
         workflow_text = workflow_path.read_text(encoding="utf-8", errors="replace")
         style_text = style_path.read_text(encoding="utf-8", errors="replace")
         pref_text = pref_path.read_text(encoding="utf-8", errors="replace")
-        
+
         _, skill_body = self.get_skill_instruction(step_name)
 
         # Load few-shot examples (合同要求至少 1 篇范文) 与机器风格指纹。
@@ -123,14 +124,24 @@ class ContextLoader:
         if global_outline:
             user_parts.extend(["### 全局大纲树", global_outline, ""])
         if prev_written_section:
-            user_parts.extend(["### 上一章节改写成稿（最后 200 字参考，用于承上启下）", prev_written_section[-400:], ""])
-            
+            user_parts.extend(
+                [
+                    "### 上一章节改写成稿（最后 200 字参考，用于承上启下）",
+                    prev_written_section[-400:],
+                    "",
+                ]
+            )
+
         user_parts.extend(["### 输入内容", raw_input])
         user_prompt = "\n".join(user_parts)
         user_prompt = template_pattern.sub(replace_match, user_prompt)
 
         # Fail-closed validation only on the interpolated sections
-        for name, text in [("PREFERENCES", pref_text), ("SKILL", skill_body), ("USER_PROMPT", user_prompt)]:
+        for name, text in [
+            ("PREFERENCES", pref_text),
+            ("SKILL", skill_body),
+            ("USER_PROMPT", user_prompt),
+        ]:
             rem = template_pattern.search(text)
             if rem:
                 raise ValueError(f"在 {name} 中发现未解析的变量: {rem.group(0)}")
@@ -174,4 +185,3 @@ class ContextLoader:
         system_prompt = "\n".join(system_parts)
 
         return system_prompt, user_prompt
-

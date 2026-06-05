@@ -7,10 +7,11 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
+
     from video2blog.server_core import EngineJobService
 
 
-def register(app: "FastAPI", service: "EngineJobService", root: Path) -> None:
+def register(app: FastAPI, service: EngineJobService, root: Path) -> None:
     from fastapi.responses import HTMLResponse
 
     @app.get("/", response_class=HTMLResponse)

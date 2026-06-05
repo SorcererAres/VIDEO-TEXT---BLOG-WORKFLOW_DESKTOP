@@ -12,7 +12,9 @@ class MetaTests(unittest.TestCase):
     def test_output_paths_uses_default_or_override_root(self) -> None:
         video = Path("/tmp/source/video.mp4")
         self.assertEqual(output_paths(video, None, Path("/repo/work")), Path("/repo/work/video"))
-        self.assertEqual(output_paths(video, Path("/tmp/out"), Path("/repo/work")), Path("/tmp/out/video"))
+        self.assertEqual(
+            output_paths(video, Path("/tmp/out"), Path("/repo/work")), Path("/tmp/out/video")
+        )
 
     def test_write_meta_records_raw_stage(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -32,7 +34,7 @@ class MetaTests(unittest.TestCase):
             data = json.loads(meta.read_text(encoding="utf-8"))
             self.assertEqual(data["engine"], "external")
             self.assertEqual(data["engine_requested"], "external")
-            self.assertEqual(data["stages"]["raw"]["tool"], "video2blog.py")
+            self.assertEqual(data["stages"]["raw"]["tool"], "transcribe.py")
             self.assertEqual(data["nested"]["path"], str(root))
 
 

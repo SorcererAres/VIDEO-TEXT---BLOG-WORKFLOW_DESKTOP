@@ -13,11 +13,12 @@ import sys
 import threading
 import time
 import uuid
+from collections.abc import Callable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any
 
 from video2blog.engine import Engine, LLMClient
 from video2blog.engine.whisper_assets import (
@@ -28,7 +29,6 @@ from video2blog.engine.whisper_assets import (
     transcription_supported,
     whisper_cli_path,
 )
-
 
 VALID_ROUTINGS = {"/default", "/lecture", "/dialogue", "/screencast", "/meeting"}
 VALID_MODES = {"full", "quick"}
@@ -159,7 +159,9 @@ class EngineJobService:
     ) -> None:
         self.repo_root = Path(repo_root).resolve()
         self._client_factory = client_factory or self._default_client_factory
-        self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="video2blog-job")
+        self._executor = ThreadPoolExecutor(
+            max_workers=max_workers, thread_name_prefix="video2blog-job"
+        )
         self._jobs: dict[str, _JobRuntime] = {}
         # 待 finalize 的删除：job_id -> {snapshot, work_dir_to_purge, expires_at}。
         # 6s undo window，超时后真删 registry 痕迹 + work/<stem>/ 中间产物。
@@ -209,7 +211,9 @@ class EngineJobService:
         runtime = self._runtime(job_id)
         job = runtime.job
         if job.status != "paused":
-            raise ValueError(f"只有处于暂停 (paused) 状态的任务才可以恢复。当前状态为: {job.status}")
+            raise ValueError(
+                f"只有处于暂停 (paused) 状态的任务才可以恢复。当前状态为: {job.status}"
+            )
         # 走出暂停 → 子状态清空，避免 UI 仍按上一个 paused_state 渲染
         job.paused_state = None
         self._mark(job, "queued")
@@ -361,6 +365,7 @@ class EngineJobService:
         state["status"] = status
         try:
             from video2blog.engine.utils import atomic_write
+
             atomic_write(state_path, json.dumps(state, ensure_ascii=False, indent=2))
         except Exception:
             pass
@@ -384,7 +389,11 @@ class EngineJobService:
             batch: list[dict[str, Any]] = []
             terminal = False
             with runtime.condition:
-                while cursor >= len(runtime.events) and runtime.job.status not in {"succeeded", "failed", "paused"}:
+                while cursor >= len(runtime.events) and runtime.job.status not in {
+                    "succeeded",
+                    "failed",
+                    "paused",
+                }:
                     runtime.condition.wait(timeout=timeout)
                 while cursor < len(runtime.events):
                     batch.append(runtime.events[cursor])
@@ -392,8 +401,7 @@ class EngineJobService:
                 if runtime.job.status in {"succeeded", "failed", "paused"}:
                     terminal = True
 
-            for ev in batch:
-                yield ev
+            yield from batch
 
             if terminal:
                 break
@@ -501,12 +509,20 @@ class EngineJobService:
             if final_path is None:
                 state = engine.load_state(job.stem)
                 if state.get("status") in {"WAITING_USER_OUTLINE", "WAITING_USER_REVIEW"}:
-                    job.clean_path = self._existing_rel(self.repo_root / "work" / job.stem / "clean.md")
-                    job.insights_path = self._existing_rel(self.repo_root / "work" / job.stem / "insights.md")
-                    job.outline_path = self._existing_rel(self.repo_root / "work" / job.stem / "outline.md")
+                    job.clean_path = self._existing_rel(
+                        self.repo_root / "work" / job.stem / "clean.md"
+                    )
+                    job.insights_path = self._existing_rel(
+                        self.repo_root / "work" / job.stem / "insights.md"
+                    )
+                    job.outline_path = self._existing_rel(
+                        self.repo_root / "work" / job.stem / "outline.md"
+                    )
 
                     best_ver = state.get("best_version", 1)
-                    review_json_path = self.repo_root / "work" / job.stem / f"review_v{best_ver}.json"
+                    review_json_path = (
+                        self.repo_root / "work" / job.stem / f"review_v{best_ver}.json"
+                    )
                     if review_json_path.exists():
                         job.review_path = self._to_repo_relative(review_json_path)
 
@@ -536,7 +552,9 @@ class EngineJobService:
             job.final_post_path = self._to_repo_relative(final_path)
             job.review_path = self._infer_review_path(final_path)
             job.clean_path = self._existing_rel(self.repo_root / "work" / job.stem / "clean.md")
-            job.insights_path = self._existing_rel(self.repo_root / "work" / job.stem / "insights.md")
+            job.insights_path = self._existing_rel(
+                self.repo_root / "work" / job.stem / "insights.md"
+            )
             job.outline_path = self._existing_rel(self.repo_root / "work" / job.stem / "outline.md")
             job.input_tokens = getattr(client, "total_input_tokens", 0)
             job.output_tokens = getattr(client, "total_output_tokens", 0)
@@ -583,7 +601,7 @@ class EngineJobService:
         force: bool,
         engine_choice: str | None = None,
     ) -> Path:
-        """前三步：子进程跑 video2blog.py 转录视频 → work/<stem>/raw.txt。
+        """前三步：子进程跑 transcribe.py 转录视频 → work/<stem>/raw.txt。
 
         子进程隔离（mlx 是最大不稳定源）；后台线程读 stdout 推队列，主循环每 0.5s
         轮询，期间检查取消与 wall-clock 超时（即便 mlx 静默也能及时中止，不 hang）。
@@ -612,7 +630,11 @@ class EngineJobService:
             if line.startswith("[1/3]"):
                 emit_transcribe("audio")
             elif line.startswith("[2/3]"):
-                engine = "whisper.cpp" if "whisper.cpp" in line else ("mlx-whisper" if "mlx" in line.lower() else None)
+                engine = (
+                    "whisper.cpp"
+                    if "whisper.cpp" in line
+                    else ("mlx-whisper" if "mlx" in line.lower() else None)
+                )
                 emit_transcribe("asr", engine=engine)
 
         raw_txt = self.repo_root / "work" / video.stem / "raw.txt"
@@ -629,7 +651,7 @@ class EngineJobService:
         proc_env = dict(os.environ)
         if is_frozen():
             # 打包版：sys.executable 是 server 二进制，用它的 transcribe 子命令跑转录
-            #（不能直接跑 video2blog.py 脚本）。两个引擎都打进 .app：
+            # （不能直接跑 transcribe.py 脚本）。两个引擎都打进 .app：
             #   whisper-cpp（默认）：whisper-cli + ggml 模型（我方下载，带进度）+ GGML_BACKEND_PATH
             #   mlx：mlx-whisper（Apple 原生），模型由 mlx_whisper 自动从 HF 下载，.metallib 已打包
             # 切引擎用 VIDEO2BLOG_ENGINE（默认 whisper-cpp）。两引擎都需打包的 ffmpeg 提音频。
@@ -650,9 +672,15 @@ class EngineJobService:
                 emit_transcribe("model")
                 emit_line(f"[前三步] 引擎 mlx（{mlx_model}，模型首次用时下载）…")
                 cmd = [
-                    sys.executable, "transcribe", str(video),
-                    "--engine", "mlx", "--model", mlx_model,
-                    "--fallback-policy", "stop",  # 打包版不静默回退，失败直接报
+                    sys.executable,
+                    "transcribe",
+                    str(video),
+                    "--engine",
+                    "mlx",
+                    "--model",
+                    mlx_model,
+                    "--fallback-policy",
+                    "stop",  # 打包版不静默回退，失败直接报
                     *out_tail,
                 ]
             else:
@@ -673,18 +701,29 @@ class EngineJobService:
                     raise RuntimeError(f"转录模型下载失败：{exc}") from exc
 
                 cmd = [
-                    sys.executable, "transcribe", str(video),
-                    "--engine", "whisper-cpp",
-                    "--whisper-cpp-bin", str(cli),
-                    "--whisper-cpp-model", str(model_path),
+                    sys.executable,
+                    "transcribe",
+                    str(video),
+                    "--engine",
+                    "whisper-cpp",
+                    "--whisper-cpp-bin",
+                    str(cli),
+                    "--whisper-cpp-model",
+                    str(model_path),
                     *out_tail,
                 ]
                 proc_env.update(ggml_backend_env())  # ggml backend 插件目录
         else:
-            # 开发态：python 直接跑 video2blog.py，引擎 auto（先 mlx，失败 fallback whisper.cpp）。
+            # 开发态：python 直接跑 transcribe.py，引擎 auto（先 mlx，失败 fallback whisper.cpp）。
             cmd = [
-                sys.executable, "video2blog.py", str(video),
-                "--no-auto-terminal", "--engine", "auto", "--fallback-policy", "auto",
+                sys.executable,
+                "transcribe.py",
+                str(video),
+                "--no-auto-terminal",
+                "--engine",
+                "auto",
+                "--fallback-policy",
+                "auto",
             ]
 
         if force:
@@ -693,11 +732,15 @@ class EngineJobService:
         emit_transcribe("start")
 
         proc = subprocess.Popen(
-            cmd, cwd=str(self.repo_root),
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, bufsize=1, env=proc_env,
+            cmd,
+            cwd=str(self.repo_root),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            env=proc_env,
         )
-        line_q: "queue.Queue[str | None]" = queue.Queue()
+        line_q: queue.Queue[str | None] = queue.Queue()
 
         def _reader() -> None:
             try:
@@ -710,7 +753,7 @@ class EngineJobService:
         threading.Thread(target=_reader, daemon=True, name="v2b-asr-reader").start()
 
         deadline = time.monotonic() + self.transcribe_deadline_seconds
-        tail: "collections.deque[str]" = collections.deque(maxlen=40)
+        tail: collections.deque[str] = collections.deque(maxlen=40)
         cancelled = timed_out = False
         while True:
             try:
@@ -743,7 +786,7 @@ class EngineJobService:
         if timed_out:
             raise TimeoutError(f"转录超过 {self.transcribe_deadline_seconds}s 上限，已中止")
         if rc != 0:
-            raise RuntimeError("转录失败（子进程退出码 %d）\n%s" % (rc, "\n".join(tail)))
+            raise RuntimeError(f"转录失败（子进程退出码 {rc}）\n" + "\n".join(tail))
         if not raw_txt.exists():
             raise RuntimeError("转录结束但未生成 raw.txt\n" + "\n".join(tail))
         emit_line(f"[前三步] 转录完成 → work/{video.stem}/raw.txt")
@@ -890,7 +933,9 @@ class EngineJobService:
             )
             best_ver = state.get("best_version", state.get("version", 1))
             job.clean_path = self._existing_rel(self.repo_root / "work" / job.stem / "clean.md")
-            job.insights_path = self._existing_rel(self.repo_root / "work" / job.stem / "insights.md")
+            job.insights_path = self._existing_rel(
+                self.repo_root / "work" / job.stem / "insights.md"
+            )
             job.outline_path = self._existing_rel(self.repo_root / "work" / job.stem / "outline.md")
             review_json = self.repo_root / "work" / job.stem / f"review_v{best_ver}.json"
             if review_json.exists():

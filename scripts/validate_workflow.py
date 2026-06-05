@@ -9,14 +9,22 @@ import re
 import sys
 from pathlib import Path
 
-import yaml
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from video2blog.utils import strip_frontmatter, VIEWER_RE, PLACEHOLDER_RE
-REQUIRED_FRONTMATTER = {"title", "date", "entry", "mode", "routing", "speaker", "source", "pass_score"}
+from video2blog.utils import PLACEHOLDER_RE, VIEWER_RE, strip_frontmatter  # noqa: E402
+
+REQUIRED_FRONTMATTER = {
+    "title",
+    "date",
+    "entry",
+    "mode",
+    "routing",
+    "speaker",
+    "source",
+    "pass_score",
+}
 ENTRY_CHOICES = {"video", "transcript"}
 MODE_CHOICES = {"full", "quick"}
 ROUTING_CHOICES = {"/default", "/lecture", "/dialogue", "/screencast", "/meeting"}
@@ -27,7 +35,6 @@ PASS_SCORE_RE = re.compile(r"^(?:\d{1,2}|[—-])/60$")
 
 def read(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
-
 
 
 def is_draft_post(path: Path) -> bool:
@@ -166,7 +173,9 @@ def check_work_stage(repo: Path, errors: list[str]) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo", type=Path, default=Path.cwd())
-    parser.add_argument("--lenient", action="store_true", help="skip posts with incomplete frontmatter")
+    parser.add_argument(
+        "--lenient", action="store_true", help="skip posts with incomplete frontmatter"
+    )
     args = parser.parse_args(argv)
     repo = args.repo.resolve()
     errors: list[str] = []

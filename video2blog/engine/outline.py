@@ -32,8 +32,9 @@ from dataclasses import dataclass, field
 @dataclass(frozen=True)
 class BodySection:
     """正文中的一节。"""
+
     heading: str  # 节标题（带 `## ` 前缀，照 outline 原样保留，便于拼接）
-    brief: str    # 骨架描述（"承载 X + Y" 那段）
+    brief: str  # 骨架描述（"承载 X + Y" 那段）
 
 
 @dataclass(frozen=True)
@@ -146,9 +147,7 @@ def parse_outline_sections(outline_text: str) -> OutlineSections:
     body_sections = _parse_body_items(body_block)
 
     if not body_sections:
-        return OutlineSections(
-            intro=intro_text, body=[], outro=outro_text, has_skeleton=False
-        )
+        return OutlineSections(intro=intro_text, body=[], outro=outro_text, has_skeleton=False)
 
     return OutlineSections(
         intro=intro_text, body=body_sections, outro=outro_text, has_skeleton=True

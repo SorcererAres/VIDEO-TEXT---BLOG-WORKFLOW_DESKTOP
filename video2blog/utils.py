@@ -8,8 +8,8 @@ import shlex
 import tempfile
 from datetime import datetime
 from pathlib import Path
-import yaml
 
+import yaml
 
 
 def atomic_write(file_path: Path, content: str, encoding: str = "utf-8") -> None:
@@ -66,5 +66,7 @@ def strip_frontmatter(text: str) -> tuple[dict[str, str], str]:
         return {}, text
     data = {str(k): "" if v is None else str(v) for k, v in parsed.items()}
     return data, text[end + 4 :]
+
+
 VIEWER_RE = re.compile(r"我看完|这场分享让我|我作为读者|编者按|补充观察|我抄走")
 PLACEHOLDER_RE = re.compile(r"_{4,}|YYYY-MM-DD|\[(?:填写|TODO|占位)\]")

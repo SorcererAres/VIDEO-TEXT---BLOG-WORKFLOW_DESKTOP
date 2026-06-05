@@ -26,7 +26,9 @@ class MlxTests(unittest.TestCase):
                     self.pid = 123
                     result_path = Path(cmd[5])
                     result_path.write_text(
-                        json.dumps({"text": "hello", "segments": [{"start": 0, "end": 1, "text": "hello"}]}),
+                        json.dumps(
+                            {"text": "hello", "segments": [{"start": 0, "end": 1, "text": "hello"}]}
+                        ),
                         encoding="utf-8",
                     )
 

@@ -9,10 +9,11 @@ from video2blog.routes.models import LlmProfileRequest
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
+
     from video2blog.server_core import EngineJobService
 
 
-def register(app: "FastAPI", service: "EngineJobService", root: Path) -> None:
+def register(app: FastAPI, service: EngineJobService, root: Path) -> None:
     from fastapi import HTTPException
 
     @app.get("/api/llm-profiles")
@@ -22,12 +23,14 @@ def register(app: "FastAPI", service: "EngineJobService", root: Path) -> None:
         **绝不返回明文 key** —— 防本地恶意页面经此端点窃取。
         """
         from video2blog.engine.secrets_store import public_profiles
+
         return public_profiles()
 
     @app.post("/api/llm-profiles", status_code=201)
     def create_llm_profile(payload: LlmProfileRequest) -> dict[str, Any]:
         """新建配置档；非敏感字段落 config，api_key 非空才写钥匙串。返回完整快照集合。"""
         from video2blog.engine import secrets_store as ss
+
         data = {k: v for k, v in payload.model_dump().items() if k != "api_key" and v is not None}
         profile = ss.create_profile(data)
         if payload.api_key and payload.api_key.strip():
@@ -41,6 +44,7 @@ def register(app: "FastAPI", service: "EngineJobService", root: Path) -> None:
     def update_llm_profile(profile_id: str, payload: LlmProfileRequest) -> dict[str, Any]:
         """更新某档非敏感字段；api_key 非空才覆盖钥匙串，省略 / null 则保留原 key。"""
         from video2blog.engine import secrets_store as ss
+
         patch = {k: v for k, v in payload.model_dump().items() if k != "api_key" and v is not None}
         if ss.update_profile(profile_id, patch) is None:
             raise HTTPException(status_code=404, detail=f"配置档不存在: {profile_id}")
@@ -55,6 +59,7 @@ def register(app: "FastAPI", service: "EngineJobService", root: Path) -> None:
     def delete_llm_profile(profile_id: str) -> dict[str, Any]:
         """删档 + 删其钥匙串 key；删的是默认档时自动重选默认。"""
         from video2blog.engine import secrets_store as ss
+
         if not ss.delete_profile(profile_id):
             raise HTTPException(status_code=404, detail=f"配置档不存在: {profile_id}")
         return ss.public_profiles()
@@ -63,6 +68,7 @@ def register(app: "FastAPI", service: "EngineJobService", root: Path) -> None:
     def set_default_llm_profile(profile_id: str) -> dict[str, Any]:
         """把某档设为默认。"""
         from video2blog.engine import secrets_store as ss
+
         if not ss.set_default(profile_id):
             raise HTTPException(status_code=404, detail=f"配置档不存在: {profile_id}")
         return ss.public_profiles()
@@ -71,6 +77,7 @@ def register(app: "FastAPI", service: "EngineJobService", root: Path) -> None:
     def delete_llm_profile_key(profile_id: str) -> dict[str, Any]:
         """仅清除某档钥匙串中的 key（保留档本身）。"""
         from video2blog.engine import secrets_store as ss
+
         if ss.get_profile(profile_id) is None:
             raise HTTPException(status_code=404, detail=f"配置档不存在: {profile_id}")
         ss.delete_key(profile_id)

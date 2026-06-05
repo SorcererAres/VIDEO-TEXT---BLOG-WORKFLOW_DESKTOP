@@ -74,7 +74,7 @@ def transcribe_audio_whisper_cpp(
             str(out_prefix),
         ]
         append_log(log_path, "whisper.cpp start: " + shell_join(cmd))
-        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        proc = subprocess.run(cmd, capture_output=True, text=True)
         if proc.returncode != 0:
             append_log(log_path, "whisper.cpp failed:\n" + (proc.stderr or proc.stdout))
             raise RuntimeError(proc.stderr or proc.stdout or "whisper.cpp 转录失败")

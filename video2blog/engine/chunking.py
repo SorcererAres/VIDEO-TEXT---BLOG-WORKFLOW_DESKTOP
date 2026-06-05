@@ -29,7 +29,9 @@ def split_text_chunks(text: str, max_chars: int, context_chars: int) -> list[Tex
 
     sentences = [s.strip() for s in SENTENCE_RE.findall(normalized) if s.strip()]
     if not sentences:
-        sentences = [p.strip() for p in re.split(r"\n\s*\n", normalized) if p.strip()] or [normalized]
+        sentences = [p.strip() for p in re.split(r"\n\s*\n", normalized) if p.strip()] or [
+            normalized
+        ]
 
     raw_chunks: list[str] = []
     current: list[str] = []
@@ -77,4 +79,3 @@ def chunk_prompt(chunk: TextChunk, step_label: str) -> str:
         parts.extend(["### 上一分块尾部上下文（只读，不要重复输出）", chunk.previous_context, ""])
     parts.extend(["### 当前分块正文", chunk.text])
     return "\n".join(parts)
-

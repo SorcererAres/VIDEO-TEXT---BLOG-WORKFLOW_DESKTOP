@@ -39,7 +39,9 @@ def _mlx_worker_main(argv: list[str]) -> int:
     wav, model_repo, result_path, error_path, log_path = argv[:5]
     try:
         with Path(log_path).open("a", encoding="utf-8") as log_fh:
-            log_fh.write(f"[{datetime.now().isoformat(timespec='seconds')}] mlx child start: {wav}\n")
+            log_fh.write(
+                f"[{datetime.now().isoformat(timespec='seconds')}] mlx child start: {wav}\n"
+            )
             log_fh.flush()
             with contextlib.redirect_stdout(log_fh), contextlib.redirect_stderr(log_fh):
                 import mlx_whisper
@@ -52,14 +54,18 @@ def _mlx_worker_main(argv: list[str]) -> int:
                     condition_on_previous_text=False,
                     no_speech_threshold=0.6,
                 )
-            log_fh.write(f"[{datetime.now().isoformat(timespec='seconds')}] mlx child complete: {wav}\n")
+            log_fh.write(
+                f"[{datetime.now().isoformat(timespec='seconds')}] mlx child complete: {wav}\n"
+            )
         atomic_write(Path(result_path), json.dumps(_json_safe(raw), ensure_ascii=False))
         return 0
     except BaseException:
         tb = traceback.format_exc()
         atomic_write(Path(error_path), tb)
         with Path(log_path).open("a", encoding="utf-8") as log_fh:
-            log_fh.write(f"[{datetime.now().isoformat(timespec='seconds')}] mlx child failed:\n{tb}\n")
+            log_fh.write(
+                f"[{datetime.now().isoformat(timespec='seconds')}] mlx child failed:\n{tb}\n"
+            )
         return 1
 
 
@@ -89,13 +95,17 @@ def transcribe_audio_mlx(
             " sys.exit(_mlx_worker_main(sys.argv[1:]))",
             *worker_args,
         ]
-    append_log(log_path, f"mlx parent start: wav={wav}, timeout={timeout_seconds}s, worker=subprocess")
+    append_log(
+        log_path, f"mlx parent start: wav={wav}, timeout={timeout_seconds}s, worker=subprocess"
+    )
     with log_path.open("a", encoding="utf-8") as log_fh:
         proc = subprocess.Popen(cmd, stdout=log_fh, stderr=log_fh, text=True)
     try:
         proc.wait(timeout=None if timeout_seconds <= 0 else timeout_seconds)
     except subprocess.TimeoutExpired:
-        append_log(log_path, f"mlx timeout after {timeout_seconds}s; terminating child pid={proc.pid}")
+        append_log(
+            log_path, f"mlx timeout after {timeout_seconds}s; terminating child pid={proc.pid}"
+        )
         proc.terminate()
         try:
             proc.wait(timeout=10)
@@ -103,12 +113,16 @@ def transcribe_audio_mlx(
             append_log(log_path, f"mlx child still alive after terminate; killing pid={proc.pid}")
             proc.kill()
             proc.wait(timeout=5)
-        raise RuntimeError(f"mlx-whisper 超时（{timeout_seconds}s），详见日志：{log_path}") from None
+        raise RuntimeError(
+            f"mlx-whisper 超时（{timeout_seconds}s），详见日志：{log_path}"
+        ) from None
 
     if error_path.exists():
         raise RuntimeError(error_path.read_text(encoding="utf-8", errors="replace").strip())
     if proc.returncode != 0:
-        raise RuntimeError(f"mlx-whisper 子进程异常退出：exitcode={proc.returncode}，详见日志：{log_path}")
+        raise RuntimeError(
+            f"mlx-whisper 子进程异常退出：exitcode={proc.returncode}，详见日志：{log_path}"
+        )
     if not result_path.exists():
         raise RuntimeError(f"mlx-whisper 未生成结果文件，详见日志：{log_path}")
 

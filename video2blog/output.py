@@ -45,7 +45,7 @@ def write_meta(
         "stages": {
             "raw": {
                 "created_at": now,
-                "tool": "video2blog.py",
+                "tool": "transcribe.py",
                 "txt": str(txt_path),
                 "srt": str(srt_path),
                 "log": str(log_path),

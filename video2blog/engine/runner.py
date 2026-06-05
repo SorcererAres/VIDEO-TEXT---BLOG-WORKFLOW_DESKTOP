@@ -7,33 +7,33 @@ import json
 import os
 import re
 import sys
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
+
 import yaml
 
 from video2blog.engine.chunking import TextChunk, chunk_prompt, split_text_chunks
 from video2blog.engine.client import LLMClient
 from video2blog.engine.outline import OutlineSections, parse_outline_sections
 from video2blog.engine.parser import ContextLoader
-from video2blog.engine.utils import atomic_write
-from video2blog.utils import VIEWER_RE, strip_frontmatter
 
 # H2：纯解析/文本 helper 已抽到 engine/parsing.py；此处 re-export 保持兼容（含 tests 的 import）。
 from video2blog.engine.parsing import (
     clean_title,
     combine_clean_chunks,
     extract_blog_body,
-    extract_json_object,
-    extract_markdown_section,
+    extract_json_object,  # noqa: F401 — 仅 re-export 供 tests，runner 内部不直接调用
     extract_quality_review,
     looks_like_json_mode_unsupported,
     parse_markdown_review,
     parse_quality_json_review,
-    render_quality_review_markdown,
     strip_runtime_scaffold,
     validate_rewrite_output,
 )
+from video2blog.engine.utils import atomic_write
+from video2blog.utils import VIEWER_RE, strip_frontmatter
 
 VALID_REWRITE_STRATEGIES = {"single", "sectioned"}
 
@@ -67,12 +67,20 @@ class Engine:
         self.repo_root = Path(repo_root).resolve()
         self.client = client
         self.loader = ContextLoader(self.repo_root)
-        self.chunk_char_limit = chunk_char_limit or int(os.environ.get("VIDEO2BLOG_CHUNK_CHAR_LIMIT", "30000"))
-        self.chunk_context_chars = chunk_context_chars or int(os.environ.get("VIDEO2BLOG_CHUNK_CONTEXT_CHARS", "1200"))
+        self.chunk_char_limit = chunk_char_limit or int(
+            os.environ.get("VIDEO2BLOG_CHUNK_CHAR_LIMIT", "30000")
+        )
+        self.chunk_context_chars = chunk_context_chars or int(
+            os.environ.get("VIDEO2BLOG_CHUNK_CONTEXT_CHARS", "1200")
+        )
         self.cancel_check = cancel_check
         # 结构化进度事件回调（外壳层注入）。CLI / 无回调时为 None，引擎静默退化为纯 print。
         self._emit_event = emit_event
-        strategy = (rewrite_strategy or os.environ.get("VIDEO2BLOG_REWRITE_STRATEGY", "single")).strip().lower()
+        strategy = (
+            (rewrite_strategy or os.environ.get("VIDEO2BLOG_REWRITE_STRATEGY", "single"))
+            .strip()
+            .lower()
+        )
         if strategy not in VALID_REWRITE_STRATEGIES:
             raise ValueError(
                 f"未知 rewrite_strategy: {strategy!r}，可选 {sorted(VALID_REWRITE_STRATEGIES)}"
@@ -365,7 +373,11 @@ class Engine:
     ) -> str:
         """Runs Step 4 as chunked extraction maps plus LLM reduce."""
         self._check_cancelled()
-        source_chunk_paths = sorted(source_chunk_dir.glob("chunk_*.md")) if source_chunk_dir and source_chunk_dir.exists() else []
+        source_chunk_paths = (
+            sorted(source_chunk_dir.glob("chunk_*.md"))
+            if source_chunk_dir and source_chunk_dir.exists()
+            else []
+        )
         if len(source_chunk_paths) > 1:
             source_texts = [path.read_text(encoding="utf-8") for path in source_chunk_paths]
             chunks = [
@@ -373,7 +385,9 @@ class Engine:
                     index=idx,
                     total=len(source_texts),
                     text=text,
-                    previous_context=source_texts[idx - 2][-self.chunk_context_chars :] if idx > 1 else "",
+                    previous_context=source_texts[idx - 2][-self.chunk_context_chars :]
+                    if idx > 1
+                    else "",
                 )
                 for idx, text in enumerate(source_texts, start=1)
             ]
@@ -513,8 +527,12 @@ class Engine:
 
     @staticmethod
     def _build_section_task(
-        *, kind: str, heading: str, brief: str,
-        clean_text: str, insights_text: str,
+        *,
+        kind: str,
+        heading: str,
+        brief: str,
+        clean_text: str,
+        insights_text: str,
     ) -> str:
         """组装"本节任务"的 user-prompt raw_input。
 
@@ -557,7 +575,15 @@ class Engine:
         """剥掉单节输出可能携带的 frontmatter / Pre-Flight / Step 标题脚手架。"""
         _, body = strip_frontmatter(content)
         lines = body.replace("\r\n", "\n").replace("\r", "\n").splitlines()
-        drop_prefixes = ("> Pre-Flight", "> ENTRY", "> MODE", "> ROUTING", "> SOURCE", "> SPEAKER", "> STYLE")
+        drop_prefixes = (
+            "> Pre-Flight",
+            "> ENTRY",
+            "> MODE",
+            "> ROUTING",
+            "> SOURCE",
+            "> SPEAKER",
+            "> STYLE",
+        )
         # 顶部连续的 Pre-Flight 引用块 + Step 标题行先剥掉
         while lines and (
             not lines[0].strip()
@@ -630,8 +656,11 @@ class Engine:
             cache_key = f"REWRITING_v{version}_{kind}"
 
             section_task = self._build_section_task(
-                kind=kind, heading=heading, brief=brief,
-                clean_text=clean_text, insights_text=insights_text,
+                kind=kind,
+                heading=heading,
+                brief=brief,
+                clean_text=clean_text,
+                insights_text=insights_text,
             )
             current_cache_meta = {
                 "input_hash": self._hash_text(section_task + "\n---prev---\n" + prev_tail),
@@ -687,17 +716,14 @@ class Engine:
         判定优先使用显式 ``viewer_blocked: True`` sentinel；老 state.json 兜底
         嗅探 rebrief 关键词和 0/60 总分（向后兼容前置版本的产物）。
         """
+
         def score_of(r: dict[str, Any]) -> int:
             total = r.get("total", "0/60")
             try:
                 val = int(total.split("/")[0])
             except (ValueError, AttributeError):
                 val = 0
-            if (
-                r.get("viewer_blocked")
-                or "视角违规" in r.get("rebrief", "")
-                or "0/60" in total
-            ):
+            if r.get("viewer_blocked") or "视角违规" in r.get("rebrief", "") or "0/60" in total:
                 val -= 100
             return val
 
@@ -732,7 +758,7 @@ class Engine:
         pause_on_outline: bool = True,
     ) -> Path | None:
         """Executes the full or quick workflow.
-        
+
         Quick transitions: PENDING -> REWRITING -> CHECKING -> DONE/WAITING_USER_REVIEW.
         Full transitions: PENDING -> CLEANING -> EXTRACTING -> STRUCTURING -> REWRITING -> CHECKING.
         """
@@ -744,7 +770,8 @@ class Engine:
         errors = self.loader.check_placeholders()
         if errors:
             raise ValueError(
-                "Pre-Flight 校验失败，请修改以下占位符后重新运行:\n" + "\n".join(f"- {e}" for e in errors)
+                "Pre-Flight 校验失败，请修改以下占位符后重新运行:\n"
+                + "\n".join(f"- {e}" for e in errors)
             )
 
         source_path = Path(source_path).resolve()
@@ -752,7 +779,7 @@ class Engine:
             raise FileNotFoundError(f"输入源文件不存在: {source_path}")
 
         raw_input = source_path.read_text(encoding="utf-8", errors="replace")
-        
+
         # Calculate contract fingerprint and input hash for cache checking
         contract_fingerprint = self.calculate_contract_fingerprint()
         input_hash = hashlib.sha256(raw_input.encode("utf-8")).hexdigest()[:16]
@@ -782,8 +809,7 @@ class Engine:
             )
             if mode == "quick":
                 finished_cache_valid = (
-                    finished_cache_valid
-                    and rewrite_meta.get("input_hash") == input_hash
+                    finished_cache_valid and rewrite_meta.get("input_hash") == input_hash
                 )
             else:
                 finished_cache_valid = (
@@ -791,8 +817,10 @@ class Engine:
                     and cleaning_meta.get("input_hash") == input_hash
                     and cleaning_meta.get("model") == self.client.model
                     and cleaning_meta.get("contract_fingerprint") == contract_fingerprint
-                    and cleaning_meta.get("chunk_char_limit", self.chunk_char_limit) == self.chunk_char_limit
-                    and cleaning_meta.get("chunk_context_chars", self.chunk_context_chars) == self.chunk_context_chars
+                    and cleaning_meta.get("chunk_char_limit", self.chunk_char_limit)
+                    == self.chunk_char_limit
+                    and cleaning_meta.get("chunk_context_chars", self.chunk_context_chars)
+                    == self.chunk_context_chars
                 )
             if finished_cache_valid:
                 print(f"[*] 已完成且缓存命中，直接返回成品: {state['final_post_path']}", flush=True)
@@ -828,6 +856,7 @@ class Engine:
             }
             # 清磁盘上的旧 draft_v* / review_v* / chunks/rewrite/*
             import shutil as _shutil
+
             stale_work_dir = self.repo_root / "work" / stem
             if stale_work_dir.exists():
                 for old in stale_work_dir.glob("draft_v*.md"):
@@ -843,7 +872,11 @@ class Engine:
             "SPEAKER": speaker,
             "ROUTING": routing,
             "MODE": mode,
-            "SOURCE": str(source_path.relative_to(self.repo_root) if source_path.is_relative_to(self.repo_root) else source_path),
+            "SOURCE": str(
+                source_path.relative_to(self.repo_root)
+                if source_path.is_relative_to(self.repo_root)
+                else source_path
+            ),
             "PREV_TOTAL": "N/A",
             "PREV_REBRIEF": "无",
         }
@@ -907,14 +940,20 @@ class Engine:
 
         if state["status"] == "WAITING_USER_OUTLINE":
             outline_path = work_dir / "outline.md"
-            print(f"\n[!] 任务暂停：骨架已生成于 {outline_path.relative_to(self.repo_root)}，等待用户审批大纲...", flush=True)
+            print(
+                f"\n[!] 任务暂停：骨架已生成于 {outline_path.relative_to(self.repo_root)}，等待用户审批大纲...",
+                flush=True,
+            )
             if sys.stdin.isatty():
                 input("    请在编辑完大纲后，按回车键恢复执行...")
                 state["status"] = "REWRITING"
                 self.save_state(stem, state)
                 print("    -> 状态恢复为 REWRITING，继续执行...", flush=True)
             else:
-                print("    [提示] 当前处于非交互环境。大纲已暂停挂起，请通过 API 确认后重新拉起。", flush=True)
+                print(
+                    "    [提示] 当前处于非交互环境。大纲已暂停挂起，请通过 API 确认后重新拉起。",
+                    flush=True,
+                )
                 return None
 
         if mode == "full":
@@ -953,7 +992,9 @@ class Engine:
                 # §9-C 按节策略：5 条回退分支由 _resolve_rewrite_strategy 一处把守。
                 active_strategy, outline_sections, outline_text_for_rewrite = (
                     self._resolve_rewrite_strategy(
-                        work_dir=work_dir, mode=mode, version=version,
+                        work_dir=work_dir,
+                        mode=mode,
+                        version=version,
                     )
                 )
 
@@ -975,7 +1016,10 @@ class Engine:
                 )
 
                 if cache_hit and not state.get("force_retry", False):
-                    print(f"    -> 发现已有第 {version} 版草稿，跳过 API 请求 (缓存命中)。", flush=True)
+                    print(
+                        f"    -> 发现已有第 {version} 版草稿，跳过 API 请求 (缓存命中)。",
+                        flush=True,
+                    )
                     draft_content = draft_path.read_text(encoding="utf-8")
                 else:
                     # Inject variables for templates (A4 contract requirement)
@@ -990,7 +1034,9 @@ class Engine:
                     if active_strategy == "sectioned":
                         assert outline_sections is not None
                         clean_text_for_rewrite = (work_dir / "clean.md").read_text(encoding="utf-8")
-                        insights_text_for_rewrite = (work_dir / "insights.md").read_text(encoding="utf-8")
+                        insights_text_for_rewrite = (work_dir / "insights.md").read_text(
+                            encoding="utf-8"
+                        )
                         print(
                             f"    -> 按节滚动改写：导语 + {len(outline_sections.body)} 节 + 收尾"
                             f"（预计 {outline_sections.total_calls} 次 LLM 调用）...",
@@ -1054,14 +1100,21 @@ class Engine:
                 # Local free check first: VIEWER_RE scan
                 viewer_match = VIEWER_RE.search(draft_content)
                 if viewer_match:
-                    print(f"    -> [拦截] 触发本地视角违规词: '{viewer_match.group(0)}' (零成本拦截，不调用大模型评分)", flush=True)
+                    print(
+                        f"    -> [拦截] 触发本地视角违规词: '{viewer_match.group(0)}' (零成本拦截，不调用大模型评分)",
+                        flush=True,
+                    )
                     self._progress("viewer_blocked", word=viewer_match.group(0))
                     check_result = {
                         "version": version,
                         "verdict": "REVIEW",
                         "scores": {
-                            "忠实度": 0, "可读性": 0, "观点密度": 0,
-                            "风格一致": 0, "完整性": 0, "视角忠实度": 0
+                            "忠实度": 0,
+                            "可读性": 0,
+                            "观点密度": 0,
+                            "风格一致": 0,
+                            "完整性": 0,
+                            "视角忠实度": 0,
                         },
                         "total": "0/60",
                         "rebrief": f"触发本地视角违规词: '{viewer_match.group(0)}'。请确保使用演讲者第一人称口吻，禁止出现“我看完、读者、编者按”等词汇。",
@@ -1072,12 +1125,14 @@ class Engine:
                     cache_key = f"CHECKING_v{version}"
                     cached_meta = state.get("cache", {}).get(cache_key)
                     current_cache_meta = {
-                        "input_hash": hashlib.sha256(draft_content.encode("utf-8")).hexdigest()[:16],
+                        "input_hash": hashlib.sha256(draft_content.encode("utf-8")).hexdigest()[
+                            :16
+                        ],
                         "model": self.client.model,
                         "contract_fingerprint": contract_fingerprint,
                         "quality_format": "json-first",
                     }
-                    
+
                     cache_hit = (
                         cached_meta is not None
                         and cached_meta.get("input_hash") == current_cache_meta["input_hash"]
@@ -1087,25 +1142,29 @@ class Engine:
                     )
 
                     if cache_hit:
-                        print(f"    -> 发现已有第 {version} 版质检结果，跳过 API 质检请求 (缓存命中)。", flush=True)
+                        print(
+                            f"    -> 发现已有第 {version} 版质检结果，跳过 API 质检请求 (缓存命中)。",
+                            flush=True,
+                        )
                         check_result = json.loads(review_path.read_text(encoding="utf-8"))
                     else:
                         system_prompt, user_prompt = self.loader.assemble_prompt(
                             step_name="quality-check",
                             variables=state["variables"],
                             raw_input=draft_content,
-                            include_examples=False,   # 质检无需范文锚定，省 token；指纹仍会注入用于风格一致性判分
-                            include_workflow=False,   # 关掉整份 WORKFLOW.md：避免 LLM 看见 Step 3-8 说明后跑歪、把全工作流复述一遍
+                            include_examples=False,  # 质检无需范文锚定，省 token；指纹仍会注入用于风格一致性判分
+                            include_workflow=False,  # 关掉整份 WORKFLOW.md：避免 LLM 看见 Step 3-8 说明后跑歪、把全工作流复述一遍
                         )
                         quality_user_prompt = (
-                            user_prompt
-                            + "\n\n### 输出格式补充\n"
+                            user_prompt + "\n\n### 输出格式补充\n"
                             "优先输出 JSON object，字段必须为 verdict、scores、total、rebrief。"
                             "scores 必须包含：忠实度、可读性、观点密度、风格一致、完整性、视角忠实度。"
                             "如果无法满足 JSON，再退回本步骤 SKILL.md 的 Markdown 评分表格式。"
                         )
                         try:
-                            check_resp = self.client.call_api(system_prompt, quality_user_prompt, json_mode=True)
+                            check_resp = self.client.call_api(
+                                system_prompt, quality_user_prompt, json_mode=True
+                            )
                         except Exception as exc:
                             if not looks_like_json_mode_unsupported(exc):
                                 raise
@@ -1113,7 +1172,9 @@ class Engine:
                                 "    -> 当前 LLM provider 不支持 JSON mode，退回 Markdown 质检格式。",
                                 flush=True,
                             )
-                            check_resp = self.client.call_api(system_prompt, user_prompt, json_mode=False)
+                            check_resp = self.client.call_api(
+                                system_prompt, user_prompt, json_mode=False
+                            )
                         try:
                             check_result = parse_quality_json_review(check_resp)
                             check_result["version"] = version
@@ -1143,14 +1204,18 @@ class Engine:
                                     "raw_markdown": check_resp,
                                     "parse_failed": True,
                                 }
-                        atomic_write(review_path, json.dumps(check_result, ensure_ascii=False, indent=2))
-                        
+                        atomic_write(
+                            review_path, json.dumps(check_result, ensure_ascii=False, indent=2)
+                        )
+
                         # Update cache key
                         state.setdefault("cache", {})[cache_key] = current_cache_meta
                         self.save_state(stem, state)
 
                 # Update checked results
-                state["checked_results"] = [r for r in state["checked_results"] if r["version"] != version]
+                state["checked_results"] = [
+                    r for r in state["checked_results"] if r["version"] != version
+                ]
                 state["checked_results"].append(check_result)
 
                 verdict = check_result.get("verdict", "REVIEW")
@@ -1169,7 +1234,10 @@ class Engine:
                     state["status"] = "WAITING_USER_REVIEW"
                 elif version <= max_retries:
                     # 再来一轮自修正
-                    print(f"    -> [自修正] 启动自我修正循环，尝试第 {version + 1} 轮重写...", flush=True)
+                    print(
+                        f"    -> [自修正] 启动自我修正循环，尝试第 {version + 1} 轮重写...",
+                        flush=True,
+                    )
                     self._progress("self_correct", step=7, round=version + 1)
                     state["status"] = "REWRITING"
                     state["version"] = version + 1
@@ -1180,8 +1248,7 @@ class Engine:
                     best_result = self._select_best_review(state["checked_results"])
                     state["best_version"] = best_result["version"]
                     state["status"] = (
-                        "DONE" if best_result.get("verdict") == "PASS"
-                        else "WAITING_USER_REVIEW"
+                        "DONE" if best_result.get("verdict") == "PASS" else "WAITING_USER_REVIEW"
                     )
 
                 self.save_state(stem, state)
@@ -1192,9 +1259,12 @@ class Engine:
         if state["status"] == "WAITING_USER_REVIEW":
             best_ver = state["best_version"]
             best_result = next(r for r in state["checked_results"] if r["version"] == best_ver)
-            print(f"\n[!] 任务暂停：该博文未通过质量把关 (最佳版本为第 {best_ver} 版，得分 {best_result.get('total', '0/60')})", flush=True)
+            print(
+                f"\n[!] 任务暂停：该博文未通过质量把关 (最佳版本为第 {best_ver} 版，得分 {best_result.get('total', '0/60')})",
+                flush=True,
+            )
             print(f"    改进建议: {best_result.get('rebrief', '')}", flush=True)
-            
+
             accept_draft = False
             if user_confirm_callback:
                 accept_draft = user_confirm_callback(stem, best_result)
@@ -1202,7 +1272,10 @@ class Engine:
                 ans = input("    是否接受该版本并输出为草稿 (DRAFT)？[y/N]: ").strip().lower()
                 accept_draft = ans in ("y", "yes")
             else:
-                print("    [提示] 当前处于非交互环境。工作流已暂停挂起，等待 API 审核确认。", flush=True)
+                print(
+                    "    [提示] 当前处于非交互环境。工作流已暂停挂起，等待 API 审核确认。",
+                    flush=True,
+                )
                 return None
 
             if accept_draft:
@@ -1210,7 +1283,10 @@ class Engine:
                 self.save_state(stem, state)
                 print("    -> 用户接受草稿，进入 Step 8 落盘。", flush=True)
             else:
-                print("    -> 用户拒绝草稿，工作流中止。你可以修改相关规范合同后使用 --force 重跑。", flush=True)
+                print(
+                    "    -> 用户拒绝草稿，工作流中止。你可以修改相关规范合同后使用 --force 重跑。",
+                    flush=True,
+                )
                 return None
 
         # ----------------------------------------------------
@@ -1220,29 +1296,29 @@ class Engine:
             best_ver = state["best_version"]
             draft_path = work_dir / f"draft_v{best_ver}.md"
             review_json = next(r for r in state["checked_results"] if r["version"] == best_ver)
-            
+
             draft_content = draft_path.read_text(encoding="utf-8")
-            
+
             # Extract title for the filename
             title = "未命名博文"
             for line in draft_content.splitlines():
                 if line.startswith("# "):
                     title = line[2:].strip()
                     break
-            
+
             clean_title_str = clean_title(title)
             date_str = datetime.now().strftime("%Y-%m-%d")
-            
+
             # Resolve destination file name
             yyyy = datetime.now().strftime("%Y")
             posts_dir = self.repo_root / "output" / "Posts" / yyyy
             posts_dir.mkdir(parents=True, exist_ok=True)
-            
+
             if state["status"] == "DRAFT_DONE":
                 filename = f"DRAFT-{date_str}-{clean_title_str}.md"
             else:
                 filename = f"{date_str}-{clean_title_str}.md"
-                
+
             post_path = posts_dir / filename
 
             # 同源重跑去重：删掉本 job 上一次产出的旧成品（标题一变文件名就变，否则成品库会堆积重复）。
@@ -1254,7 +1330,11 @@ class Engine:
                 if prev_abs.exists() and prev_abs.resolve() != post_path.resolve():
                     prev_abs.unlink()
                     replaced_rel = prev_post_rel
-                    rev_stem = prev_abs.stem[len("DRAFT-"):] if prev_abs.stem.startswith("DRAFT-") else prev_abs.stem
+                    rev_stem = (
+                        prev_abs.stem[len("DRAFT-") :]
+                        if prev_abs.stem.startswith("DRAFT-")
+                        else prev_abs.stem
+                    )
                     (reviews_dir / f"{rev_stem}.review.md").unlink(missing_ok=True)
 
             # §6 同名冲突（来自不同 job）：追加 -v2/-v3；同 job 同名直接覆盖。
@@ -1276,7 +1356,7 @@ class Engine:
                 "source": state["variables"]["SOURCE"],
                 "pass_score": review_json.get("total", "0/60"),
             }
-            
+
             # Clean body: 去掉 frontmatter，并剥掉泄漏的 HTML 注释（如 <!-- video2blog ... Speaker=X -->），
             # 避免正文里的 Speaker= 注释与 frontmatter 的 speaker 自相矛盾。
             _, final_body = strip_frontmatter(draft_content)
@@ -1286,20 +1366,30 @@ class Engine:
             if not re.search(r"^#\s+\S+", final_body, re.MULTILINE):
                 final_body = f"# {title}\n\n" + final_body.strip()
 
-            yaml_block = "---\n" + yaml.safe_dump(frontmatter, allow_unicode=True, default_flow_style=False) + "---\n"
+            yaml_block = (
+                "---\n"
+                + yaml.safe_dump(frontmatter, allow_unicode=True, default_flow_style=False)
+                + "---\n"
+            )
             final_content = yaml_block + final_body
-            
+
             # Atomic save
             atomic_write(post_path, final_content)
             print(f"[✓] 博文已输出到成品目录: {post_path.relative_to(self.repo_root)}", flush=True)
-            self._progress("artifact", step=8, what="post", path=str(post_path.relative_to(self.repo_root)))
+            self._progress(
+                "artifact", step=8, what="post", path=str(post_path.relative_to(self.repo_root))
+            )
 
             # Write Review report (re-using the raw markdown quality-check output from LLM)
             reviews_dir.mkdir(parents=True, exist_ok=True)
             # review 文件名跟随最终成品名（含可能的 -v2 / DRAFT- 前缀去除），保持成品与质检一一对应。
-            review_stem = post_path.stem[len("DRAFT-"):] if post_path.stem.startswith("DRAFT-") else post_path.stem
+            review_stem = (
+                post_path.stem[len("DRAFT-") :]
+                if post_path.stem.startswith("DRAFT-")
+                else post_path.stem
+            )
             review_md_path = reviews_dir / f"{review_stem}.review.md"
-            
+
             raw_review_md = review_json.get("raw_markdown")
             if not raw_review_md:
                 scores = review_json.get("scores", {})
@@ -1320,11 +1410,18 @@ class Engine:
                 )
             atomic_write(review_md_path, raw_review_md)
             print(f"[✓] 质检报告已保存: {review_md_path.relative_to(self.repo_root)}", flush=True)
-            self._progress("artifact", step=8, what="review", path=str(review_md_path.relative_to(self.repo_root)))
+            self._progress(
+                "artifact",
+                step=8,
+                what="review",
+                path=str(review_md_path.relative_to(self.repo_root)),
+            )
 
             # Update HISTORY.md（按成品路径去重，并清掉被同源替换掉的旧记录）
-            self._update_history(post_path, title, mode, state["status"], final_body, speaker, replaced_rel)
-            
+            self._update_history(
+                post_path, title, mode, state["status"], final_body, speaker, replaced_rel
+            )
+
             # Update Fingerprints
             self._update_fingerprint(post_path)
 
@@ -1333,7 +1430,7 @@ class Engine:
             self.save_state(stem, state)
             print("[*] 任务执行完毕！\n", flush=True)
             return post_path
-            
+
         return None
 
     def generate_summary(self, post_body: str, title: str, speaker: str) -> str:
@@ -1349,7 +1446,16 @@ class Engine:
         clean_speaker = re.sub(r"（.*?）|\(.*?\)", "", speaker).strip() or speaker
         return f"我（{clean_speaker}）分享了关于《{title}》的内容。"
 
-    def _update_history(self, post_path: Path, title: str, mode: str, status: str, post_body: str, speaker: str, replaced_rel: str | None = None) -> None:
+    def _update_history(
+        self,
+        post_path: Path,
+        title: str,
+        mode: str,
+        status: str,
+        post_body: str,
+        speaker: str,
+        replaced_rel: str | None = None,
+    ) -> None:
         """Updates the memory/HISTORY.md table, prepending the new post, keeping max 10 records."""
         history_path = self.repo_root / "memory" / "HISTORY.md"
         date_str = datetime.now().strftime("%Y-%m-%d")
@@ -1357,15 +1463,15 @@ class Engine:
 
         # 摘要由 generate_summary 走纯模板（确定性、零 LLM 调用），杜绝 finalize 步骤被 LLM 卡死。
         summary = self.generate_summary(post_body, title, speaker)
-        print(f"[+] HISTORY 索引已生成（模板摘要，无 LLM 调用）", flush=True)
-        
+        print("[+] HISTORY 索引已生成（模板摘要，无 LLM 调用）", flush=True)
+
         # New markdown table row: | 日期 | 标题 | 演讲人 | 一句摘要（演讲人视角） | 成品路径 |
         new_row = f"| {date_str} | {title} | {speaker} | {summary} | {rel_path} |"
-        
+
         headers = []
         table_started = False
         existing_rows = []
-        
+
         if history_path.exists():
             for line in history_path.read_text(encoding="utf-8").splitlines():
                 if not line.strip():
@@ -1379,7 +1485,7 @@ class Engine:
                         existing_rows.append(line.strip())
                 elif not table_started:
                     headers.append(line.strip())
-                    
+
         # Make sure standard headers exist
         if not headers or not any("日期" in h for h in headers):
             headers = [
@@ -1388,9 +1494,9 @@ class Engine:
                 "保留最近 10 篇。这里只做人类索引；风格比对使用 `memory/fingerprints.jsonl`。",
                 "",
                 "| 日期 | 标题 | 演讲人 | 一句摘要（演讲人视角） | 成品路径 |",
-                "|---|---|---|---|---|"
+                "|---|---|---|---|---|",
             ]
-            
+
         # 按成品路径去重：去掉指向同一 path 或被同源替换掉的旧记录，避免重复堆积。
         def _row_path(row_line: str) -> str:
             cells = [c.strip() for c in row_line.strip().strip("|").split("|")]
@@ -1403,7 +1509,7 @@ class Engine:
 
         # Limit to last 9 records so the new row makes it 10
         existing_rows = existing_rows[:9]
-        
+
         # Split headers into prefix (explanation) and table headers
         prefix_parts = []
         table_headers = []
@@ -1412,12 +1518,12 @@ class Engine:
                 table_headers.append(h)
             else:
                 prefix_parts.append(h)
-                
+
         all_lines = prefix_parts + [""] + table_headers + [new_row] + existing_rows
         history_content = "\n".join(all_lines) + "\n"
-        
+
         atomic_write(history_path, history_content)
-        print(f"[✓] 已更新历史索引 memory/HISTORY.md", flush=True)
+        print("[✓] 已更新历史索引 memory/HISTORY.md", flush=True)
         self._progress("artifact", step=8, what="history")
 
     def _update_fingerprint(self, post_path: Path) -> None:
@@ -1425,7 +1531,7 @@ class Engine:
         if fingerprint is None or upsert_jsonl is None:
             print("[!] 未导入 scripts/update_fingerprint.py，跳过风格指纹更新。", flush=True)
             return
-            
+
         try:
             # Skip draft posts from updating machine style fingerprint
             if post_path.name.startswith("DRAFT-"):

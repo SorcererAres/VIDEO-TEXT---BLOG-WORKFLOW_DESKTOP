@@ -26,7 +26,7 @@ make install   # 建 .venv 并 pip install -e .（依赖来源唯一：pyproject
 ## 视频入口
 
 ```bash
-python3 video2blog.py /path/to/video.mp4
+python3 transcribe.py /path/to/video.mp4
 ```
 
 默认输出：
@@ -42,9 +42,9 @@ work/<stem>/meta.json
 
 ```bash
 export VIDEO2BLOG_INPUT_ROOT=~/Movies/inbox
-python3 video2blog.py foo.mp4
-python3 video2blog.py -w --fallback-policy auto
-python3 video2blog.py --engine external --source transcript.srt placeholder.mp4
+python3 transcribe.py foo.mp4
+python3 transcribe.py -w --fallback-policy auto
+python3 transcribe.py --engine external --source transcript.srt placeholder.mp4
 ```
 
 ### 在 Cursor / Codex / Claude Code 里跑

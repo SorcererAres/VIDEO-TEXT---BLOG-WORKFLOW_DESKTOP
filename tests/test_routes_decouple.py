@@ -117,8 +117,12 @@ class TestDecoupleRound1Aliases(unittest.TestCase):
         # 至少删掉了 post 和 review
         self.assertGreaterEqual(len(body["deleted"]), 2)
         # 文件物理消失
-        self.assertFalse((self.tmp_dir / "output" / "Posts" / "2026" / "2026-06-04-合规成品.md").exists())
-        self.assertFalse((self.tmp_dir / "output" / "Reviews" / "2026-06-04-合规成品.review.md").exists())
+        self.assertFalse(
+            (self.tmp_dir / "output" / "Posts" / "2026" / "2026-06-04-合规成品.md").exists()
+        )
+        self.assertFalse(
+            (self.tmp_dir / "output" / "Reviews" / "2026-06-04-合规成品.review.md").exists()
+        )
 
     def test_maintenance_purge_rejects_path_traversal(self) -> None:
         """../../ 攻击应被 post_repo 抛 ValueError，maintenance 路由翻 400。"""

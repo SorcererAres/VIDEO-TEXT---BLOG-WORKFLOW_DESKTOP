@@ -31,7 +31,7 @@ class ModelActionRequest(BaseModel):
     engine: str = "whisper-cpp"  # "whisper-cpp"（ggml）或 "mlx"
 
 
-def register(app: "FastAPI", service: "EngineJobService", root: Path) -> None:
+def register(app: FastAPI, service: EngineJobService, root: Path) -> None:
     @app.get("/api/local-models")
     def local_models() -> dict[str, Any]:
         """两个转录引擎的本地模型 + 状态（已下载大小 / 下载中进度 / 可下载）。"""

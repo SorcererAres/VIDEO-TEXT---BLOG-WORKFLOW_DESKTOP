@@ -16,6 +16,7 @@ from video2blog.server_core import redact_sensitive_text
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
+
     from video2blog.server_core import EngineJobService
 
 _UPLOAD_VIDEO_EXT = {".mp4", ".mov", ".mkv", ".m4v", ".webm", ".flv", ".avi"}
@@ -33,7 +34,7 @@ _SELF_INTRO_RES = [
 _DETECT_VIDEO_EXT = {".mp4", ".mov", ".mkv", ".m4v", ".webm", ".flv", ".avi"}
 
 
-def register(app: "FastAPI", service: "EngineJobService", root: Path) -> None:
+def register(app: FastAPI, service: EngineJobService, root: Path) -> None:
     @app.get("/sources")
     def list_sources() -> list[dict[str, Any]]:
         """列出可作为 Job source 的文件。
@@ -53,13 +54,15 @@ def register(app: "FastAPI", service: "EngineJobService", root: Path) -> None:
                 try:
                     stat = raw.stat()
                     rel = str(raw.relative_to(root))
-                    items.append({
-                        "path": rel,
-                        "kind": "transcript",
-                        "label": raw.parent.name,  # work/<stem> 里的 stem
-                        "size": stat.st_size,
-                        "mtime": stat.st_mtime,
-                    })
+                    items.append(
+                        {
+                            "path": rel,
+                            "kind": "transcript",
+                            "label": raw.parent.name,  # work/<stem> 里的 stem
+                            "size": stat.st_size,
+                            "mtime": stat.st_mtime,
+                        }
+                    )
                 except OSError:
                     continue
 
@@ -73,13 +76,15 @@ def register(app: "FastAPI", service: "EngineJobService", root: Path) -> None:
                 try:
                     stat = f.stat()
                     rel = str(f.relative_to(root))
-                    items.append({
-                        "path": rel,
-                        "kind": "text",
-                        "label": f.stem,
-                        "size": stat.st_size,
-                        "mtime": stat.st_mtime,
-                    })
+                    items.append(
+                        {
+                            "path": rel,
+                            "kind": "text",
+                            "label": f.stem,
+                            "size": stat.st_size,
+                            "mtime": stat.st_mtime,
+                        }
+                    )
                 except OSError:
                     continue
 
@@ -92,13 +97,15 @@ def register(app: "FastAPI", service: "EngineJobService", root: Path) -> None:
                     continue
                 try:
                     stat = f.stat()
-                    items.append({
-                        "path": str(f.relative_to(root)),
-                        "kind": "video",
-                        "label": f.stem,
-                        "size": stat.st_size,
-                        "mtime": stat.st_mtime,
-                    })
+                    items.append(
+                        {
+                            "path": str(f.relative_to(root)),
+                            "kind": "video",
+                            "label": f.stem,
+                            "size": stat.st_size,
+                            "mtime": stat.st_mtime,
+                        }
+                    )
                 except OSError:
                     continue
 
@@ -123,7 +130,10 @@ def register(app: "FastAPI", service: "EngineJobService", root: Path) -> None:
         elif ext in _UPLOAD_TEXT_EXT:
             sub, kind = "input/Text", "text"
         else:
-            raise HTTPException(status_code=400, detail=f"不支持的类型 {ext or '(无扩展名)'}；请传视频或 .txt/.md/.srt/.vtt")
+            raise HTTPException(
+                status_code=400,
+                detail=f"不支持的类型 {ext or '(无扩展名)'}；请传视频或 .txt/.md/.srt/.vtt",
+            )
 
         dest_dir = root / sub
         dest_dir.mkdir(parents=True, exist_ok=True)
@@ -153,7 +163,12 @@ def register(app: "FastAPI", service: "EngineJobService", root: Path) -> None:
             tmp.unlink(missing_ok=True)
             raise HTTPException(status_code=500, detail=f"写入失败: {exc}") from exc
 
-        return {"path": str(dest.relative_to(root)), "kind": kind, "name": dest.name, "size": written}
+        return {
+            "path": str(dest.relative_to(root)),
+            "kind": kind,
+            "name": dest.name,
+            "size": written,
+        }
 
     @app.post("/api/detect-speaker")
     def detect_speaker(payload: DetectSpeakerRequest) -> dict[str, Any]:
@@ -177,13 +192,18 @@ def register(app: "FastAPI", service: "EngineJobService", root: Path) -> None:
         # AI 识别（用默认/指定配置档）
         from video2blog.engine.client import LLMClient
         from video2blog.engine.secrets_store import resolve_llm_config
+
         resolved = resolve_llm_config(payload.profile_id)
         if not resolved["api_key"]:
             return {"speaker": None, "method": "none", "reason": "未配置 API Key，无法 AI 识别"}
         try:
             client = LLMClient(
-                api_key=resolved["api_key"], api_base=resolved["api_base"], model=resolved["model"],
-                max_budget_tokens=20_000, per_request_timeout=20, max_total_seconds=25,
+                api_key=resolved["api_key"],
+                api_base=resolved["api_base"],
+                model=resolved["model"],
+                max_budget_tokens=20_000,
+                per_request_timeout=20,
+                max_total_seconds=25,
             )
             out = client.call_api(
                 system_prompt=(
@@ -198,4 +218,8 @@ def register(app: "FastAPI", service: "EngineJobService", root: Path) -> None:
                 return {"speaker": None, "method": "llm", "reason": "AI 未能从内容判断"}
             return {"speaker": name, "method": "llm"}
         except Exception as exc:
-            return {"speaker": None, "method": "llm", "reason": redact_sensitive_text(str(exc), resolved["api_key"])}
+            return {
+                "speaker": None,
+                "method": "llm",
+                "reason": redact_sensitive_text(str(exc), resolved["api_key"]),
+            }

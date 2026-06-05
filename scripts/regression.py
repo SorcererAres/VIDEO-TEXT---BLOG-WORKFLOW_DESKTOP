@@ -35,7 +35,6 @@ if str(REPO_ROOT) not in sys.path:
 from video2blog.engine.runner import Engine  # noqa: E402
 from video2blog.utils import VIEWER_RE, strip_frontmatter  # noqa: E402
 
-
 # SKILL.md body 的首个一级标题，引擎拼进 system_prompt 后这行稳定可见。
 # 顺序由长到短无所谓——marker 之间互不前缀。
 STEP_MARKERS: list[tuple[str, str]] = [
@@ -100,8 +99,7 @@ class MockLLMClient:
         step = self._identify_step(system_prompt)
         if step is None:
             raise RuntimeError(
-                "Mock 无法从 system_prompt 识别 step；"
-                f"前 300 字：{system_prompt[:300]!r}"
+                f"Mock 无法从 system_prompt 识别 step；前 300 字：{system_prompt[:300]!r}"
             )
 
         if step == "rewrite-blog":
@@ -125,16 +123,16 @@ class MockLLMClient:
 
         expected_path = self.fixture_dir / "expected" / fname
         if not expected_path.exists():
-            raise FileNotFoundError(
-                f"fixture {self.fixture_dir.name} 缺少 expected/{fname}"
-            )
+            raise FileNotFoundError(f"fixture {self.fixture_dir.name} 缺少 expected/{fname}")
         content = expected_path.read_text(encoding="utf-8")
         self.total_input_tokens += len(system_prompt) + len(user_prompt)
         self.total_output_tokens += len(content)
         self.calls.append(
             {
                 "step": step,
-                "section_kind": self._identify_section_kind(user_prompt) if step == "rewrite-blog" else None,
+                "section_kind": self._identify_section_kind(user_prompt)
+                if step == "rewrite-blog"
+                else None,
                 "fixture_file": fname,
                 "json_mode": json_mode,
                 "out_chars": len(content),
@@ -268,9 +266,7 @@ def run_fixture(
             result.errors.append("engine.run_job 返回 None（未产生成品）")
             return result
         if final_path is not None and paused_terminal:
-            result.errors.append(
-                f"预期 {expected_status} 但 run_job 仍产出成品 {final_path}"
-            )
+            result.errors.append(f"预期 {expected_status} 但 run_job 仍产出成品 {final_path}")
             return result
 
         state_path = tmp_root / "work" / name / ".state.json"
@@ -304,14 +300,10 @@ def run_fixture(
                 result.pass_score = review_data.get("total")
                 expected_score = meta.get("expected_pass_score")
                 if expected_score and result.pass_score != expected_score:
-                    result.errors.append(
-                        f"pass_score 错：{result.pass_score} ≠ {expected_score}"
-                    )
+                    result.errors.append(f"pass_score 错：{result.pass_score} ≠ {expected_score}")
                 # 解析失败标记（parse_failed=True 走的"跳过自修正、直接转人工"路径）
                 if meta.get("expect_parse_failed") and not review_data.get("parse_failed"):
-                    result.errors.append(
-                        "fixture 期望 parse_failed=True，但 review json 没标记"
-                    )
+                    result.errors.append("fixture 期望 parse_failed=True，但 review json 没标记")
 
             # paused 终态不该污染人类索引 / 机器指纹（Step 8 没跑）
             history_text = (tmp_root / "memory" / "HISTORY.md").read_text(encoding="utf-8")
@@ -336,7 +328,7 @@ def run_fixture(
             # FINISHED 路径：完整产物链路 + frontmatter + Review + HISTORY + fingerprint
             rel_final = state.get("final_post_path") or ""
             result.final_post_path = rel_final
-            if not rel_final.startswith(f"output/Posts/"):
+            if not rel_final.startswith("output/Posts/"):
                 result.errors.append(f"final_post_path 路径不规范：{rel_final}")
 
             post_abs = tmp_root / rel_final if rel_final else None
@@ -347,7 +339,16 @@ def run_fixture(
             post_text = post_abs.read_text(encoding="utf-8")
             fm, body = strip_frontmatter(post_text)
 
-            required_fm = {"title", "date", "entry", "mode", "routing", "speaker", "source", "pass_score"}
+            required_fm = {
+                "title",
+                "date",
+                "entry",
+                "mode",
+                "routing",
+                "speaker",
+                "source",
+                "pass_score",
+            }
             missing_fm = required_fm - set(fm)
             if missing_fm:
                 result.errors.append(f"frontmatter 缺字段：{sorted(missing_fm)}")
@@ -355,16 +356,18 @@ def run_fixture(
             if fm.get("mode") != meta["mode"]:
                 result.errors.append(f"frontmatter.mode 错：{fm.get('mode')} ≠ {meta['mode']}")
             if fm.get("routing") != meta["routing"]:
-                result.errors.append(f"frontmatter.routing 错：{fm.get('routing')} ≠ {meta['routing']}")
+                result.errors.append(
+                    f"frontmatter.routing 错：{fm.get('routing')} ≠ {meta['routing']}"
+                )
             if fm.get("speaker") != meta["speaker"]:
-                result.errors.append(f"frontmatter.speaker 错：{fm.get('speaker')} ≠ {meta['speaker']}")
+                result.errors.append(
+                    f"frontmatter.speaker 错：{fm.get('speaker')} ≠ {meta['speaker']}"
+                )
 
             result.pass_score = fm.get("pass_score")
             expected_score = meta.get("expected_pass_score")
             if expected_score and fm.get("pass_score") != expected_score:
-                result.errors.append(
-                    f"pass_score 错：{fm.get('pass_score')} ≠ {expected_score}"
-                )
+                result.errors.append(f"pass_score 错：{fm.get('pass_score')} ≠ {expected_score}")
 
             if VIEWER_RE.search(body):
                 match = VIEWER_RE.search(body)
@@ -373,7 +376,7 @@ def run_fixture(
             # Review
             review_rel = post_abs.stem
             if review_rel.startswith("DRAFT-"):
-                review_rel = review_rel[len("DRAFT-"):]
+                review_rel = review_rel[len("DRAFT-") :]
             review_path = tmp_root / "output" / "Reviews" / f"{review_rel}.review.md"
             if not review_path.exists():
                 result.errors.append(f"Review 文件不存在：{review_path.relative_to(tmp_root)}")
@@ -389,7 +392,11 @@ def run_fixture(
 
             # Fingerprint（DRAFT 不更新指纹；非 DRAFT 必须有记录）
             if not post_abs.stem.startswith("DRAFT-"):
-                fp_lines = (tmp_root / "memory" / "fingerprints.jsonl").read_text(encoding="utf-8").splitlines()
+                fp_lines = (
+                    (tmp_root / "memory" / "fingerprints.jsonl")
+                    .read_text(encoding="utf-8")
+                    .splitlines()
+                )
                 fp_records = [json.loads(line) for line in fp_lines if line.strip()]
                 if not any(r.get("path") == rel_final for r in fp_records):
                     result.errors.append("fingerprints.jsonl 未记录本篇")
@@ -443,8 +450,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     fixtures = sorted(
-        p for p in fixtures_root.iterdir()
-        if p.is_dir() and (p / "fixture.yaml").exists()
+        p for p in fixtures_root.iterdir() if p.is_dir() and (p / "fixture.yaml").exists()
     )
     if args.fixture:
         wanted = set(args.fixture)

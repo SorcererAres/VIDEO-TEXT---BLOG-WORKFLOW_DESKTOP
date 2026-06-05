@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import sys
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from video2blog.asr.external import load_external_transcript
 from video2blog.asr.mlx import transcribe_audio_mlx_chunked
@@ -108,17 +108,23 @@ def process_video(
                             choice = prompt_fallback_action(message, terminal_command)
                             if choice == "1":
                                 if terminal_command is None:
-                                    raise RuntimeError("无法生成普通 macOS Terminal 命令")
+                                    raise RuntimeError("无法生成普通 macOS Terminal 命令") from None
                                 launch_in_macos_terminal(terminal_command, Path.cwd())
                                 print("已在普通 macOS Terminal 启动 mlx-whisper 转录。", flush=True)
                                 return
                             if choice == "3":
-                                raise RuntimeError("请改用 --engine external --source <.srt|.txt|.md|.vtt>")
+                                raise RuntimeError(
+                                    "请改用 --engine external --source <.srt|.txt|.md|.vtt>"
+                                ) from None
                             if choice == "4":
-                                raise RuntimeError("用户选择退出")
+                                raise RuntimeError("用户选择退出") from None
                             print("用户选择 fallback 到 whisper.cpp …", file=sys.stderr, flush=True)
                         else:
-                            print(f"{message}\n尝试 fallback 到 whisper.cpp …", file=sys.stderr, flush=True)
+                            print(
+                                f"{message}\n尝试 fallback 到 whisper.cpp …",
+                                file=sys.stderr,
+                                flush=True,
+                            )
 
                 if result is None and engine in {"auto", "whisper-cpp"}:
                     try:

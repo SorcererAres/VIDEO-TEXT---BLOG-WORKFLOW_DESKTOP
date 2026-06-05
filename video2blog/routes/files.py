@@ -7,10 +7,11 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
+
     from video2blog.server_core import EngineJobService
 
 
-def register(app: "FastAPI", service: "EngineJobService", root: Path) -> None:
+def register(app: FastAPI, service: EngineJobService, root: Path) -> None:
     from fastapi import HTTPException
 
     @app.post("/open")
@@ -23,6 +24,7 @@ def register(app: "FastAPI", service: "EngineJobService", root: Path) -> None:
         路径必须在 repo_root 之内,否则拒绝(防越权访问任意磁盘文件)。
         """
         import subprocess
+
         rel = (payload or {}).get("path", "")
         mode = (payload or {}).get("mode", "finder")
         if not rel:
@@ -35,7 +37,7 @@ def register(app: "FastAPI", service: "EngineJobService", root: Path) -> None:
         try:
             target.relative_to(root)
         except ValueError:
-            raise HTTPException(status_code=400, detail="路径必须在仓库根之内")
+            raise HTTPException(status_code=400, detail="路径必须在仓库根之内") from None
         if not target.exists():
             raise HTTPException(status_code=404, detail=f"文件不存在: {rel}")
 
@@ -43,9 +45,9 @@ def register(app: "FastAPI", service: "EngineJobService", root: Path) -> None:
         try:
             subprocess.run(cmd, check=True, timeout=5)
         except FileNotFoundError:
-            raise HTTPException(status_code=500, detail="open 命令不可用(非 macOS?)")
+            raise HTTPException(status_code=500, detail="open 命令不可用(非 macOS?)") from None
         except subprocess.CalledProcessError as exc:
-            raise HTTPException(status_code=500, detail=f"open 命令失败: {exc}")
+            raise HTTPException(status_code=500, detail=f"open 命令失败: {exc}") from exc
         return {"ok": True, "path": rel, "mode": mode}
 
     @app.get("/work-files")
@@ -61,7 +63,7 @@ def register(app: "FastAPI", service: "EngineJobService", root: Path) -> None:
         try:
             work_dir.relative_to((root / "work").resolve())
         except ValueError:
-            raise HTTPException(status_code=400, detail="stem 越权")
+            raise HTTPException(status_code=400, detail="stem 越权") from None
         if not work_dir.is_dir():
             return []
 
@@ -98,13 +100,15 @@ def register(app: "FastAPI", service: "EngineJobService", root: Path) -> None:
                 stat = f.stat()
             except OSError:
                 continue
-            items.append({
-                "name": f.name,
-                "path": str(f.relative_to(root)),
-                "size": stat.st_size,
-                "mtime": stat.st_mtime,
-                "kind": _kind(f.name),
-            })
+            items.append(
+                {
+                    "name": f.name,
+                    "path": str(f.relative_to(root)),
+                    "size": stat.st_size,
+                    "mtime": stat.st_mtime,
+                    "kind": _kind(f.name),
+                }
+            )
         return items
 
     @app.get("/file")
@@ -120,7 +124,7 @@ def register(app: "FastAPI", service: "EngineJobService", root: Path) -> None:
         try:
             rel = target.relative_to(root)
         except ValueError:
-            raise HTTPException(status_code=400, detail="路径必须在仓库根之内")
+            raise HTTPException(status_code=400, detail="路径必须在仓库根之内") from None
         if not rel.parts or rel.parts[0] not in ("output", "work"):
             raise HTTPException(status_code=403, detail="只允许读取 output/ 或 work/ 下的文件")
         if not target.is_file():

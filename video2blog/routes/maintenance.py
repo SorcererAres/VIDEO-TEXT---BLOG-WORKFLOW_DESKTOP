@@ -23,6 +23,7 @@ from video2blog.repos import post_repo
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
+
     from video2blog.server_core import EngineJobService
 
 
@@ -41,7 +42,7 @@ class PurgeRequest(BaseModel):
     fingerprints: bool = True
 
 
-def register(app: "FastAPI", service: "EngineJobService", root: Path) -> None:  # noqa: ARG001 (service 暂未用)
+def register(app: FastAPI, service: EngineJobService, root: Path) -> None:  # noqa: ARG001 (service 暂未用)
     @app.post("/api/maintenance/purge")
     def purge_post_chain_endpoint(payload: PurgeRequest) -> dict[str, Any]:
         """按 post_path 彻底清扫产物链（post + review + work + 索引 + 指纹）。

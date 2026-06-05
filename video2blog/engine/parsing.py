@@ -70,7 +70,11 @@ def parse_markdown_review(text: str) -> dict[str, Any]:
         verdict_markdown = verdict_match.group(1).upper()
 
     perspective_score = scores.get("视角忠实度", 0)
-    verdict = "PASS" if (total_score >= 42 and perspective_score > 5 and verdict_markdown == "PASS") else "REVIEW"
+    verdict = (
+        "PASS"
+        if (total_score >= 42 and perspective_score > 5 and verdict_markdown == "PASS")
+        else "REVIEW"
+    )
 
     # 4. Extract Re-Brief
     rebrief = ""
@@ -90,14 +94,17 @@ def parse_markdown_review(text: str) -> dict[str, Any]:
         "scores": scores,
         "total": f"{total_score}/60",
         "rebrief": rebrief,
-        "raw_markdown": text
+        "raw_markdown": text,
     }
 
 
 def render_quality_review_markdown(result: dict[str, Any]) -> str:
     """Render a normalized quality review JSON object into the legacy Markdown report."""
     scores = result.get("scores") if isinstance(result.get("scores"), dict) else {}
-    rows = "\n".join(f"| {dim} | {scores.get(dim, 0)} | — |" for dim in ["忠实度", "可读性", "观点密度", "风格一致", "完整性", "视角忠实度"])
+    rows = "\n".join(
+        f"| {dim} | {scores.get(dim, 0)} | — |"
+        for dim in ["忠实度", "可读性", "观点密度", "风格一致", "完整性", "视角忠实度"]
+    )
     return (
         "## 评分\n"
         "| 维度 | 分 | 依据 |\n"
@@ -136,7 +143,9 @@ def parse_quality_json_review(text: str) -> dict[str, Any]:
     else:
         total_score = sum(scores.values())
     perspective_score = scores.get("视角忠实度", 0)
-    normalized_verdict = "PASS" if (total_score >= 42 and perspective_score > 5 and verdict == "PASS") else "REVIEW"
+    normalized_verdict = (
+        "PASS" if (total_score >= 42 and perspective_score > 5 and verdict == "PASS") else "REVIEW"
+    )
     result = {
         "verdict": normalized_verdict,
         "scores": scores,
@@ -156,7 +165,14 @@ def looks_like_json_mode_unsupported(exc: Exception) -> bool:
     )
     provider_rejected_request = any(
         marker in message
-        for marker in ("http 400", "unsupported", "not support", "invalid_request", "invalid parameter", "unknown parameter")
+        for marker in (
+            "http 400",
+            "unsupported",
+            "not support",
+            "invalid_request",
+            "invalid parameter",
+            "unknown parameter",
+        )
     )
     return mentions_json_mode and provider_rejected_request
 
@@ -244,7 +260,13 @@ def combine_clean_chunks(chunks: list[str]) -> str:
                 uncertain_items.append(stripped)
 
     uncertain_block = "\n".join(uncertain_items) if uncertain_items else "- 无"
-    return "## 清洗稿\n\n" + "\n\n".join(clean_parts).strip() + "\n\n## 不确定清单\n" + uncertain_block + "\n"
+    return (
+        "## 清洗稿\n\n"
+        + "\n\n".join(clean_parts).strip()
+        + "\n\n## 不确定清单\n"
+        + uncertain_block
+        + "\n"
+    )
 
 
 def extract_blog_body(text: str) -> str:

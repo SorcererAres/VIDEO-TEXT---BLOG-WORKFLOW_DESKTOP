@@ -21,14 +21,17 @@ from video2blog.server_core import EngineJobRequest
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
+
     from video2blog.server_core import EngineJobService
 
 
-def register(app: "FastAPI", service: "EngineJobService", root: Path) -> None:
+def register(app: FastAPI, service: EngineJobService, root: Path) -> None:
     @app.post("/jobs", status_code=202)
     def create_job(payload: JobCreateRequest) -> dict[str, Any]:
         try:
-            request_data = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
+            request_data = (
+                payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
+            )
             request = EngineJobRequest(**request_data)
             job = service.submit_job(request)
             return job.to_dict()
@@ -62,13 +65,17 @@ def register(app: "FastAPI", service: "EngineJobService", root: Path) -> None:
             # 还没跑过 Step 6 的中间态（WAITING_USER_OUTLINE 等）就不应该返回 draft/review，
             # 否则前端会拿到上一轮残留文件，被当成本轮内容渲染 —— 5/28 撞过的 UI bug 根因之一。
             PRE_REWRITE_STATES = {
-                "PENDING", "CLEANING", "EXTRACTING", "STRUCTURING", "WAITING_USER_OUTLINE",
+                "PENDING",
+                "CLEANING",
+                "EXTRACTING",
+                "STRUCTURING",
+                "WAITING_USER_OUTLINE",
             }
             path_str = None
             if file_key in {"draft", "review_json"}:
                 state_path = service.repo_root / "work" / job.stem / ".state.json"
                 if state_path.exists():
-                    with open(state_path, "r", encoding="utf-8") as f:
+                    with open(state_path, encoding="utf-8") as f:
                         state = json.load(f)
                     if state.get("status") in PRE_REWRITE_STATES:
                         raise HTTPException(
@@ -77,9 +84,15 @@ def register(app: "FastAPI", service: "EngineJobService", root: Path) -> None:
                         )
                     version = state.get("best_version", state.get("version", 1))
                     ext = "md" if file_key == "draft" else "json"
-                    path_str = f"work/{job.stem}/draft_v{version}.{ext}" if file_key == "draft" else f"work/{job.stem}/review_v{version}.{ext}"
+                    path_str = (
+                        f"work/{job.stem}/draft_v{version}.{ext}"
+                        if file_key == "draft"
+                        else f"work/{job.stem}/review_v{version}.{ext}"
+                    )
             else:
-                path_str = artifacts.get(f"{file_key}_path") or getattr(job, f"{file_key}_path", None)
+                path_str = artifacts.get(f"{file_key}_path") or getattr(
+                    job, f"{file_key}_path", None
+                )
 
             if not path_str:
                 raise HTTPException(status_code=404, detail=f"文件键 {file_key} 未在任务中定义。")
@@ -102,20 +115,27 @@ def register(app: "FastAPI", service: "EngineJobService", root: Path) -> None:
         try:
             job = service.get_job(job_id)
             if job.status != "paused":
-                raise HTTPException(status_code=400, detail=f"任务状态必须为 paused 才可以审批大纲。当前状态为: {job.status}")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"任务状态必须为 paused 才可以审批大纲。当前状态为: {job.status}",
+                )
 
             state_path = service.repo_root / "work" / job.stem / ".state.json"
             if not state_path.exists():
                 raise HTTPException(status_code=404, detail="无法找到任务状态机状态文件。")
 
-            with open(state_path, "r", encoding="utf-8") as f:
+            with open(state_path, encoding="utf-8") as f:
                 state = json.load(f)
 
             if state.get("status") != "WAITING_USER_OUTLINE":
-                raise HTTPException(status_code=400, detail=f"状态机内部状态为: {state.get('status')}，而非 WAITING_USER_OUTLINE")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"状态机内部状态为: {state.get('status')}，而非 WAITING_USER_OUTLINE",
+                )
 
             outline_path = service.repo_root / "work" / job.stem / "outline.md"
             from video2blog.engine.utils import atomic_write
+
             atomic_write(outline_path, payload.outline_markdown)
 
             state["status"] = "REWRITING"
@@ -134,24 +154,35 @@ def register(app: "FastAPI", service: "EngineJobService", root: Path) -> None:
         try:
             job = service.get_job(job_id)
             if job.status != "paused":
-                raise HTTPException(status_code=400, detail=f"任务状态必须为 paused 才可以审批草稿。当前状态为: {job.status}")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"任务状态必须为 paused 才可以审批草稿。当前状态为: {job.status}",
+                )
 
             state_path = service.repo_root / "work" / job.stem / ".state.json"
             if not state_path.exists():
                 raise HTTPException(status_code=404, detail="无法找到任务状态机状态文件。")
 
-            with open(state_path, "r", encoding="utf-8") as f:
+            with open(state_path, encoding="utf-8") as f:
                 state = json.load(f)
 
             if state.get("status") != "WAITING_USER_REVIEW":
-                raise HTTPException(status_code=400, detail=f"状态机内部状态为: {state.get('status')}，而非 WAITING_USER_REVIEW")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"状态机内部状态为: {state.get('status')}，而非 WAITING_USER_REVIEW",
+                )
 
             # accept + 用户在前端做了微调 → 把编辑后的 markdown 覆盖回 draft_v<best>.md,
             # 落盘流程会从该文件读最终成品。
-            if payload.accept and payload.draft_markdown is not None and payload.draft_markdown.strip():
+            if (
+                payload.accept
+                and payload.draft_markdown is not None
+                and payload.draft_markdown.strip()
+            ):
                 version = state.get("best_version", state.get("version", 1))
                 draft_path = service.repo_root / "work" / job.stem / f"draft_v{version}.md"
                 from video2blog.engine.utils import atomic_write
+
                 atomic_write(draft_path, payload.draft_markdown)
 
             if payload.accept:
