@@ -43,3 +43,7 @@ frontend/src-tauri/backend/
 *.swo
 *~
 
+# memory 运行产物（CONFIG.md / PREFERENCES.md 仍入库作为 workflow 契约）
+memory/HISTORY.md
+memory/fingerprints.jsonl
+
