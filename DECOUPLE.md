@@ -1,6 +1,11 @@
 # DECOUPLE — 任务与作品集解耦方案
 
-> 状态：proposal · 范围：后端 `video2blog/routes/` + 前端 `frontend/src/`
+> 状态：✅ 已实施（3 轮 · 分支 `refactor/decouple-round1`）· 范围：后端 `video2blog/routes/` + 前端 `frontend/src/`
+>
+> 落地提交：
+> - Round 1 `d606c4b` — repos/ 层 + /api/tasks*、/api/posts* alias
+> - Round 2 `0bfb904` — useTasks / usePosts hook（接入随前端基线 `626a875` 通电）
+> - Round 3 `c4db5c2` — 删除语义重写 + /api/maintenance/purge
 > 关联：`WORKFLOW.md`（落盘约定）、`DESIGN.md`（UI 方向）
 
 ## 1. 诊断
@@ -121,30 +126,31 @@ POST   /api/maintenance/purge        body: { stem, drop: [work, post, review, fi
 
 5-10h/周节奏，3 轮搞完。每轮可独立合并、可独立回滚。
 
-### Round 1 · 后端结构（~3-4h）
+### Round 1 · 后端结构 ✅
 
 只动 Python，0 行业务变化。
 
-- 新建 `video2blog/repos/task_repo.py`、`post_repo.py`，把当前散在 `routes/jobs.py:25-200` 的"扫 Posts/Reviews/HISTORY 重建对象"逻辑搬进去
-- 新建 `routes/tasks.py`、`routes/posts.py`，老 `/jobs/*` 保留并内部 forward 到新端点（deprecation 期）
-- API 行为不变，前端零改动
+- ✅ 新建 `video2blog/repos/post_repo.py`（list_posts / purge_post_chain）、`task_repo.py`，把 `routes/jobs.py` 的扫描 / 清扫逻辑搬进去
+- ✅ 新建 `routes/tasks.py`、`routes/posts.py`，老 `/jobs/*`、`/jobs/history` 保留并下沉到 repos（行为字节一致）
+- ✅ API 行为不变，前端零改动；新增 `tests/test_routes_decouple.py` 一致性测试
 
-### Round 2 · 前端拆 store（~3h）
+### Round 2 · 前端拆 store ✅
 
 只动 TypeScript。
 
-- `useTasks` / `usePosts` 分家；`App.tsx` 顶层 state 从三个减到三个独立 hook
-- `jobs.tsx` / `places.tsx` 切换数据源到新 hook
-- 删除入口仍是旧路径
+- ✅ `useTasks` / `usePosts` / `useTrash` 三个 hook 分家；App 顶层不再内联 state + fetch + 轮询
+- ✅ **实际偏差（更省）**：子组件 `jobs.tsx` / `places.tsx` 是 props-driven，App 用别名后**零改动**，无需切换子组件数据源
+- ✅ 数据源切到 `/api/tasks`、`/api/posts`；`fetchJobs` 的状态跃迁通知用 `onDataRef` 注入规避 TDZ
 
-### Round 3 · 删除语义重写（~2h）
+### Round 3 · 删除语义重写 ✅
 
 最小但最值钱的一步。
 
-- `DELETE /api/posts/{path}` 不再影响 task；`DELETE /api/tasks/{id}` 不再碰 Posts/
-- `handleDeletePost` 去掉 `setHistoricalJobs(prev => prev.filter(...))` 补偿
-- `HistoricalDeleteDialog` 改名 `PurgeDialog`，从默认入口移到"设置 → 维护"
-- 老 `/jobs/history` 在这一步真删
+- ✅ 作品删除统一走回收站（`DELETE /posts`，30 天可恢复），不碰 task；任务删除（`DELETE /jobs/{id}`）只清 work/，不碰 Posts/
+- ✅ `handleDeletePost` 去掉 `setHistoricalJobs(prev => prev.filter(...))` 跨域补偿，作品域由 `fetchHistory` 单一来源刷新
+- ✅ 侧栏 historical 行删除从"5 选清扫"统一为"移回收站"（与 Library 卡片同语义）
+- ✅ 老 `/jobs/history`（GET + DELETE）真删；5 选清扫迁到 `POST /api/maintenance/purge`（高危显式）
+- ⏳ **未完（按"先解耦，入口后补"决策）**：`PurgeDialog`（5 选清扫）的"设置 → 维护"UI 入口暂未做；后端端点 + `job-actions.purgePostChain` + `HistoricalDeleteDialog` 组件已就位，待后续接入
 
 ## 5. 不做的事
 
