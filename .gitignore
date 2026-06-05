@@ -48,3 +48,7 @@ frontend/src-tauri/backend/
 memory/HISTORY.md
 memory/fingerprints.jsonl
 
+# few-shot 范文只留本地，不入公开仓库；README 仍入库作为目录说明
+knowledge/Examples/*.md
+!knowledge/Examples/README.md
+
