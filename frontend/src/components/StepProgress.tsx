@@ -1,7 +1,7 @@
 import { Check, Loader2, Pause, AlertTriangle, FileText, Sparkles, ListTree, PenLine, Scale, Archive, AudioLines, Mic } from "lucide-react"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
-import type { ComponentType } from "react"
+import { Fragment, type ComponentType } from "react"
 
 export type StepStatus = "pending" | "running" | "done" | "paused" | "error" | "skipped"
 
@@ -38,13 +38,20 @@ interface StepProgressProps {
   className?: string
 }
 
+// "焦点 step" = 当前活跃 / 暂停 / 失败 的节点。这些节点完整显示 icon + 标题 + 副标题；
+// 其它节点（已完成 / 未来 / 跳过）只渲染 icon dot，避免 9 段 stepper 在窄主区被压成竖字。
+// 设计参考：Stripe Checkout / Linear 的 stepper 焦点模式。
+function isFocusedStatus(s: StepStatus): boolean {
+  return s === "running" || s === "paused" || s === "error"
+}
+
 /**
  * 顶部步骤进度条 —— 把 8 个 step 状态机变成视觉骨架。
  * 设计原则:
  *   - quick 模式只显示 重写 / 质检 / 归档 三档
- *   - 当前 step 用蓝色 pulse 动画 + Loader 图标
- *   - 暂停节点(等用户审批)用黄色 Pause 图标
- *   - 完成节点 绿勾 + 暗色填充
+ *   - "焦点 step"（running / paused / error）完整展示 icon + label + 副标题
+ *   - 其它 step 只显示 icon dot —— 窄主区不再被挤
+ *   - 完成节点 绿勾；暂停 黄 Pause；失败 红警告
  */
 export function StepProgress({ mode, jobStatus, currentStep, pausedAt, hasTranscription, onJump, className }: StepProgressProps) {
   const llmStages = mode === "full"
@@ -98,77 +105,106 @@ export function StepProgress({ mode, jobStatus, currentStep, pausedAt, hasTransc
 
   return (
     <TooltipProvider delayDuration={200}>
-      <div className={cn("flex items-center gap-1 px-1 py-3", className)}>
-        {nodes.map((node, idx) => {
-          const target = onJump ? jumpTargetFor(node) : null
-          return (
-            <div key={node.id} className="flex items-center gap-1 flex-1">
-              <StepDot
-                node={node}
-                onClick={target && onJump ? () => onJump(target) : undefined}
-              />
-              {idx < nodes.length - 1 && (
-                <div className={cn(
-                  "h-px flex-1 transition-colors",
-                  node.status === "done" ? "bg-emerald-500/40" : "bg-border",
-                )} />
-              )}
-            </div>
-          )
-        })}
+      <div className={cn("flex items-center gap-2 px-1 py-3", className)}>
+        {nodes.map((node, idx) => (
+          <Fragment key={node.id}>
+            <StepCard
+              node={node}
+              pausedAt={pausedAt}
+              focused={isFocusedStatus(node.status)}
+              onClick={onJump ? (() => { const t = jumpTargetFor(node); if (t) onJump(t) }) : undefined}
+              jumpable={!!(onJump && jumpTargetFor(node))}
+            />
+            {idx < nodes.length - 1 && (
+              // 虚线连接线：done 用语义绿，未走到的步骤用 border
+              <div className={cn(
+                "flex-1 border-t border-dashed transition-colors min-w-[8px]",
+                node.status === "done" ? "border-success/40" : "border-border",
+              )} />
+            )}
+          </Fragment>
+        ))}
       </div>
     </TooltipProvider>
   )
 }
 
-function StepDot({ node, onClick }: { node: StepNode; onClick?: () => void }) {
+// 状态副标题：「已完成 / 进行中 / 等待审批…」—— 让状态从颜色搬到文字，配色得以克制
+function statusLabelFor(node: StepNode, pausedAt: "outline" | "review" | null | undefined): string {
+  switch (node.status) {
+    case "done": return "已完成"
+    case "running": return "进行中"
+    case "paused":
+      if (pausedAt === "outline" && node.id === "outline") return "等待审批"
+      if (pausedAt === "review" && node.id === "check") return "等待审稿"
+      return "已暂停"
+    case "error": return "失败"
+    case "skipped": return "已跳过"
+    case "pending":
+    default: return "等待中"
+  }
+}
+
+function StepCard({
+  node, pausedAt, focused, onClick, jumpable,
+}: { node: StepNode; pausedAt?: "outline" | "review" | null; focused: boolean; onClick?: () => void; jumpable: boolean }) {
   const Icon = node.icon
-  const clickable = !!onClick
+  const clickable = !!onClick && jumpable
+  const subtitle = statusLabelFor(node, pausedAt)
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <div
           role={clickable ? "button" : undefined}
           tabIndex={clickable ? 0 : -1}
-          onClick={onClick}
+          onClick={clickable ? onClick : undefined}
           onKeyDown={clickable ? (e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onClick?.() } }) : undefined}
           className={cn(
-            "flex flex-col items-center gap-1.5 select-none rounded-md outline-none",
+            "flex items-center gap-2 shrink-0 select-none rounded-md outline-none px-1 py-1 transition-all",
             clickable
-              ? "cursor-pointer hover:opacity-80 focus-visible:ring-2 focus-visible:ring-ring/50 transition-opacity"
+              ? "cursor-pointer hover:bg-foreground/[0.04] focus-visible:ring-2 focus-visible:ring-ring/50"
               : "cursor-default",
           )}
         >
+          {/* icon 圆：只用 outline + 语义色（去 bg 填充），克制处理 */}
           <div className={cn(
-            "size-9 rounded-full flex items-center justify-center transition-all border",
-            node.status === "pending" && "bg-muted/30 border-border text-muted-foreground",
-            node.status === "running" && "bg-primary/15 border-primary text-primary animate-pulse",
-            node.status === "done" && "bg-emerald-500/10 border-emerald-500/40 text-emerald-400",
-            node.status === "paused" && "bg-amber-500/10 border-amber-500/60 text-amber-400 animate-pulse",
-            node.status === "error" && "bg-destructive/10 border-destructive/50 text-destructive",
-            node.status === "skipped" && "bg-muted/10 border-dashed border-border text-muted-foreground/50",
+            "size-5 rounded-full flex items-center justify-center shrink-0 border transition-colors",
+            node.status === "pending" && "border-border text-muted-foreground/60",
+            node.status === "running" && "border-info/60 text-info animate-pulse",
+            node.status === "done" && "border-success/50 text-success/80",
+            node.status === "paused" && "border-warning/60 text-warning animate-pulse",
+            node.status === "error" && "border-destructive/60 text-destructive",
+            node.status === "skipped" && "border-dashed border-border text-muted-foreground/40",
           )}>
-            {node.status === "done" && <Check className="size-4" />}
-            {node.status === "running" && <Loader2 className="size-4 animate-spin" />}
-            {node.status === "paused" && <Pause className="size-4" />}
-            {node.status === "error" && <AlertTriangle className="size-4" />}
-            {(node.status === "pending" || node.status === "skipped") && <Icon className="size-4" />}
+            {node.status === "done" && <Check className="size-3" strokeWidth={2.5} />}
+            {node.status === "running" && <Loader2 className="size-3 animate-spin" />}
+            {node.status === "paused" && <Pause className="size-3" />}
+            {node.status === "error" && <AlertTriangle className="size-3" />}
+            {(node.status === "pending" || node.status === "skipped") && <Icon className="size-3" />}
           </div>
-          <span className={cn(
-            "text-[11px] font-medium",
-            node.status === "running" && "text-primary",
-            node.status === "done" && "text-emerald-400",
-            node.status === "paused" && "text-amber-400",
-            node.status === "error" && "text-destructive",
-            node.status === "pending" && "text-muted-foreground",
-          )}>
-            {node.label}
-          </span>
+          {/* 焦点 step（running / paused / error）完整展示标题 + 副标题；其它 step icon-only。
+              whitespace-nowrap 防止窄屏下 CJK 单字竖排（旧实现的核心痛点）。 */}
+          {focused && (
+            <div className="flex flex-col items-start leading-tight whitespace-nowrap">
+              <span className="text-[13px] font-medium text-foreground">
+                {node.label}
+              </span>
+              <span className={cn(
+                "text-[11px]",
+                node.status === "paused" ? "text-warning" :
+                node.status === "error" ? "text-destructive" :
+                "text-info",
+              )}>
+                {subtitle}
+              </span>
+            </div>
+          )}
         </div>
       </TooltipTrigger>
       <TooltipContent side="bottom">
-        <p className="text-xs">{node.hint}</p>
-        {clickable && <p className="text-[10px] text-muted-foreground mt-0.5">点击跳转</p>}
+        <p className="text-xs font-medium">
+          {node.label} · <span className="text-muted-foreground font-normal">{subtitle}</span>
+        </p>
       </TooltipContent>
     </Tooltip>
   )

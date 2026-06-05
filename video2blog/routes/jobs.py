@@ -1,8 +1,12 @@
-"""任务：创建 / 列举 / 详情 / 产物 / 大纲与草稿审批 / 取消 / SSE 事件流 / 历史归档。"""
+"""任务：创建 / 列举 / 详情 / 产物 / 大纲与草稿审批 / 取消 / SSE 事件流。
+
+DECOUPLE Round 3：历史扫描迁到 routes/posts.py（GET /api/posts），跨目录清扫迁到
+routes/maintenance.py（POST /api/maintenance/purge）。旧 /jobs/history（GET+DELETE）已移除。
+本模块现在纯粹只管"任务"域：live job 的 CRUD / 审批 / 取消 / 事件流。
+"""
 
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -11,9 +15,9 @@ from typing import TYPE_CHECKING, Any
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
+from video2blog.repos import task_repo
 from video2blog.routes.models import ApproveDraftRequest, ApproveOutlineRequest, JobCreateRequest
 from video2blog.server_core import EngineJobRequest
-from video2blog.utils import strip_frontmatter
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -21,81 +25,6 @@ if TYPE_CHECKING:
 
 
 def register(app: "FastAPI", service: "EngineJobService", root: Path) -> None:
-    # 注意：/jobs/history 必须在 /jobs/{job_id} 之前注册，否则会被 {job_id} 抢匹配。
-    @app.get("/jobs/history")
-    def list_history() -> list[dict[str, Any]]:
-        """从 output/Posts/**/*.md 扫描历史归档,解析 frontmatter 重建虚拟 EngineJob 列表。
-
-        作用:server 重启后内存里的 jobs 会清空,但磁盘上之前跑过的成品都还在。
-        把它们扫出来按 EngineJob 形状返回,前端就能在 sidebar 持续展示"以前跑过的"。
-        每条产物用路径 SHA 作稳定 ID(跨重启不变)。
-        """
-        posts_root = root / "output" / "Posts"
-        if not posts_root.is_dir():
-            return []
-
-        items: list[dict[str, Any]] = []
-        for post_path in posts_root.glob("**/*.md"):
-            try:
-                text = post_path.read_text(encoding="utf-8", errors="replace")
-                data, _ = strip_frontmatter(text)
-                if not data:
-                    continue  # 没 frontmatter 的不算合规成品
-                rel_post = str(post_path.relative_to(root))
-                is_draft = post_path.stem.startswith("DRAFT-")
-
-                # review 文件名跟随 post stem(去掉可能的 DRAFT- 前缀)
-                review_stem = post_path.stem[len("DRAFT-"):] if is_draft else post_path.stem
-                review_path = root / "output" / "Reviews" / f"{review_stem}.review.md"
-
-                # 用 post 路径做稳定 ID(SHA),跨重启不变
-                stable_id = "hist-" + hashlib.sha256(rel_post.encode("utf-8")).hexdigest()[:16]
-
-                # 从 frontmatter 拿原始 stem 用于 sidebar 展示
-                display_stem = data.get("title") or post_path.stem
-                try:
-                    mtime = post_path.stat().st_mtime
-                except OSError:
-                    mtime = 0.0
-
-                items.append({
-                    "id": stable_id,
-                    "kind": "historical",                    # 前端用这个字段区分
-                    "stem": display_stem,
-                    "status": "draft" if is_draft else "succeeded",
-                    "request": {
-                        "source": data.get("source", ""),
-                        "speaker": data.get("speaker", "我"),
-                        "routing": data.get("routing", "/default"),
-                        "mode": data.get("mode", "full"),
-                        "max_retries": 0,
-                        "force": False,
-                        "pause_on_outline": False,
-                        "api_key": None,
-                    },
-                    "created_at": data.get("date", ""),
-                    "updated_at": data.get("date", ""),
-                    "final_post_path": rel_post,
-                    "review_path": str(review_path.relative_to(root)) if review_path.exists() else None,
-                    "clean_path": None,
-                    "insights_path": None,
-                    "outline_path": None,
-                    "input_tokens": 0,
-                    "output_tokens": 0,
-                    "estimated_cost_usd": 0.0,
-                    "error": None,
-                    # 历史归档专属字段
-                    "pass_score": data.get("pass_score"),
-                    "is_draft": is_draft,
-                    "mtime": mtime,
-                })
-            except Exception:
-                continue
-
-        # 最近的排前面
-        items.sort(key=lambda x: (x.get("mtime") or 0), reverse=True)
-        return items
-
     @app.post("/jobs", status_code=202)
     def create_job(payload: JobCreateRequest) -> dict[str, Any]:
         try:
@@ -108,7 +37,7 @@ def register(app: "FastAPI", service: "EngineJobService", root: Path) -> None:
 
     @app.get("/jobs")
     def list_jobs() -> list[dict[str, Any]]:
-        return [job.to_dict() for job in service.list_jobs()]
+        return task_repo.list_tasks(service)
 
     @app.get("/jobs/{job_id}")
     def get_job(job_id: str) -> dict[str, Any]:
@@ -245,6 +174,32 @@ def register(app: "FastAPI", service: "EngineJobService", root: Path) -> None:
             raise
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    @app.delete("/jobs/{job_id}")
+    def delete_job_endpoint(job_id: str) -> dict[str, Any]:
+        """删除 live job（含 queued / running / paused / 终态）。
+        - 立即从 list_jobs 隐藏；6s undo window 内可 POST /jobs/{id}/restore 撤销
+        - 6s 后真删 work/<stem>/ 中间产物
+        - running 会先 cancel
+        """
+        try:
+            service.delete_job(job_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        return {"ok": True, "job_id": job_id, "undo_window_seconds": 6}
+
+    @app.post("/jobs/{job_id}/restore")
+    def restore_job_endpoint(job_id: str) -> dict[str, Any]:
+        """6s undo window 内撤销删除。窗口外或未删过返回 404。"""
+        try:
+            job = service.restore_job(job_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        return job.to_dict()
 
     @app.post("/jobs/{job_id}/cancel")
     def cancel_job_endpoint(job_id: str) -> dict[str, Any]:

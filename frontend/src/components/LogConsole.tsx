@@ -343,12 +343,12 @@ function EventRow({ event, isActive = true }: { event: ParsedEvent; isActive?: b
           event.type === "system" && "text-primary",
           // step：当前活跃才转圈 + 主色；历史用绿勾且不再 animate
           event.type === "step" && isActive && "text-primary animate-spin",
-          event.type === "step" && !isActive && "text-emerald-500/70",
-          event.type === "success" && "text-emerald-500",
-          event.type === "warning" && "text-amber-500",
+          event.type === "step" && !isActive && "text-success/70",
+          event.type === "success" && "text-success",
+          event.type === "warning" && "text-warning",
           event.type === "error" && "text-destructive",
           // paused：当前活跃才橙色；历史降级为静默的 muted
-          event.type === "paused" && isActive && "text-amber-500",
+          event.type === "paused" && isActive && "text-warning",
           event.type === "paused" && !isActive && "text-muted-foreground/60",
           event.type === "detail" && "text-muted-foreground/60",
         )}
@@ -362,10 +362,10 @@ function EventRow({ event, isActive = true }: { event: ParsedEvent; isActive?: b
               event.type === "step" && "font-semibold",
               event.type === "step" && !isActive && "text-muted-foreground",
               event.type === "success" && "text-foreground",
-              event.type === "warning" && "text-amber-700 dark:text-amber-400",
+              event.type === "warning" && "text-warning",
               event.type === "error" && "text-destructive font-medium",
               // 当前活跃的 paused 才高亮，历史的归类为已过去
-              event.type === "paused" && isActive && "text-amber-700 dark:text-amber-400 font-medium",
+              event.type === "paused" && isActive && "text-warning font-medium",
               event.type === "paused" && !isActive && "text-muted-foreground",
             )}
           >

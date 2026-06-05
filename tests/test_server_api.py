@@ -168,7 +168,8 @@ class TestEngineServerAPI(unittest.TestCase):
         (posts_dir / "no-frontmatter.md").write_text("# 裸 markdown\n没合同信息\n", encoding="utf-8")
 
         client = TestClient(create_app(self.tmp_dir))
-        res = client.get("/jobs/history")
+        # Round 3：历史成品列表从 /jobs/history 迁到 /api/posts（行为一致）
+        res = client.get("/api/posts")
         self.assertEqual(res.status_code, 200)
         items = res.json()
 
@@ -199,7 +200,7 @@ class TestEngineServerAPI(unittest.TestCase):
         self.assertIsNone(draft["review_path"])
 
         # ID 应该跨调用稳定(同 path → 同 hash)
-        res2 = client.get("/jobs/history")
+        res2 = client.get("/api/posts")
         items2 = res2.json()
         self.assertEqual(
             {it["id"] for it in items},

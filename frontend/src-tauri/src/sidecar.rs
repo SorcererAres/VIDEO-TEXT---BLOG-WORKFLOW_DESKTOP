@@ -80,7 +80,28 @@ enum Launcher {
 }
 
 fn locate_launcher(app: &AppHandle) -> anyhow::Result<Launcher> {
-    // prod：先尝试 Resources/backend/video2blog-server/video2blog-server
+    // dev 模式（debug build）：优先用 .venv + 仓库源码，这样改 Python 立刻生效，
+    // 不用每次重 stage-sidecar。Tauri dev 也会把 resources copy 到 target/debug/，
+    // 所以 BaseDirectory::Resource 即便在 dev 也能 resolve 到旧的 pyinstaller binary —— 必须显式让位给 Dev。
+    #[cfg(debug_assertions)]
+    {
+        let dev_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .canonicalize()?;
+        let py = dev_root.join(".venv/bin/python");
+        let script = dev_root.join("scripts/run_engine_server.py");
+        if py.exists() && script.exists() {
+            return Ok(Launcher::Dev {
+                python: py,
+                script,
+                repo_root: dev_root,
+            });
+        }
+        log::warn!("[sidecar] dev 模式但 .venv/scripts 缺失，回落到 Frozen");
+    }
+
+    // prod / dev 兜底：Resources/backend/video2blog-server/video2blog-server
     if let Ok(res) = app
         .path()
         .resolve("backend/video2blog-server/video2blog-server", BaseDirectory::Resource)
@@ -93,7 +114,8 @@ fn locate_launcher(app: &AppHandle) -> anyhow::Result<Launcher> {
             return Ok(Launcher::Frozen { exe: res, repo_root });
         }
     }
-    // dev：从 CARGO_MANIFEST_DIR (= frontend/src-tauri) 推 ../../ 为仓库根
+
+    // 最终回落：源码运行（cargo run 直接执行 release，也要能找到 .venv）
     let dev_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..")
@@ -107,6 +129,7 @@ fn locate_launcher(app: &AppHandle) -> anyhow::Result<Launcher> {
             repo_root: dev_root,
         });
     }
+
     Err(anyhow::anyhow!(
         "找不到后端入口：prod resource 不存在且 dev .venv/scripts 缺失"
     ))
