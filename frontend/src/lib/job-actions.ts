@@ -46,16 +46,16 @@ export async function restoreLiveJob(jobId: string): Promise<unknown> {
   return _handle(res)
 }
 
-/** 删除归档 job（含多选产物开关）。 */
-export async function deleteHistoricalJob(p: HistoricalDeletePayload): Promise<HistoricalDeleteResult> {
-  const qs = new URLSearchParams({
-    post_path: p.post_path,
-    posts: String(p.posts),
-    reviews: String(p.reviews),
-    work: String(p.work),
-    history_index: String(p.history_index),
-    fingerprints: String(p.fingerprints),
+/** （维护用·高危）按 post_path 彻底清扫产物链 —— post + review + work + 索引 + 指纹。
+ *
+ * DECOUPLE Round 3：原 deleteHistoricalJob（DELETE /jobs/history）迁到
+ * POST /api/maintenance/purge。日常删作品请用 trash-actions.moveTrashPost（移 30 天回收站）。
+ * 当前前端无 UI 入口，保留供后续"设置 → 维护"区直接调用。 */
+export async function purgePostChain(p: HistoricalDeletePayload): Promise<HistoricalDeleteResult> {
+  const res = await fetch(`${API_BASE}/api/maintenance/purge`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(p),
   })
-  const res = await fetch(`${API_BASE}/jobs/history?${qs}`, { method: "DELETE" })
   return _handle(res)
 }

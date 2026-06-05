@@ -1,7 +1,7 @@
-"""DECOUPLE Round 1：新 /api/tasks*、/api/posts* 与旧 /jobs* 的行为一致性。
+"""DECOUPLE：/api/tasks*、/api/posts*、/api/maintenance/* 路由行为。
 
-这一轮只搬代码、不改语义，所以"新端点 ≡ 旧端点"是验收基线。
-等 Round 3 删除语义重写后再加 diverged-behavior 测试。
+Round 1 验证新端点 ≡ 旧 /jobs*；Round 3 移除 /jobs/history —— 作品删除走 trash
+（DELETE /posts），整链清扫走 POST /api/maintenance/purge，本文件相应更新为新语义。
 """
 
 from __future__ import annotations
@@ -46,19 +46,18 @@ class TestDecoupleRound1Aliases(unittest.TestCase):
             "## 评分\nok\n", encoding="utf-8"
         )
 
-    def test_api_posts_equals_legacy_jobs_history(self) -> None:
-        """GET /api/posts 与 GET /jobs/history 必须返回完全相同的 JSON。"""
+    def test_jobs_history_removed_api_posts_remains(self) -> None:
+        """Round 3：旧 GET /jobs/history 已移除（404）；作品列表只走 GET /api/posts。"""
         self._seed_one_post()
         client = TestClient(create_app(self.tmp_dir))
 
+        # 旧端点已废：GET /jobs/history 落到 /jobs/{job_id} → 未知 ID → 404
         legacy = client.get("/jobs/history")
-        modern = client.get("/api/posts")
+        self.assertEqual(legacy.status_code, 404)
 
-        self.assertEqual(legacy.status_code, 200)
+        # 新端点照常返回历史成品
+        modern = client.get("/api/posts")
         self.assertEqual(modern.status_code, 200)
-        # 列表内容必须一致（顺序也保留——同一函数生成）
-        self.assertEqual(legacy.json(), modern.json())
-        # 哨兵：至少有一条记录，验证 setUp 起效
         self.assertGreaterEqual(len(modern.json()), 1)
         self.assertEqual(modern.json()[0]["kind"], "historical")
 
@@ -92,24 +91,24 @@ class TestDecoupleRound1Aliases(unittest.TestCase):
         self.assertEqual(res.status_code, 404)
         self.assertIn("未知任务", res.json()["detail"])
 
-    def test_legacy_delete_history_still_works(self) -> None:
-        """老 /jobs/history 删除链路重构后仍工作（行为依赖 post_repo.purge_post_chain）。
+    def test_maintenance_purge_clears_chain(self) -> None:
+        """POST /api/maintenance/purge 清整条产物链（post + review）。
 
-        建一条成品 + review，调老端点删，验证文件确实没了 + 返回 deleted 列表非空。
-        Round 3 才会废除该端点，本轮仅验证下沉到 repos 后行为不变。
+        Round 3：原 DELETE /jobs/history 的"5 选清扫"迁到 maintenance 域。
+        建一条成品 + review，purge 后验证文件物理消失 + deleted 列表非空。
         """
         self._seed_one_post()
         client = TestClient(create_app(self.tmp_dir))
 
-        res = client.delete(
-            "/jobs/history",
-            params={
+        res = client.post(
+            "/api/maintenance/purge",
+            json={
                 "post_path": "output/Posts/2026/2026-06-04-合规成品.md",
-                "posts": "true",
-                "reviews": "true",
-                "work": "false",
-                "history_index": "false",
-                "fingerprints": "false",
+                "posts": True,
+                "reviews": True,
+                "work": False,
+                "history_index": False,
+                "fingerprints": False,
             },
         )
         self.assertEqual(res.status_code, 200)
@@ -121,12 +120,12 @@ class TestDecoupleRound1Aliases(unittest.TestCase):
         self.assertFalse((self.tmp_dir / "output" / "Posts" / "2026" / "2026-06-04-合规成品.md").exists())
         self.assertFalse((self.tmp_dir / "output" / "Reviews" / "2026-06-04-合规成品.review.md").exists())
 
-    def test_legacy_delete_history_rejects_path_traversal(self) -> None:
-        """./../../ 攻击应被 post_repo 抛 ValueError，路由翻 400。"""
+    def test_maintenance_purge_rejects_path_traversal(self) -> None:
+        """../../ 攻击应被 post_repo 抛 ValueError，maintenance 路由翻 400。"""
         client = TestClient(create_app(self.tmp_dir))
-        res = client.delete(
-            "/jobs/history",
-            params={"post_path": "../../etc/passwd"},
+        res = client.post(
+            "/api/maintenance/purge",
+            json={"post_path": "../../etc/passwd"},
         )
         self.assertEqual(res.status_code, 400)
         self.assertIn("非法路径", res.json()["detail"])

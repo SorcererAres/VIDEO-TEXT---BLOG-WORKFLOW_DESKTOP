@@ -11,10 +11,13 @@ import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/form-primitives"
 import { AlertTriangle } from "lucide-react"
 
-// 归档任务删除：5 项产物多选面板。命令式模式（跟 ConfirmDialog 同款 host）。
+// 归档作品"整链清扫"5 项产物多选面板。命令式模式（跟 ConfirmDialog 同款 host）。
+//
+// DECOUPLE Round 3：已从删除主路径摘除 —— 当前无 UI 入口（日常删作品走 30 天回收站）。
+// 保留作为后续"设置 → 维护"区 PurgeDialog 的素材；接入时配 lib/job-actions.purgePostChain。
 // 用法：
 //   const sel = await confirmHistoricalDelete({ stem, postPath })
-//   if (sel) { await deleteHistoricalJob({ post_path, ...sel }) }
+//   if (sel) { await purgePostChain({ post_path, ...sel }) }
 
 export interface HistoricalDeleteOptions {
   /** 归档 job stem，仅做展示 */

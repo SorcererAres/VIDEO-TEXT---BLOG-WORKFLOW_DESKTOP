@@ -25,8 +25,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { cn } from '@/lib/utils'
 import { SearchModal } from '@/components/SearchModal'
 import { ConfirmDialogHost, confirmAction } from '@/components/ConfirmDialog'
-import { HistoricalDeleteDialogHost, confirmHistoricalDelete } from '@/components/HistoricalDeleteDialog'
-import { deleteLiveJob, restoreLiveJob, deleteHistoricalJob } from '@/lib/job-actions'
+import { deleteLiveJob, restoreLiveJob } from '@/lib/job-actions'
 import { moveTrashPost, restoreTrashPost, purgeTrashPost, type TrashPost } from '@/lib/trash-actions'
 import { Launcher, type LauncherHandle } from '@/components/Launcher'
 import type { LauncherSubmitPayload } from '@/lib/launcher-command'
@@ -186,11 +185,11 @@ export default function App() {
   // DECOUPLE Round 2：三套数据源（任务 / 作品 / 回收站）各自成 hook，App 不再
   // 内联 state + fetch。别名保留原变量名（jobs / historicalJobs / trashPosts…），
   // 让下方所有调用处零改动；fetchJobs 内部的状态跃迁通知见 onDataRef 注入。
-  // setJobs / setTrashPosts 原先只在内联 fetch 里用，逻辑下沉 hook 后 App 不再直接
-  // 写它们（任务靠 fetchJobs 轮询、回收站操作后 fetchTrash 重拉），故不解构。
-  // setHistoricalJobs 暂保留 —— handleDeletePost 仍手工补偿，Round 3 删除语义重写后移除。
+  // 三套 store 均不在 App 内直接写 setter：任务靠 fetchJobs 轮询，作品 / 回收站操作后
+  // 各自 fetchHistory / fetchTrash 重拉（DECOUPLE Round 3 起删除语义统一，App 不再跨域
+  // 手工补偿 historicalJobs —— 作品域以 fetchHistory 为单一刷新来源）。
   const { tasks: jobs, fetchTasks: fetchJobs, onDataRef: tasksOnDataRef } = useTasks()
-  const { posts: historicalJobs, setPosts: setHistoricalJobs, fetchPosts: fetchHistory } = usePosts()
+  const { posts: historicalJobs, fetchPosts: fetchHistory } = usePosts()
   const { trashPosts, fetchTrash } = useTrash()
   // LibraryView 内部视图：作品集 / 回收站。受控于 App，让 sidebar 底部的「回收站」入口能直接切到 trash。
   const [libraryView, setLibraryView] = useState<"library" | "trash">("library")
@@ -1192,37 +1191,13 @@ export default function App() {
     })
   }
 
-  // Historical job：弹多选面板 → DELETE /jobs/history?post_path=...
-  const handleDeleteHistoricalJobAction = async (job: EngineJob) => {
-    if (!requireOnline("删除归档任务")) return
-    const postPath = job.final_post_path
-    if (!postPath) {
-      toast.error("无法删除", { description: "该归档任务缺少 final_post_path，无法定位文件" })
-      return
-    }
-    const sel = await confirmHistoricalDelete({ stem: job.stem, postPath })
-    if (!sel) return
-    try {
-      const result = await deleteHistoricalJob({ post_path: postPath, ...sel })
-      if (selectedJobId === job.id) {
-        setSelectedJobId(null)
-      }
-      fetchHistory()
-      fetchJobs()
-      const msg = result.deleted.length
-        ? `已删除 ${result.deleted.length} 项`
-        : "无内容被删除"
-      const errs = result.errors.length ? ` · ${result.errors.length} 项失败` : ""
-      toast.success("归档删除完成", { description: msg + errs })
-    } catch (e) {
-      toast.error("删除失败", { description: e instanceof Error ? e.message : String(e) })
-    }
-  }
-
-  // 统一入口：live → handleDeleteLiveJob；historical → handleDeleteHistoricalJobAction
+  // 统一入口：live → 删任务（清 work/，6s undo）；historical（已完成作品）→ 移回收站。
+  // DECOUPLE Round 3：historical 行删除不再弹"5 选清扫"面板，与 Library 卡片同一语义
+  // （移 30 天回收站，可撤销）。整链彻底清除（连 work/评分/索引/指纹）降级为显式维护
+  // 操作（后端 POST /api/maintenance/purge），入口待"设置 → 维护"区接入。
   const handleDeleteJob = (job: EngineJob) => {
     if (job.kind === "historical") {
-      void handleDeleteHistoricalJobAction(job)
+      void handleDeletePost(job)
     } else {
       void handleDeleteLiveJob(job)
     }
@@ -1246,8 +1221,8 @@ export default function App() {
       return
     }
     if (selectedJobId === job.id) setSelectedJobId(null)
-    // 立刻把 historical 列表里这条隐藏（轮询要 30s 才会刷新到），刷新 trash 列表
-    setHistoricalJobs(prev => prev.filter(h => h.final_post_path !== postPath))
+    // 移走后即时重拉作品 / 回收站（DECOUPLE Round 3：去掉手工 setHistoricalJobs 补偿，
+    // 作品域由 fetchHistory 单一来源刷新，不再让 App 跨域改 store）。
     fetchTrash()
     fetchHistory()
     const stemShort = job.stem.length > 24 ? job.stem.slice(0, 24) + "…" : job.stem
@@ -1330,7 +1305,6 @@ export default function App() {
     <TooltipProvider delayDuration={200}>
       <Toaster position="top-right" theme="system" />
       <ConfirmDialogHost />
-      <HistoricalDeleteDialogHost />
       {/* 中性 Tahoe：实底窗口底色（中性浅灰）衬托浮起的 sidebar 卡片。玻璃透出已撤销。 */}
       <div className="app-root flex flex-col h-screen text-foreground overflow-hidden font-sans bg-background">
         {/* 不再有横跨顶部的 toolbar：sidebar 卡片自己顶到窗口上沿（含交通灯），

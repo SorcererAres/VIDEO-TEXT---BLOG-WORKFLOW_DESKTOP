@@ -1,9 +1,8 @@
-"""任务：创建 / 列举 / 详情 / 产物 / 大纲与草稿审批 / 取消 / SSE 事件流 / 历史归档。
+"""任务：创建 / 列举 / 详情 / 产物 / 大纲与草稿审批 / 取消 / SSE 事件流。
 
-DECOUPLE Round 1：历史扫描 / 跨目录清扫已下沉到 repos/post_repo.py。
-本模块保留旧 /jobs/* 端点（前端在用），但 list_history / delete_history 仅做
-HTTP 形态封装，业务逻辑全部走 post_repo。新前端应改走 routes/posts.py 的
-/api/posts*（行为一致）。
+DECOUPLE Round 3：历史扫描迁到 routes/posts.py（GET /api/posts），跨目录清扫迁到
+routes/maintenance.py（POST /api/maintenance/purge）。旧 /jobs/history（GET+DELETE）已移除。
+本模块现在纯粹只管"任务"域：live job 的 CRUD / 审批 / 取消 / 事件流。
 """
 
 from __future__ import annotations
@@ -16,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
-from video2blog.repos import post_repo, task_repo
+from video2blog.repos import task_repo
 from video2blog.routes.models import ApproveDraftRequest, ApproveOutlineRequest, JobCreateRequest
 from video2blog.server_core import EngineJobRequest
 
@@ -26,12 +25,6 @@ if TYPE_CHECKING:
 
 
 def register(app: "FastAPI", service: "EngineJobService", root: Path) -> None:
-    # 注意：/jobs/history 必须在 /jobs/{job_id} 之前注册，否则会被 {job_id} 抢匹配。
-    @app.get("/jobs/history")
-    def list_history() -> list[dict[str, Any]]:
-        """从 output/Posts/**/*.md 扫描历史归档（薄壳，逻辑在 repos/post_repo.py）。"""
-        return post_repo.list_posts(root)
-
     @app.post("/jobs", status_code=202)
     def create_job(payload: JobCreateRequest) -> dict[str, Any]:
         try:
@@ -181,35 +174,6 @@ def register(app: "FastAPI", service: "EngineJobService", root: Path) -> None:
             raise
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-    # 注意：/jobs/history 必须在 /jobs/{job_id} 之前注册，否则会被 {job_id} 抢匹配（5/29 撞过）。
-    @app.delete("/jobs/history")
-    def delete_history(
-        post_path: str,
-        posts: bool = True,
-        reviews: bool = True,
-        work: bool = True,
-        history_index: bool = True,
-        fingerprints: bool = True,
-    ) -> dict[str, Any]:
-        """归档任务删除 —— 接受 post_path（output/Posts/<year>/<file>.md 相对路径）+ 5 个布尔开关。
-
-        前端用 list_history 返回的 final_post_path 直接传过来。
-        返回 deleted: 真删的路径列表，errors: 单项失败的原因（不抛 500）。
-        逻辑在 repos/post_repo.py:purge_post_chain。
-        """
-        try:
-            return post_repo.purge_post_chain(
-                root,
-                post_path,
-                posts=posts,
-                reviews=reviews,
-                work=work,
-                history_index=history_index,
-                fingerprints=fingerprints,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.delete("/jobs/{job_id}")
     def delete_job_endpoint(job_id: str) -> dict[str, Any]:
